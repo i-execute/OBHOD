@@ -21,8 +21,8 @@ fi
 
 # --- выбор порта для vk-turn-proxy: пробуем предпочитаемый, если занят — случайный >1024 ---
 port_is_free() {
-    # true, если порт $1/tcp никем не занят (ни в LISTEN, ни в TIME_WAIT и т.п.)
-    ! ss -Htln "sport = :$1" | grep -q .
+    # true, если порт $1 (tcp или udp) никем не занят
+    ! ss -Htln "sport = :$1" | grep -q . && ! ss -Huln "sport = :$1" | grep -q .
 }
 
 if port_is_free "$PREFERRED_VKTURN_PORT"; then
@@ -91,6 +91,7 @@ iptables -C FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev
 netfilter-persistent save
 
 ufw allow $VKTURN_PORT/tcp || true
+ufw allow $VKTURN_PORT/udp || true
 ufw allow $WG_PORT/udp || true
 if grep -q 'DEFAULT_FORWARD_POLICY="DROP"' /etc/default/ufw 2>/dev/null; then
     sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
@@ -110,9 +111,14 @@ if [ ! -f /etc/wireguard/wrap.key ]; then
 fi
 WRAP_KEY=$(cat /etc/wireguard/wrap.key)
 
-cat > /etc/systemd/system/vk-turn-proxy.service <<EOF
+SERVICE_NAME="vk-turn-proxy-${VKTURN_PORT}"
+
+if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    echo "Сервис $SERVICE_NAME уже запущен и работает — пропускаю пересоздание, ничего не трогаю."
+else
+    cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=VK Turn Proxy Server
+Description=VK Turn Proxy Server (port $VKTURN_PORT)
 After=network.target wg-quick@wg0.service
 
 [Service]
@@ -127,8 +133,9 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now vk-turn-proxy
+    systemctl daemon-reload
+    systemctl enable --now "$SERVICE_NAME"
+fi
 
 # --- копируем управляющие скрипты и настраиваем sudoers для бота ---
 cp "$(dirname "$0")/add_peer.sh" "$SCRIPTS_DIR/add_peer.sh"
