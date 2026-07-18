@@ -1,5 +1,4 @@
 #!/bin/bash
-# revoke_peer.sh <tag> — удаляет WG peer по tag'у из рантайма, конфига и реестра.
 set -e
 
 WG_IFACE="wg0"
@@ -20,30 +19,24 @@ if [ -z "$PUBKEY" ]; then
     exit 2
 fi
 
-# убираем из рантайма
 wg set "$WG_IFACE" peer "$PUBKEY" remove
 
-# вычищаем блок [Peer] с этим pubkey из конфиг-файла (ищем по маркеру # tag=)
 python3 - "$CONF_FILE" "$TAG" <<'PYEOF'
-import sys, re
+import sys, re, os
 path, tag = sys.argv[1], sys.argv[2]
 with open(path) as f:
     content = f.read()
-
 pattern = re.compile(
     r"\n?\[Peer\]\n# tag=" + re.escape(tag) + r"\n.*?(?=\n\[Peer\]|\Z)",
     re.DOTALL
 )
 new_content = pattern.sub("", content)
-
 tmp = path + ".tmp"
 with open(tmp, "w") as f:
     f.write(new_content)
-import os
 os.replace(tmp, path)
 PYEOF
 
-# чистим реестр
 python3 - "$PEERS_DB" "$TAG" <<'PYEOF'
 import json, sys, os
 path, tag = sys.argv[1], sys.argv[2]

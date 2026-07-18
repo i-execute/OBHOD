@@ -1,155 +1,79 @@
 #!/bin/bash
-
 set -e
 
-INSTALL_DIR="$HOME/OBHOD"
-VENV_DIR="$INSTALL_DIR/venv"
-SERVICE_NAME="obhod"
-PYTHON_BIN="$(command -v python3)"
-REPO_URL="https://github.com/i-execute/OBHOD.git"
-ENV_FILE="$INSTALL_DIR/.env"
-
-if [ -z "$PYTHON_BIN" ]; then
-    echo "ERROR: python3 not found"
+if [ "$(id -u)" -ne 0 ]; then
+    echo "run as root (sudo bash Setuper.sh)"
     exit 1
 fi
 
-echo ""
-echo "Welcome back $USER"
-sleep 0.5
-echo "Setting up OBHOD..."
-sleep 0.5
-echo ""
+OBHOD_USER="OBHOD"
+INSTALL_DIR="/home/$OBHOD_USER/OBHOD"
+ENV_FILE="$INSTALL_DIR/.env"
+REPO_URL="https://github.com/i-execute/OBHOD.git"
+SERVICE_NAME="obhod"
 
-env_is_valid() {
-    [ -f "$ENV_FILE" ] || return 1
+apt update -qq
+apt upgrade -qq -y
+apt install -qq -y wireguard wireguard-tools python3 python3-pip python3-venv git curl jq
 
-    local v_api_id v_api_hash v_bot_token v_owner_id
-    v_api_id="$(grep -E '^API_ID=' "$ENV_FILE" | cut -d'=' -f2-)"
-    v_api_hash="$(grep -E '^API_HASH=' "$ENV_FILE" | cut -d'=' -f2-)"
-    v_bot_token="$(grep -E '^BOT_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)"
-    v_owner_id="$(grep -E '^OWNER_ID=' "$ENV_FILE" | cut -d'=' -f2-)"
+if ! id "$OBHOD_USER" &>/dev/null; then
+    useradd -m -s /bin/bash "$OBHOD_USER"
+fi
+usermod -aG sudo "$OBHOD_USER" || true
+loginctl enable-linger "$OBHOD_USER" || true
 
-    [ -n "$v_api_id" ] && [ -n "$v_api_hash" ] && [ -n "$v_bot_token" ] && [ -n "$v_owner_id" ]
-}
-
-write_env_file() {
-    cat > "$ENV_FILE" <<EOF
-API_ID=$API_ID
-API_HASH=$API_HASH
-BOT_TOKEN=$BOT_TOKEN
-OWNER_ID=$OWNER_ID
-VKTURN_VK_LINK=$VKTURN_VK_LINK
-VKTURN_ENDPOINT=$VKTURN_ENDPOINT
-EOF
-    chmod 600 "$ENV_FILE"
-}
-
-prompt_credentials() {
-    read -rp "BOT_TOKEN       : " BOT_TOKEN < /dev/tty
-    if [ -z "$BOT_TOKEN" ]; then
-        echo "Enter token next time"
-        exit 1
-    fi
-
-    read -rp "OWNER_ID        : " OWNER_ID < /dev/tty
-    if ! [[ "$OWNER_ID" =~ ^[0-9]+$ ]]; then
-        echo "Enter correct ID next time"
-        exit 1
-    fi
-
-    read -rp "API_ID          : " API_ID < /dev/tty
-    if ! [[ "$API_ID" =~ ^[0-9]+$ ]]; then
-        echo "Enter correct API ID next time"
-        exit 1
-    fi
-
-    read -rp "API_HASH        : " API_HASH < /dev/tty
-    if [ -z "$API_HASH" ]; then
-        echo "Enter API hash next time"
-        exit 1
-    fi
-
-    read -rp "VK join link    : " VKTURN_VK_LINK < /dev/tty
-
-    DETECTED_ENDPOINT=""
-    if [ -f /etc/wireguard/vkturn_port ]; then
-        DETECTED_PORT="$(cat /etc/wireguard/vkturn_port)"
-        DETECTED_IP="$(curl -s ifconfig.me || true)"
-        if [ -n "$DETECTED_PORT" ] && [ -n "$DETECTED_IP" ]; then
-            DETECTED_ENDPOINT="${DETECTED_IP}:${DETECTED_PORT}"
-        fi
-    fi
-
-    if [ -n "$DETECTED_ENDPOINT" ]; then
-        read -rp "Server endpoint [$DETECTED_ENDPOINT]: " VKTURN_ENDPOINT < /dev/tty
-        VKTURN_ENDPOINT="${VKTURN_ENDPOINT:-$DETECTED_ENDPOINT}"
-    else
-        read -rp "Server endpoint (ip:port, e.g. 89.125.48.221:6767): " VKTURN_ENDPOINT < /dev/tty
-    fi
-
-    echo ""
-}
-
-ALREADY_INSTALLED=0
 if [ -d "$INSTALL_DIR/.git" ]; then
-    ALREADY_INSTALLED=1
+    sudo -u "$OBHOD_USER" bash -c "cd $INSTALL_DIR && git pull origin main"
+else
+    sudo -u "$OBHOD_USER" git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-if [ "$ALREADY_INSTALLED" -eq 1 ]; then
-    echo "OBHOD already installed, checking .env..."
+sudo -u "$OBHOD_USER" python3 -m venv "$INSTALL_DIR/venv"
+sudo -u "$OBHOD_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
+sudo -u "$OBHOD_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet telethon aiohttp pyyaml gitpython requests
 
-    if env_is_valid; then
-        echo ""
-        echo "Current config:"
-        echo " API_ID          : $(grep -E '^API_ID=' "$ENV_FILE" | cut -d'=' -f2-)"
-        echo " OWNER_ID        : $(grep -E '^OWNER_ID=' "$ENV_FILE" | cut -d'=' -f2-)"
-        echo " VKTURN_VK_LINK  : $(grep -E '^VKTURN_VK_LINK=' "$ENV_FILE" | cut -d'=' -f2-)"
-        echo " VKTURN_ENDPOINT : $(grep -E '^VKTURN_ENDPOINT=' "$ENV_FILE" | cut -d'=' -f2-)"
-        echo ""
-
-        read -rp "Change config? [y/N]: " CHANGE_ENV < /dev/tty
-        if [[ "$CHANGE_ENV" =~ ^[Yy]$ ]]; then
-            prompt_credentials
-            write_env_file
-        fi
-    else
-        echo ".env missing or incomplete, please fill it in again"
-        echo ""
-        prompt_credentials
-        write_env_file
+if [ ! -f "$ENV_FILE" ]; then
+    read -rp "BOT_TOKEN: " BOT_TOKEN < /dev/tty
+    if [ -z "$BOT_TOKEN" ]; then
+        echo "no token provided"
+        exit 1
     fi
 
-    echo "Pulling latest changes..."
-    cd "$INSTALL_DIR"
-    git pull origin main
-else
-    prompt_credentials
+    ME_JSON=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getMe")
+    OK=$(echo "$ME_JSON" | jq -r '.ok')
+    if [ "$OK" != "true" ]; then
+        echo "invalid token"
+        exit 1
+    fi
 
-    echo "Cloning repository..."
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    USERNAME=$(echo "$ME_JSON" | jq -r '.result.username')
+    INLINE_SUPPORTED=$(echo "$ME_JSON" | jq -r '.result.supports_inline_queries')
 
-    write_env_file
+    if [ "$INLINE_SUPPORTED" != "true" ]; then
+        echo "inline mode is disabled for @$USERNAME"
+        echo "enable it via @BotFather -> /setinline, then re-run this script"
+        exit 1
+    fi
 
-    echo "Building venv and dependencies..."
-    $PYTHON_BIN -m venv "$VENV_DIR"
-    "$VENV_DIR/bin/pip" install --quiet --upgrade pip
-    "$VENV_DIR/bin/pip" install --quiet telethon
+    echo "BOT_TOKEN=$BOT_TOKEN" > "$ENV_FILE"
+    chown "$OBHOD_USER:$OBHOD_USER" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
 
-    echo "Building daemon configuration..."
+    echo "connected to @$USERNAME successfully"
+    echo "message it now in DM with anything to learn your id"
+fi
 
-    UNIT_DIR="$HOME/.config/obhod"
-    mkdir -p "$UNIT_DIR"
+UNIT_DIR="/home/$OBHOD_USER/.config/systemd/user"
+sudo -u "$OBHOD_USER" mkdir -p "$UNIT_DIR"
 
-    cat > "$UNIT_DIR/${SERVICE_NAME}.service" <<EOF
+cat > "$UNIT_DIR/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=OBHOD
-After=network.target
 
 [Service]
-WorkingDirectory=$INSTALL_DIR/Bot
+WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=$VENV_DIR/bin/python3 $INSTALL_DIR/Bot/core.py
+ExecStart=$INSTALL_DIR/venv/bin/python3 -m BOT
 Restart=always
 RestartSec=5
 
@@ -157,31 +81,30 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
-    mkdir -p "$HOME/.config/systemd/user"
-    ln -sf "$UNIT_DIR/${SERVICE_NAME}.service" "$HOME/.config/systemd/user/${SERVICE_NAME}.service"
+chown -R "$OBHOD_USER:$OBHOD_USER" "$UNIT_DIR"
 
-    systemctl --user daemon-reload
-    systemctl --user enable "$SERVICE_NAME"
+OBHOD_UID=$(id -u "$OBHOD_USER")
+export XDG_RUNTIME_DIR="/run/user/$OBHOD_UID"
+
+sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user daemon-reload
+sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user enable --now "$SERVICE_NAME"
+
+if ! grep -q "^OWNER_ID=" "$ENV_FILE" 2>/dev/null; then
+    read -rp "Enter your id (from the bot's reply): " OWNER_ID < /dev/tty
+    if ! [[ "$OWNER_ID" =~ ^[0-9]+$ ]]; then
+        echo "invalid id"
+        exit 1
+    fi
+    echo "OWNER_ID=$OWNER_ID" >> "$ENV_FILE"
+    chown "$OBHOD_USER:$OBHOD_USER" "$ENV_FILE"
+
+    sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user restart "$SERVICE_NAME"
 fi
 
-systemctl --user restart "$SERVICE_NAME"
-
 echo ""
-echo "[*] OBHOD successfully started"
-echo "    I_execute.t.me"
+echo "SSH setup complete"
+echo "continue configuration inside the Telegram chat with the bot"
 echo ""
-
-echo "----------------------------------"
-echo " installed in   : $INSTALL_DIR"
-echo " venv directory : $VENV_DIR"
-echo " config         : $ENV_FILE"
-echo ""
-echo "Swift commands:"
-echo " status  : systemctl --user status $SERVICE_NAME"
-echo " logs    : journalctl --user -u $SERVICE_NAME -f"
-echo " stop    : systemctl --user stop $SERVICE_NAME"
-echo " restart : systemctl --user restart $SERVICE_NAME"
-echo ""
-echo "ВАЖНО: перед первым запуском .vkadd выполни на этой же машине от root:"
-echo "  sudo bash $INSTALL_DIR/Storage/Installation/setup_root.sh"
-echo "чтобы поднять WireGuard + vk-turn-proxy и настроить sudoers для $USER."
+echo "status  : sudo -u $OBHOD_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR systemctl --user status $SERVICE_NAME"
+echo "logs    : sudo -u $OBHOD_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR journalctl --user -u $SERVICE_NAME -f"
+echo "restart : sudo -u $OBHOD_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR systemctl --user restart $SERVICE_NAME"
