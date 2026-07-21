@@ -65,6 +65,13 @@ EOF
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
+# Open port in iptables for both TCP and UDP (ufw removed due to conflicts)
+iptables -C INPUT -p tcp --dport $PORT -j ACCEPT 2>/dev/null || \
+    iptables -A INPUT -p tcp --dport $PORT -j ACCEPT
+iptables -C INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null || \
+    iptables -A INPUT -p udp --dport $PORT -j ACCEPT
+netfilter-persistent save
+
 python3 - "$PROFILES_DB" "$PROFILE" "$PORT" <<'PYEOF'
 import json, sys, os
 path, profile, port = sys.argv[1:4]
@@ -77,3 +84,4 @@ PYEOF
 
 echo "PORT=$PORT"
 echo "PROFILE=$PROFILE"
+echo "WRAP_KEY=$WRAP_KEY"

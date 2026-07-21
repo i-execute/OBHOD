@@ -422,7 +422,7 @@ class VKTurn(BaseModule):
                 return
 
             port = proxy.get("PORT")
-            obf_key = self._read_wrap_key()
+            obf_key = proxy.get("WRAP_KEY") or self._read_wrap_key()
 
             if is_android:
                 link = build_android_link(tag, peer, SERVER_HOST, port, profile, obf_key, call_id)
