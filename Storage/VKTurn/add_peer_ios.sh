@@ -8,7 +8,7 @@ SERVER_PUB_FILE="/etc/wireguard/server_public.key"
 
 TAG="$1"
 if [ -z "$TAG" ]; then
-    echo "ERROR: usage: add_peer.sh <tag>" >&2
+    echo "ERROR: usage: add_peer_ios.sh <tag>" >&2
     exit 1
 fi
 

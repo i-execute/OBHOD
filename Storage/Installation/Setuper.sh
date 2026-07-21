@@ -103,7 +103,7 @@ fi
 
 echo ""
 echo "SSH setup complete"
-echo "continue configuration inside the Telegram chat with the bot"
+echo "continue configuration inside Telegram chat with the bot"
 echo ""
 echo "status  : sudo -u $OBHOD_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR systemctl --user status $SERVICE_NAME"
 echo "logs    : sudo -u $OBHOD_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR journalctl --user -u $SERVICE_NAME -f"
