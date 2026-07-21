@@ -372,7 +372,7 @@ async def run_full_bot():
                 value = query[len(prefix):].strip()
                 valid = validator(value) if validator else bool(value)
                 _pending_inline[event.sender_id] = (prefix, method)
-                title = "Tap for transfer value" if valid else "Invalid value"
+                title = "Tap for transfer value"
                 builder = event.builder
                 result = builder.article(title=title, text=value or " ")
                 await event.answer([result])

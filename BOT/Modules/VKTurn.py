@@ -8,7 +8,7 @@ import subprocess
 import aiohttp
 from telethon import events, Button
 
-from installer import BaseModule, need_button, need_command, need_inline_input, mutal_access
+from installer import BaseModule, need_button, need_command, mutal_access
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ WRAP_KEY_FILE = "/etc/wireguard/wrap.key"
 
 VK_API_VERSION = "5.199"
 VK_API_BASE = "https://api.vk.ru/method"
-VK_DEFAULT_APP_ID = 2685278
+VK_DEFAULT_APP_ID = 3697615
 VK_REDIRECT = "https://oauth.vk.com/blank.html"
 VK_DEFAULT_SCOPE = "offline"
 VK_TOKEN_RE = re.compile(r"access_token=([A-Za-z0-9._-]+)")
@@ -219,7 +219,7 @@ class VKTurn(BaseModule):
         bot.add_event_handler(self._cb_pick_profile, events.CallbackQuery(pattern=b"^vkturn:profile:"))
         bot.add_event_handler(self._cb_list_peers, events.CallbackQuery(pattern=b"^vkturn:list$"))
         bot.add_event_handler(self._cb_revoke, events.CallbackQuery(pattern=b"^vkturn:revoke:"))
-        bot.add_event_handler(self._cb_inline_token, events.CallbackQuery(pattern=b"^vkturn:inline_token$"))
+        bot.add_event_handler(self._on_text, events.NewMessage(incoming=True, func=lambda e: e.is_private))
 
     def _run_script(self, script, *args):
         proc = subprocess.run(
@@ -276,7 +276,6 @@ class VKTurn(BaseModule):
                 url = build_vk_auth_url()
                 kb = [
                     [Button.url("Open VK Auth", url)],
-                    [Button.inline("Enter Token via Inline", b"vkturn:inline_token")],
                     [Button.inline(self.strings["btn_back"], b"vkturn:menu")],
                 ]
                 await event.edit(self.strings["auth_prompt"], buttons=kb)
@@ -342,52 +341,6 @@ class VKTurn(BaseModule):
         self._pending[event.sender_id] = {"stage": "peer_tag"}
         await event.edit(self.strings["ask_tag"])
 
-    async def _cb_inline_token(self, event):
-        if not self.data_manager.is_privileged(event.sender_id):
-            return
-        await event.answer("Switching to inline input...", alert=False)
-        # The user will now use inline query to enter the token
-        pass
-
-    @need_inline_input("VK_TOKEN ", validator=lambda v: len(v) > 20)
-    async def _input_vk_token(self, event, value):
-        if not self.data_manager.is_privileged(event.sender_id):
-            return
-        sender_id = event.sender_id
-        token = extract_vk_token(value)
-        if not token:
-            await event.reply("Invalid VK token format. Expected access_token=... in URL")
-            return
-
-        client = VKClient(token)
-        uid = await client.whoami()
-        if not uid:
-            await event.reply("Failed to validate VK token")
-            return
-
-        db = load_calls_db()
-        db["token"] = token
-        save_calls_db(db)
-
-        del self._pending[sender_id]
-
-        try:
-            resp = await client.start_call()
-        except VKAPIError:
-            await event.reply("Failed to start VK call")
-            return
-
-        call_id = resp.get("call_id", "")
-        join_link = resp.get("join_link", "")
-        if call_id:
-            db["calls"][call_id] = {"call_id": call_id, "join_link": join_link}
-            save_calls_db(db)
-
-        self._flow[sender_id] = {"call_id": call_id, "join_link": join_link}
-
-        kb = [[Button.inline(p, f"vkturn:profile:{p}".encode())] for p in OBF_PROFILES]
-        await event.reply(self.strings["select_profile"], buttons=kb)
-
     async def _on_text(self, event):
         sender_id = event.sender_id
         if not self.data_manager.is_privileged(sender_id):
@@ -399,14 +352,36 @@ class VKTurn(BaseModule):
         text = (event.raw_text or "").strip()
 
         if pending["stage"] == "vk_auth":
-            # Old text-based flow - redirect to inline
-            kb = [
-                [{"text": "Enter VK Token via Inline", "switch_inline_query_current_chat": "VK_TOKEN "}]
-            ]
-            await event.reply(
-                "Please use inline input for VK token. Tap the button below:",
-                buttons=kb
-            )
+            token = extract_vk_token(text)
+            if not token:
+                return
+            client = VKClient(token)
+            uid = await client.whoami()
+            if not uid:
+                return
+            db = load_calls_db()
+            db["token"] = token
+            save_calls_db(db)
+            del self._pending[sender_id]
+
+            try:
+                await event.delete()
+            except Exception:
+                pass
+
+            try:
+                resp = await client.start_call()
+            except VKAPIError:
+                return
+            call_id = resp.get("call_id", "")
+            join_link = resp.get("join_link", "")
+            if call_id:
+                db["calls"][call_id] = {"call_id": call_id, "join_link": join_link}
+                save_calls_db(db)
+            self._flow[sender_id] = {"call_id": call_id, "join_link": join_link}
+
+            kb = [[Button.inline(p, f"vkturn:profile:{p}".encode())] for p in OBF_PROFILES]
+            await event.reply(self.strings["select_profile"], buttons=kb)
             return
 
         if pending["stage"] == "peer_tag":

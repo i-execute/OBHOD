@@ -65,6 +65,14 @@ if [ ! -f "$ENV_FILE" ]; then
 
     echo "connected to @$USERNAME successfully"
     echo "message it now in DM with anything to learn your id"
+
+    read -rp "Enter your id (from the bot's reply): " OWNER_ID < /dev/tty
+    if ! [[ "$OWNER_ID" =~ ^[0-9]+$ ]]; then
+        echo "invalid id"
+        exit 1
+    fi
+    echo "OWNER_ID=$OWNER_ID" >> "$ENV_FILE"
+    chown "$OBHOD_USER:$OBHOD_USER" "$ENV_FILE"
 fi
 
 UNIT_DIR="/home/$OBHOD_USER/.config/systemd/user"
@@ -92,18 +100,6 @@ export XDG_RUNTIME_DIR="/run/user/$OBHOD_UID"
 
 sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user daemon-reload
 sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user enable --now "$SERVICE_NAME"
-
-if ! grep -q "^OWNER_ID=" "$ENV_FILE" 2>/dev/null; then
-    read -rp "Enter your id (from the bot's reply): " OWNER_ID < /dev/tty
-    if ! [[ "$OWNER_ID" =~ ^[0-9]+$ ]]; then
-        echo "invalid id"
-        exit 1
-    fi
-    echo "OWNER_ID=$OWNER_ID" >> "$ENV_FILE"
-    chown "$OBHOD_USER:$OBHOD_USER" "$ENV_FILE"
-
-    sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user restart "$SERVICE_NAME"
-fi
 
 echo ""
 echo "SSH setup complete"
