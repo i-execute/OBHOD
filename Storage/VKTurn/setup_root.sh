@@ -13,7 +13,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-apt update -qq && apt install -y wireguard wireguard-tools qrencode iptables-persistent jq python3 ufw
+apt update -qq && apt install -y wireguard wireguard-tools qrencode iptables-persistent jq python3
 
 mkdir -p /etc/wireguard "$SCRIPTS_DIR"
 cd /etc/wireguard
@@ -57,8 +57,11 @@ iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -
 iptables -C FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
     iptables -A FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
 netfilter-persistent save
-ufw allow $WG_PORT/udp || true
-ufw reload || true
+
+# Allow WireGuard port via iptables (ufw conflicts with iptables-persistent)
+iptables -C INPUT -p udp --dport $WG_PORT -j ACCEPT 2>/dev/null || \
+    iptables -A INPUT -p udp --dport $WG_PORT -j ACCEPT
+netfilter-persistent save
 
 sudo -u "$VKTURN_USER" bash -c "
 cd $VKTURN_HOME

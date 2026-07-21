@@ -62,9 +62,6 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-ufw allow "$PORT"/tcp || true
-ufw allow "$PORT"/udp || true
-
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
