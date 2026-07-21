@@ -19,6 +19,23 @@ ENSURE_PROFILE_SCRIPT = "/opt/vkturn/ensure_profile.sh"
 PEERS_DB = "/etc/wireguard/peers.json"
 SERVER_HOST = os.environ.get("VKTURN_SERVER_HOST", "")
 
+def _detect_server_host():
+    """Auto-detect server external IP if VKTURN_SERVER_HOST not set."""
+    if SERVER_HOST:
+        return SERVER_HOST
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return ""
+
+# Resolve once at import time
+SERVER_HOST = _detect_server_host()
+
 CALLS_DB_FILE = os.path.join(os.path.dirname(__file__), "..", "vkturn_calls.json")
 CALLS_DB_FILE = os.path.abspath(CALLS_DB_FILE)
 WRAP_KEY_FILE = "/etc/wireguard/wrap.key"
@@ -33,13 +50,13 @@ VK_TOKEN_RE = re.compile(r"access_token=([A-Za-z0-9._-]+)")
 OBF_PROFILES = ["wrap", "rtpopus", "rtpopus2", "rtpopus3"]
 ANDROID_PROFILES = {"rtpopus", "rtpopus2", "rtpopus3"}
 
-def build_ios_link(peer, join_link, obf_key_hex):
+def build_ios_link(peer, join_link, obf_key_hex, server_host, server_port):
     settings = {
         "privateKey": peer["PRIV"],
         "peerPublicKey": peer["PUB"],
         "tunnelAddress": f"{peer['IP']}/24",
         "vkLink": join_link,
-        "peerAddress": "127.0.0.1:9000",
+        "peerAddress": f"{server_host}:{server_port}" if server_host and server_port else "127.0.0.1:9000",
         "useDTLS": True,
         "useWrap": True,
         "wrapKeyHex": obf_key_hex,
@@ -53,6 +70,7 @@ def build_ios_link(peer, join_link, obf_key_hex):
     return f"vkturnproxy://import?data={b64}"
 
 def build_android_link(tag, peer, server_host, server_port, profile, obf_key_hex, call_id):
+    endpoint = f"{server_host}:{server_port}" if server_host and server_port else "127.0.0.1:9000"
     wg_conf = (
         "[Interface]\n"
         f"PrivateKey = {peer['PRIV']}\n"
@@ -63,7 +81,7 @@ def build_android_link(tag, peer, server_host, server_port, profile, obf_key_hex
         f"PublicKey = {peer['PUB']}\n"
         f"PresharedKey = {peer['PSK']}\n"
         "AllowedIPs = 0.0.0.0/0, ::/0\n"
-        "Endpoint = 127.0.0.1:9000\n"
+        f"Endpoint = {endpoint}\n"
         "PersistentKeepalive = 25"
     )
     data = {
@@ -410,7 +428,7 @@ class VKTurn(BaseModule):
                 link = build_android_link(tag, peer, SERVER_HOST, port, profile, obf_key, call_id)
                 platform = "Android"
             else:
-                link = build_ios_link(peer, join_link, obf_key)
+                link = build_ios_link(peer, join_link, obf_key, SERVER_HOST, port)
                 platform = "iOS"
 
             message = (
