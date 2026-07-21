@@ -368,6 +368,10 @@ class VKTurn(BaseModule):
             db["token"] = token
             save_calls_db(db)
             del self._pending[sender_id]
+            try:
+                await event.delete()
+            except Exception:
+                pass
 
             try:
                 resp = await client.start_call()

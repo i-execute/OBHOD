@@ -386,6 +386,10 @@ async def run_full_bot():
         prefix, method = pending
         value = (event.raw_text or "").strip()
         await method(event, value)
+        try:
+            await event.delete()
+        except Exception:
+            pass
 
     @bot.on(events.CallbackQuery(pattern=b"^btn:"))
     async def button_dispatch(event):

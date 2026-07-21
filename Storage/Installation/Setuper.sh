@@ -28,6 +28,10 @@ else
     sudo -u "$OBHOD_USER" git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
+if [ ! -f /etc/sudoers.d/vkturn ]; then
+    bash "$INSTALL_DIR/Storage/VKTurn/setup_root.sh"
+fi
+
 sudo -u "$OBHOD_USER" python3 -m venv "$INSTALL_DIR/venv"
 sudo -u "$OBHOD_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 sudo -u "$OBHOD_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet telethon aiohttp pyyaml gitpython requests
