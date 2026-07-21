@@ -13,7 +13,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-apt update -qq && apt install -y wireguard wireguard-tools qrencode iptables-persistent jq python3
+apt update -qq && apt install -y wireguard wireguard-tools qrencode iptables-persistent jq python3 ufw
 
 mkdir -p /etc/wireguard "$SCRIPTS_DIR"
 cd /etc/wireguard
@@ -40,6 +40,12 @@ chmod 644 /etc/wireguard/peers.json /etc/wireguard/profiles.json /etc/wireguard/
 sysctl -w net.ipv4.ip_forward=1
 echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-wg-forward.conf
 sysctl --system
+
+# Ensure OBHOD user exists before configuring sudoers
+if ! id "$VKTURN_USER" &>/dev/null; then
+    useradd -m -s /bin/bash "$VKTURN_USER"
+fi
+loginctl enable-linger "$VKTURN_USER" || true
 
 wg-quick down wg0 2>/dev/null || true
 wg-quick up wg0
