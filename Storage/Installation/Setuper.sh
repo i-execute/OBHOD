@@ -12,8 +12,6 @@ ENV_FILE="$INSTALL_DIR/.env"
 REPO_URL="https://github.com/i-execute/OBHOD.git"
 SERVICE_NAME="obhod"
 
-apt update -qq
-apt upgrade -qq -y
 apt install -qq -y wireguard wireguard-tools python3 python3-pip python3-venv git curl jq
 
 if ! id "$OBHOD_USER" &>/dev/null; then
