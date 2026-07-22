@@ -1,5 +1,6 @@
 import os
 import json
+import platform
 import subprocess
 
 import aiohttp
@@ -27,6 +28,15 @@ def save_token(token):
 def parse_repo_url(url):
     parts = url.rstrip("/").split("/")
     return parts[-2], parts[-1]
+
+
+def detect_arch():
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "amd64"
+    if machine in ("aarch64", "arm64"):
+        return "arm64"
+    return machine
 
 
 class Updater(BaseModule):
@@ -165,9 +175,11 @@ class Updater(BaseModule):
             return
         release = releases[idx]
 
+        arch = detect_arch()
+        target_name = f"server-linux-{arch}"
         asset_url = None
         for asset in release.get("assets", []):
-            if "linux-amd64" in asset.get("name", ""):
+            if asset.get("name", "") == target_name:
                 asset_url = asset.get("browser_download_url")
                 break
 

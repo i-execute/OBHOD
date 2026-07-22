@@ -63,17 +63,22 @@ iptables -C INPUT -p udp --dport $WG_PORT -j ACCEPT 2>/dev/null || \
     iptables -A INPUT -p udp --dport $WG_PORT -j ACCEPT
 netfilter-persistent save
 
+case "$(uname -m)" in
+    x86_64|amd64) VKTURN_ARCH="amd64" ;;
+    aarch64|arm64) VKTURN_ARCH="arm64" ;;
+    *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+esac
+
 sudo -u "$VKTURN_USER" bash -c "
 cd $VKTURN_HOME
 if [ ! -f server ]; then
-    wget -q -O server https://github.com/samosvalishe/free-turn-proxy/releases/latest/download/server-linux-amd64
+    wget -q -O server https://github.com/samosvalishe/free-turn-proxy/releases/latest/download/server-linux-${VKTURN_ARCH}
     chmod +x server
 fi
 "
 
 SCRIPT_SRC_DIR="$(dirname "$0")"
-cp "$SCRIPT_SRC_DIR/add_peer_ios.sh" "$SCRIPTS_DIR/add_peer_ios.sh"
-cp "$SCRIPT_SRC_DIR/add_peer_android.sh" "$SCRIPTS_DIR/add_peer_android.sh"
+cp "$SCRIPT_SRC_DIR/add_peer.sh" "$SCRIPTS_DIR/add_peer.sh"
 cp "$SCRIPT_SRC_DIR/revoke_peer.sh" "$SCRIPTS_DIR/revoke_peer.sh"
 cp "$SCRIPT_SRC_DIR/ensure_profile.sh" "$SCRIPTS_DIR/ensure_profile.sh"
 cp "$SCRIPT_SRC_DIR/update_core.sh" "$SCRIPTS_DIR/update_core.sh"
@@ -81,7 +86,7 @@ chmod 750 "$SCRIPTS_DIR"/*.sh
 chown root:root "$SCRIPTS_DIR"/*.sh
 
 cat > /etc/sudoers.d/vkturn <<EOF
-$VKTURN_USER ALL=(root) NOPASSWD: $SCRIPTS_DIR/add_peer_ios.sh, $SCRIPTS_DIR/add_peer_android.sh, $SCRIPTS_DIR/revoke_peer.sh, $SCRIPTS_DIR/ensure_profile.sh, $SCRIPTS_DIR/update_core.sh
+$VKTURN_USER ALL=(root) NOPASSWD: $SCRIPTS_DIR/add_peer.sh, $SCRIPTS_DIR/revoke_peer.sh, $SCRIPTS_DIR/ensure_profile.sh, $SCRIPTS_DIR/update_core.sh
 EOF
 chmod 440 /etc/sudoers.d/vkturn
 visudo -c -f /etc/sudoers.d/vkturn

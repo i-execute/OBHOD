@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import uuid
 import base64
 import logging
 import subprocess
@@ -12,8 +13,7 @@ from installer import BaseModule, need_button, need_command, mutal_access
 
 logger = logging.getLogger(__name__)
 
-ADD_SCRIPT_IOS = "/opt/vkturn/add_peer_ios.sh"
-ADD_SCRIPT_ANDROID = "/opt/vkturn/add_peer_android.sh"
+ADD_SCRIPT = "/opt/vkturn/add_peer.sh"
 REVOKE_SCRIPT = "/opt/vkturn/revoke_peer.sh"
 ENSURE_PROFILE_SCRIPT = "/opt/vkturn/ensure_profile.sh"
 PEERS_DB = "/etc/wireguard/peers.json"
@@ -47,56 +47,38 @@ VK_REDIRECT = "https://oauth.vk.com/blank.html"
 VK_DEFAULT_SCOPE = "offline"
 VK_TOKEN_RE = re.compile(r"access_token=([A-Za-z0-9._-]+)")
 
-OBF_PROFILES = ["wrap", "rtpopus", "rtpopus2", "rtpopus3"]
-ANDROID_PROFILES = {"rtpopus", "rtpopus2", "rtpopus3"}
+OBF_PROFILES = ["rtpopus", "rtpopus2", "rtpopus3"]
 
-def build_ios_link(peer, join_link, obf_key_hex, server_host, server_port):
+def build_link(peer, join_link, obf_key_hex, server_host, server_port, profile):
+    """Single unified link format for all platforms (WRAP-A obfuscation profiles)."""
     settings = {
-        "privateKey": peer["PRIV"],
-        "peerPublicKey": peer["PUB"],
-        "tunnelAddress": f"{peer['IP']}/24",
-        "vkLink": join_link,
-        "peerAddress": f"{server_host}:{server_port}" if server_host and server_port else "127.0.0.1:9000",
-        "useDTLS": True,
-        "useWrap": True,
-        "wrapKeyHex": obf_key_hex,
+        "allowedIPs": "0.0.0.0/0",
+        "clientID": str(uuid.uuid4()).upper(),
+        "credPoolCooldownSeconds": 150,
+        "dnsServers": "1.1.1.1",
         "numConnections": 15,
+        "obfProfile": profile,
+        "peerAddress": f"{server_host}:{server_port}" if server_host and server_port else "127.0.0.1:9000",
+        "peerPublicKey": peer["PUB"],
+        "presharedKey": peer.get("PSK", ""),
+        "privateKey": peer["PRIV"],
+        "tunnelAddress": f"{peer['IP']}/24",
+        "turnServerOverride": "",
+        "useDTLS": True,
+        "useSrtp": False,
         "useUDP": True,
-        "useWrapA": False,
+        "useWrap": False,
+        "useWrapA": True,
+        "useWrapS": True,
+        "vkAuth": False,
+        "vkLink": join_link,
+        "wrapAPassword": "",
+        "wrapKeyHex": obf_key_hex,
     }
     payload = {"version": 1, "type": "connection", "settings": settings}
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return f"vkturnproxy://import?data={b64}"
-
-def build_android_link(tag, peer, server_host, server_port, profile, obf_key_hex, call_id):
-    endpoint = f"{server_host}:{server_port}" if server_host and server_port else "127.0.0.1:9000"
-    wg_conf = (
-        "[Interface]\n"
-        f"PrivateKey = {peer['PRIV']}\n"
-        f"Address = {peer['IP']}/32\n"
-        "DNS = 1.1.1.1\n"
-        "MTU = 1280\n"
-        "[Peer]\n"
-        f"PublicKey = {peer['PUB']}\n"
-        f"PresharedKey = {peer['PSK']}\n"
-        "AllowedIPs = 0.0.0.0/0, ::/0\n"
-        f"Endpoint = {endpoint}\n"
-        "PersistentKeepalive = 25"
-    )
-    data = {
-        "v": 1,
-        "provider": "vk",
-        "peer": f"{server_host}:{server_port}",
-        "obf": profile,
-        "key": obf_key_hex,
-        "cid": call_id or "",
-        "name": tag,
-        "wg": wg_conf,
-    }
-    raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
-    b64 = base64.b64encode(raw).decode("ascii")
-    return f"freeturn://{b64}"
 
 def extract_vk_token(text):
     if not text:
@@ -405,17 +387,13 @@ class VKTurn(BaseModule):
         if pending["stage"] == "peer_tag":
             tag = text
             flow = self._flow.get(sender_id, {})
-            profile = flow.get("profile", "wrap")
+            profile = flow.get("profile", OBF_PROFILES[0])
             join_link = flow.get("join_link", "")
-            call_id = flow.get("call_id", "")
-            is_android = profile in ANDROID_PROFILES
 
             del self._pending[sender_id]
 
-            add_script = ADD_SCRIPT_ANDROID if is_android else ADD_SCRIPT_IOS
-
             try:
-                peer = self._run_script(add_script, tag)
+                peer = self._run_script(ADD_SCRIPT, tag)
                 proxy = self._run_script(ENSURE_PROFILE_SCRIPT, profile)
             except RuntimeError as e:
                 await event.reply(str(e))
@@ -424,19 +402,13 @@ class VKTurn(BaseModule):
             port = proxy.get("PORT")
             obf_key = proxy.get("WRAP_KEY") or self._read_wrap_key()
 
-            if is_android:
-                link = build_android_link(tag, peer, SERVER_HOST, port, profile, obf_key, call_id)
-                platform = "Android"
-            else:
-                link = build_ios_link(peer, join_link, obf_key, SERVER_HOST, port)
-                platform = "iOS"
+            link = build_link(peer, join_link, obf_key, SERVER_HOST, port, profile)
 
             message = (
                 f"{self.strings['peer_created']}\n\n"
                 f"tag: {tag}\n"
                 f"ip: {peer['IP']}\n"
-                f"profile: {profile}\n"
-                f"platform: {platform}\n\n"
+                f"profile: {profile}\n\n"
                 f"{link}"
             )
             await event.reply(message)
