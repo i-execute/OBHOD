@@ -13,8 +13,6 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-apt update -qq && apt install -y wireguard wireguard-tools qrencode iptables-persistent jq python3
-
 mkdir -p /etc/wireguard "$SCRIPTS_DIR"
 cd /etc/wireguard
 
