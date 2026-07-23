@@ -223,7 +223,7 @@ async def run_setup_wizard(token, owner_id):
 
 
 async def run_full_bot():
-    from telethon import TelegramClient, events
+    from telethon import TelegramClient, events, Button
     from installer import installer
     from strings import Strings
     from protection import Protection
@@ -340,13 +340,16 @@ async def run_full_bot():
             rows.append([{"text": label, "data": f"btn:{label}"}])
         return s.get("main_menu"), rows
 
+    def btn(text, data):
+        # All inline buttons use the "primary" (blue) style project-wide.
+        return Button.inline(text, (data.encode() if isinstance(data, str) else data), style="primary")
+
     def to_telethon_buttons(rows):
-        from telethon import Button
         out = []
         for row in rows:
             out_row = []
-            for btn in row:
-                out_row.append(Button.inline(btn["text"], data=btn["data"].encode()))
+            for b in row:
+                out_row.append(btn(b["text"], b["data"]))
             out.append(out_row)
         return out
 
@@ -401,14 +404,7 @@ async def run_full_bot():
                 await handler(event)
                 return
 
-    @bot.on(events.CallbackQuery(pattern=b"^menu_modules$"))
-    async def menu_modules_handler(event):
-        if not data_manager.is_privileged(event.sender_id):
-            return
-        lang = data_manager.get_language(event.sender_id)
-        s = Strings(lang)
-        rows = [[{"text": label, "data": f"btn:{label}"}] for label, _ in installer.get_menu_buttons()]
-        await event.edit(s.get("btn_modules"), buttons=to_telethon_buttons(rows))
+    _pending_admin = {}
 
     @bot.on(events.CallbackQuery(pattern=b"^menu_users$"))
     async def menu_users_handler(event):
@@ -418,7 +414,72 @@ async def run_full_bot():
         s = Strings(lang)
         admins = data_manager.get_admins()
         text = f"{s.get('btn_users')}\n\nowner: {OWNER_ID}\nadmins: {', '.join(str(a) for a in admins) or '-'}"
-        await event.edit(text)
+        rows = [
+            [{"text": s.get("btn_add_admin"), "data": "admin_add"}, {"text": s.get("btn_remove_admin"), "data": "admin_remove"}],
+            [{"text": s.get("btn_back"), "data": "menu_main"}],
+        ]
+        await event.edit(text, buttons=to_telethon_buttons(rows))
+
+    @bot.on(events.CallbackQuery(pattern=b"^menu_main$"))
+    async def menu_main_handler(event):
+        if not data_manager.is_privileged(event.sender_id):
+            return
+        text, rows = build_main_menu(event.sender_id)
+        await event.edit(text, buttons=to_telethon_buttons(rows), parse_mode="html")
+
+    @bot.on(events.CallbackQuery(pattern=b"^admin_add$"))
+    async def admin_add_handler(event):
+        if event.sender_id != OWNER_ID:
+            return
+        lang = data_manager.get_language(event.sender_id)
+        s = Strings(lang)
+        _pending_admin[event.sender_id] = "add"
+        rows = [[{"text": s.get("btn_back"), "data": "menu_users"}]]
+        await event.edit(s.get("admin_add_prompt"), buttons=to_telethon_buttons(rows))
+
+    @bot.on(events.CallbackQuery(pattern=b"^admin_remove$"))
+    async def admin_remove_handler(event):
+        if event.sender_id != OWNER_ID:
+            return
+        lang = data_manager.get_language(event.sender_id)
+        s = Strings(lang)
+        _pending_admin[event.sender_id] = "remove"
+        rows = [[{"text": s.get("btn_back"), "data": "menu_users"}]]
+        await event.edit(s.get("admin_remove_prompt"), buttons=to_telethon_buttons(rows))
+
+    @bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+    async def admin_input_handler(event):
+        action = _pending_admin.get(event.sender_id)
+        if not action or event.sender_id != OWNER_ID:
+            return
+        lang = data_manager.get_language(event.sender_id)
+        s = Strings(lang)
+        text = (event.raw_text or "").strip()
+        try:
+            target_id = int(text)
+        except ValueError:
+            await event.reply(s.get("invalid_id"))
+            return
+
+        del _pending_admin[event.sender_id]
+
+        if action == "add":
+            data_manager.add_admin(target_id)
+            await event.reply(s.get("admin_added", user_id=target_id))
+        else:
+            if data_manager.remove_admin(target_id):
+                await event.reply(s.get("admin_removed", user_id=target_id))
+            else:
+                await event.reply(s.get("admin_not_found"))
+
+    @bot.on(events.CallbackQuery(pattern=b"^menu_modules$"))
+    async def menu_modules_handler(event):
+        if not data_manager.is_privileged(event.sender_id):
+            return
+        lang = data_manager.get_language(event.sender_id)
+        s = Strings(lang)
+        rows = [[{"text": label, "data": f"btn:{label}"}] for label, _ in installer.get_menu_buttons()]
+        await event.edit(s.get("btn_modules"), buttons=to_telethon_buttons(rows))
 
     @bot.on(events.NewMessage(pattern=rf"^\{PREFIX}(\w+)(?:\s+(.*))?$"))
     async def command_handler(event):

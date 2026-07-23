@@ -47,4 +47,20 @@ json.dump(db, open(tmp, "w"), indent=2)
 os.replace(tmp, path)
 PYEOF
 
+# Also drop any freeturn (Android) client-id allowlisted under this tag,
+# so revoking a peer revokes both WireGuard and freeturn access.
+CLIENTS_DB="/etc/wireguard/clients.json"
+if [ -f "$CLIENTS_DB" ]; then
+    python3 - "$CLIENTS_DB" "$TAG" <<'PYEOF'
+import json, sys, os
+path, tag = sys.argv[1], sys.argv[2]
+db = json.load(open(path))
+remaining = {cid: info for cid, info in db.items() if info.get("comment") != tag}
+if remaining != db:
+    tmp = path + ".tmp"
+    json.dump(remaining, open(tmp, "w"), indent=2)
+    os.replace(tmp, path)
+PYEOF
+fi
+
 echo "OK: revoked $TAG"

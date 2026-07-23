@@ -34,6 +34,32 @@ sudo -u "$OBHOD_USER" python3 -m venv "$INSTALL_DIR/venv"
 sudo -u "$OBHOD_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 sudo -u "$OBHOD_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet telethon aiohttp pyyaml gitpython requests
 
+UNIT_DIR="/home/$OBHOD_USER/.config/systemd/user"
+OBHOD_UID=$(id -u "$OBHOD_USER")
+export XDG_RUNTIME_DIR="/run/user/$OBHOD_UID"
+
+install_unit() {
+    sudo -u "$OBHOD_USER" mkdir -p "$UNIT_DIR"
+
+    cat > "$UNIT_DIR/${SERVICE_NAME}.service" <<EOF
+[Unit]
+Description=OBHOD
+
+[Service]
+WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=$ENV_FILE
+ExecStart=$INSTALL_DIR/venv/bin/python3 -m BOT
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+    chown -R "$OBHOD_USER:$OBHOD_USER" "$UNIT_DIR"
+    sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user daemon-reload
+}
+
 if [ ! -f "$ENV_FILE" ]; then
     read -rp "BOT_TOKEN: " BOT_TOKEN < /dev/tty
     if [ -z "$BOT_TOKEN" ]; then
@@ -61,6 +87,12 @@ if [ ! -f "$ENV_FILE" ]; then
     chown "$OBHOD_USER:$OBHOD_USER" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
 
+    # Start the service now, with only BOT_TOKEN set: core.py's main() falls
+    # into run_echo_id_mode() in this state, so the bot is actually alive and
+    # able to reply with the sender's id before we ask the user to DM it.
+    install_unit
+    sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user enable --now "$SERVICE_NAME"
+
     echo "connected to @$USERNAME successfully"
     echo "message it now in DM with anything to learn your id"
 
@@ -71,33 +103,14 @@ if [ ! -f "$ENV_FILE" ]; then
     fi
     echo "OWNER_ID=$OWNER_ID" >> "$ENV_FILE"
     chown "$OBHOD_USER:$OBHOD_USER" "$ENV_FILE"
+
+    # OWNER_ID is now set, so a restart moves core.py's main() out of
+    # echo-id mode and into run_setup_wizard() (API_ID/API_HASH collection).
+    sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user restart "$SERVICE_NAME"
+else
+    install_unit
+    sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user enable --now "$SERVICE_NAME"
 fi
-
-UNIT_DIR="/home/$OBHOD_USER/.config/systemd/user"
-sudo -u "$OBHOD_USER" mkdir -p "$UNIT_DIR"
-
-cat > "$UNIT_DIR/${SERVICE_NAME}.service" <<EOF
-[Unit]
-Description=OBHOD
-
-[Service]
-WorkingDirectory=$INSTALL_DIR
-EnvironmentFile=$ENV_FILE
-ExecStart=$INSTALL_DIR/venv/bin/python3 -m BOT
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-
-chown -R "$OBHOD_USER:$OBHOD_USER" "$UNIT_DIR"
-
-OBHOD_UID=$(id -u "$OBHOD_USER")
-export XDG_RUNTIME_DIR="/run/user/$OBHOD_UID"
-
-sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user daemon-reload
-sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user enable --now "$SERVICE_NAME"
 
 echo ""
 echo "SSH setup complete"

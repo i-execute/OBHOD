@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 ADD_SCRIPT = "/opt/vkturn/add_peer.sh"
 REVOKE_SCRIPT = "/opt/vkturn/revoke_peer.sh"
 ENSURE_PROFILE_SCRIPT = "/opt/vkturn/ensure_profile.sh"
+ADD_CLIENT_SCRIPT = "/opt/vkturn/add_client.sh"
 PEERS_DB = "/etc/wireguard/peers.json"
 SERVER_HOST = os.environ.get("VKTURN_SERVER_HOST", "")
 
@@ -48,9 +49,39 @@ VK_DEFAULT_SCOPE = "offline"
 VK_TOKEN_RE = re.compile(r"access_token=([A-Za-z0-9._-]+)")
 
 OBF_PROFILES = ["rtpopus", "rtpopus2", "rtpopus3"]
+PLATFORMS = ["ios", "android"]
+ANDROID_LOCAL_LISTEN = "127.0.0.1:51900"
 
-def build_link(peer, join_link, obf_key_hex, server_host, server_port, profile):
-    """Single unified link format for all platforms (WRAP-A obfuscation profiles)."""
+
+def _btn(text, data):
+    # All inline buttons use the "primary" (blue) style project-wide.
+    return Button.inline(text, data.encode() if isinstance(data, str) else data, style="primary")
+
+
+def build_android_wg_conf(peer):
+    """WireGuard config for Android's separate WireGuard app.
+
+    The freeturn:// CLI only tunnels/obfuscates traffic to a local
+    -listen address; it has no WireGuard fields of its own. The actual WG
+    interface (using this peer's keys) has to be imported into a WireGuard
+    app pointed at that local listen port.
+    """
+    return (
+        "[Interface]\n"
+        f"PrivateKey = {peer['PRIV']}\n"
+        f"Address = {peer['IP']}/24\n"
+        "DNS = 1.1.1.1\n\n"
+        "[Peer]\n"
+        f"PublicKey = {peer['PUB']}\n"
+        f"PresharedKey = {peer.get('PSK', '')}\n"
+        f"Endpoint = {ANDROID_LOCAL_LISTEN}\n"
+        "AllowedIPs = 0.0.0.0/0\n"
+        "PersistentKeepalive = 25\n"
+    )
+
+
+def build_link_ios(peer, join_link, obf_key_hex, server_host, server_port, profile):
+    """vkturnproxy:// import link for the iOS client (WRAP-A obfuscation profiles)."""
     settings = {
         "allowedIPs": "0.0.0.0/0",
         "clientID": str(uuid.uuid4()).upper(),
@@ -79,6 +110,33 @@ def build_link(peer, join_link, obf_key_hex, server_host, server_port, profile):
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return f"vkturnproxy://import?data={b64}"
+
+
+def build_link_android(cid, obf_key_hex, server_host, server_port, profile):
+    """freeturn:// share link for the Android client.
+
+    Per the freeturn:// URI spec, the vk.me/join call link is never embedded
+    in the payload (it's client-unique) - it must be handed to the Android
+    client separately as -link, same as the CLI does. The Android client
+    authenticates via `cid`, which the caller must first register into the
+    server's clients.json allowlist (see add_client.sh / ADD_CLIENT_SCRIPT).
+    """
+    metadata = {
+        "v": 1,
+        "provider": "vk",
+        "peer": f"{server_host}:{server_port}" if server_host and server_port else "127.0.0.1:9000",
+        "transport": "tcp",
+        "mode": "udp",
+        "obf": profile,
+        "key": obf_key_hex,
+        "n": 15,
+        "cid": cid,
+        "dnss": "1.1.1.1",
+        "listen": ANDROID_LOCAL_LISTEN,
+    }
+    raw = json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"freeturn://{b64}"
 
 def extract_vk_token(text):
     if not text:
@@ -159,6 +217,9 @@ class VKTurn(BaseModule):
         "btn_new_call": "Create New Call",
         "btn_old_call": "Use Existing Call",
         "select_profile": "Select obfuscation profile",
+        "select_platform": "Select client platform",
+        "btn_ios": "iOS",
+        "btn_android": "Android",
         "no_calls": "No saved calls, create one first",
         "not_authorized": "VK not authorized, paste your auth URL",
         "auth_prompt": "Open the link, allow access, copy the full redirected URL and send it here",
@@ -176,6 +237,9 @@ class VKTurn(BaseModule):
         "btn_new_call": "Создать новый звонок",
         "btn_old_call": "Использовать старый",
         "select_profile": "Выберите профиль обфускации",
+        "select_platform": "Выберите платформу клиента",
+        "btn_ios": "iOS",
+        "btn_android": "Android",
         "no_calls": "Нет сохраненных звонков, сначала создайте",
         "not_authorized": "VK не авторизован, вставьте ссылку авторизации",
         "auth_prompt": "Откройте ссылку, разрешите доступ, скопируйте полный URL и отправьте сюда",
@@ -193,6 +257,9 @@ class VKTurn(BaseModule):
         "btn_new_call": "创建新通话",
         "btn_old_call": "使用现有通话",
         "select_profile": "选择混淆配置",
+        "select_platform": "选择客户端平台",
+        "btn_ios": "iOS",
+        "btn_android": "Android",
         "no_calls": "没有保存的通话，请先创建",
         "not_authorized": "VK 未授权，请粘贴授权链接",
         "auth_prompt": "打开链接，允许访问，复制完整的重定向网址并发送到这里",
@@ -217,6 +284,7 @@ class VKTurn(BaseModule):
         bot.add_event_handler(self._cb_call_source, events.CallbackQuery(pattern=b"^vkturn:src:"))
         bot.add_event_handler(self._cb_pick_call, events.CallbackQuery(pattern=b"^vkturn:call:"))
         bot.add_event_handler(self._cb_pick_profile, events.CallbackQuery(pattern=b"^vkturn:profile:"))
+        bot.add_event_handler(self._cb_pick_platform, events.CallbackQuery(pattern=b"^vkturn:platform:"))
         bot.add_event_handler(self._cb_list_peers, events.CallbackQuery(pattern=b"^vkturn:list$"))
         bot.add_event_handler(self._cb_revoke, events.CallbackQuery(pattern=b"^vkturn:revoke:"))
         bot.add_event_handler(self._on_text, events.NewMessage(incoming=True, func=lambda e: e.is_private))
@@ -247,9 +315,9 @@ class VKTurn(BaseModule):
         if not self.data_manager.is_privileged(event.sender_id):
             return
         kb = [
-            [Button.inline(self.strings["btn_add_peer"], b"vkturn:add")],
-            [Button.inline(self.strings["btn_list_peers"], b"vkturn:list")],
-            [Button.inline(self.strings["btn_back"], b"menu_modules")],
+            [_btn(self.strings["btn_add_peer"], b"vkturn:add")],
+            [_btn(self.strings["btn_list_peers"], b"vkturn:list")],
+            [_btn(self.strings["btn_back"], b"menu_modules")],
         ]
         await event.edit(self.strings["menu"], buttons=kb)
 
@@ -257,9 +325,9 @@ class VKTurn(BaseModule):
         if not self.data_manager.is_privileged(event.sender_id):
             return
         kb = [
-            [Button.inline(self.strings["btn_new_call"], b"vkturn:src:new")],
-            [Button.inline(self.strings["btn_old_call"], b"vkturn:src:old")],
-            [Button.inline(self.strings["btn_back"], b"vkturn:menu")],
+            [_btn(self.strings["btn_new_call"], b"vkturn:src:new")],
+            [_btn(self.strings["btn_old_call"], b"vkturn:src:old")],
+            [_btn(self.strings["btn_back"], b"vkturn:menu")],
         ]
         await event.edit(self.strings["call_source"], buttons=kb)
 
@@ -276,7 +344,7 @@ class VKTurn(BaseModule):
                 url = build_vk_auth_url()
                 kb = [
                     [Button.url("Open VK Auth", url)],
-                    [Button.inline(self.strings["btn_back"], b"vkturn:menu")],
+                    [_btn(self.strings["btn_back"], b"vkturn:menu")],
                 ]
                 await event.edit(self.strings["auth_prompt"], buttons=kb)
                 return
@@ -301,16 +369,16 @@ class VKTurn(BaseModule):
         db = load_calls_db()
         calls = list(db.get("calls", {}).values())
         if not calls:
-            kb = [[Button.inline(self.strings["btn_back"], b"vkturn:add")]]
+            kb = [[_btn(self.strings["btn_back"], b"vkturn:add")]]
             await event.edit(self.strings["no_calls"], buttons=kb)
             return
 
         self._flow.setdefault(event.sender_id, {})["call_list"] = calls
         kb = [
-            [Button.inline(c["call_id"][:12], f"vkturn:call:{i}".encode())]
+            [_btn(c["call_id"][:12], f"vkturn:call:{i}".encode())]
             for i, c in enumerate(calls)
         ]
-        kb.append([Button.inline(self.strings["btn_back"], b"vkturn:add")])
+        kb.append([_btn(self.strings["btn_back"], b"vkturn:add")])
         await event.edit(self.strings["call_source"], buttons=kb)
 
     async def _cb_pick_call(self, event):
@@ -326,9 +394,9 @@ class VKTurn(BaseModule):
 
     async def _show_profiles(self, event):
         kb = [
-            [Button.inline(p, f"vkturn:profile:{p}".encode())] for p in OBF_PROFILES
+            [_btn(p, f"vkturn:profile:{p}".encode())] for p in OBF_PROFILES
         ]
-        kb.append([Button.inline(self.strings["btn_back"], b"vkturn:menu")])
+        kb.append([_btn(self.strings["btn_back"], b"vkturn:menu")])
         await event.edit(self.strings["select_profile"], buttons=kb)
 
     async def _cb_pick_profile(self, event):
@@ -337,6 +405,25 @@ class VKTurn(BaseModule):
         profile = event.data.decode().split(":")[-1]
         flow = self._flow.get(event.sender_id, {})
         flow["profile"] = profile
+        self._flow[event.sender_id] = flow
+        await self._show_platforms(event)
+
+    async def _show_platforms(self, event):
+        kb = [
+            [_btn(self.strings["btn_ios"], b"vkturn:platform:ios")],
+            [_btn(self.strings["btn_android"], b"vkturn:platform:android")],
+            [_btn(self.strings["btn_back"], b"vkturn:menu")],
+        ]
+        await event.edit(self.strings["select_platform"], buttons=kb)
+
+    async def _cb_pick_platform(self, event):
+        if not self.data_manager.is_privileged(event.sender_id):
+            return
+        platform = event.data.decode().split(":")[-1]
+        if platform not in PLATFORMS:
+            return
+        flow = self._flow.get(event.sender_id, {})
+        flow["platform"] = platform
         self._flow[event.sender_id] = flow
         self._pending[event.sender_id] = {"stage": "peer_tag"}
         await event.edit(self.strings["ask_tag"])
@@ -380,7 +467,7 @@ class VKTurn(BaseModule):
                 save_calls_db(db)
             self._flow[sender_id] = {"call_id": call_id, "join_link": join_link}
 
-            kb = [[Button.inline(p, f"vkturn:profile:{p}".encode())] for p in OBF_PROFILES]
+            kb = [[_btn(p, f"vkturn:profile:{p}".encode())] for p in OBF_PROFILES]
             await event.reply(self.strings["select_profile"], buttons=kb)
             return
 
@@ -388,6 +475,7 @@ class VKTurn(BaseModule):
             tag = text
             flow = self._flow.get(sender_id, {})
             profile = flow.get("profile", OBF_PROFILES[0])
+            platform = flow.get("platform", "ios")
             join_link = flow.get("join_link", "")
 
             del self._pending[sender_id]
@@ -402,14 +490,35 @@ class VKTurn(BaseModule):
             port = proxy.get("PORT")
             obf_key = proxy.get("WRAP_KEY") or self._read_wrap_key()
 
-            link = build_link(peer, join_link, obf_key, SERVER_HOST, port, profile)
+            if platform == "android":
+                cid = str(uuid.uuid4()).upper()
+                try:
+                    self._run_script(ADD_CLIENT_SCRIPT, cid, tag, profile)
+                except RuntimeError as e:
+                    await event.reply(str(e))
+                    return
+
+                link = build_link_android(cid, obf_key, SERVER_HOST, port, profile)
+                wg_conf = build_android_wg_conf(peer)
+                # freeturn:// never embeds the vk call link (it's client-unique)
+                # or WireGuard fields (it's tunnel-only), so both are handed to
+                # the Android client separately.
+                link_line = (
+                    f"{link}\n\n"
+                    f"-link (VK call, use separately):\n{join_link}\n\n"
+                    f"WireGuard config (import into WireGuard app):\n{wg_conf}"
+                )
+            else:
+                link = build_link_ios(peer, join_link, obf_key, SERVER_HOST, port, profile)
+                link_line = link
 
             message = (
                 f"{self.strings['peer_created']}\n\n"
                 f"tag: {tag}\n"
                 f"ip: {peer['IP']}\n"
-                f"profile: {profile}\n\n"
-                f"{link}"
+                f"profile: {profile}\n"
+                f"platform: {platform}\n\n"
+                f"{link_line}"
             )
             await event.reply(message)
 
@@ -432,14 +541,14 @@ class VKTurn(BaseModule):
         with open(PEERS_DB) as f:
             peers = json.load(f)
         if not peers:
-            kb = [[Button.inline(self.strings["btn_back"], b"vkturn:menu")]]
+            kb = [[_btn(self.strings["btn_back"], b"vkturn:menu")]]
             await event.edit(self.strings["no_peers"], buttons=kb)
             return
         kb = [
-            [Button.inline(f"{tag} ({info['ip']})", f"vkturn:revoke:{tag}".encode())]
+            [_btn(f"{tag} ({info['ip']})", f"vkturn:revoke:{tag}".encode())]
             for tag, info in peers.items()
         ]
-        kb.append([Button.inline(self.strings["btn_back"], b"vkturn:menu")])
+        kb.append([_btn(self.strings["btn_back"], b"vkturn:menu")])
         await event.edit(self.strings["btn_list_peers"], buttons=kb)
 
     async def _cb_revoke(self, event):

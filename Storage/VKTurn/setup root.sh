@@ -32,8 +32,9 @@ fi
 
 [ -f /etc/wireguard/peers.json ] || echo '{}' > /etc/wireguard/peers.json
 [ -f /etc/wireguard/profiles.json ] || echo '{}' > /etc/wireguard/profiles.json
+[ -f /etc/wireguard/clients.json ] || echo '{}' > /etc/wireguard/clients.json
 [ -f /etc/wireguard/wrap.key ] || openssl rand -hex 32 > /etc/wireguard/wrap.key
-chmod 644 /etc/wireguard/peers.json /etc/wireguard/profiles.json /etc/wireguard/wrap.key
+chmod 644 /etc/wireguard/peers.json /etc/wireguard/profiles.json /etc/wireguard/clients.json /etc/wireguard/wrap.key
 
 sysctl -w net.ipv4.ip_forward=1
 echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-wg-forward.conf
@@ -80,11 +81,12 @@ cp "$SCRIPT_SRC_DIR/add_peer.sh" "$SCRIPTS_DIR/add_peer.sh"
 cp "$SCRIPT_SRC_DIR/revoke_peer.sh" "$SCRIPTS_DIR/revoke_peer.sh"
 cp "$SCRIPT_SRC_DIR/ensure_profile.sh" "$SCRIPTS_DIR/ensure_profile.sh"
 cp "$SCRIPT_SRC_DIR/update_core.sh" "$SCRIPTS_DIR/update_core.sh"
+cp "$SCRIPT_SRC_DIR/add_client.sh" "$SCRIPTS_DIR/add_client.sh"
 chmod 750 "$SCRIPTS_DIR"/*.sh
 chown root:root "$SCRIPTS_DIR"/*.sh
 
 cat > /etc/sudoers.d/vkturn <<EOF
-$VKTURN_USER ALL=(root) NOPASSWD: $SCRIPTS_DIR/add_peer.sh, $SCRIPTS_DIR/revoke_peer.sh, $SCRIPTS_DIR/ensure_profile.sh, $SCRIPTS_DIR/update_core.sh
+$VKTURN_USER ALL=(root) NOPASSWD: $SCRIPTS_DIR/add_peer.sh, $SCRIPTS_DIR/revoke_peer.sh, $SCRIPTS_DIR/ensure_profile.sh, $SCRIPTS_DIR/update_core.sh, $SCRIPTS_DIR/add_client.sh
 EOF
 chmod 440 /etc/sudoers.d/vkturn
 visudo -c -f /etc/sudoers.d/vkturn
