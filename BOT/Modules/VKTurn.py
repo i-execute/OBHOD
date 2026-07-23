@@ -13,7 +13,8 @@ from installer import BaseModule, need_button, need_command, mutal_access
 
 logger = logging.getLogger(__name__)
 
-ADD_SCRIPT = "/opt/vkturn/add_peer.sh"
+ADD_PEER_IOS_SCRIPT = "/opt/vkturn/add_peer_ios.sh"
+ADD_PEER_ANDROID_SCRIPT = "/opt/vkturn/add_peer_android.sh"
 REVOKE_SCRIPT = "/opt/vkturn/revoke_peer.sh"
 ENSURE_PROFILE_SCRIPT = "/opt/vkturn/ensure_profile.sh"
 ADD_CLIENT_SCRIPT = "/opt/vkturn/add_client.sh"
@@ -53,9 +54,9 @@ PLATFORMS = ["ios", "android"]
 ANDROID_LOCAL_LISTEN = "127.0.0.1:51900"
 
 
-def _btn(text, data):
-    # All inline buttons use the "primary" (blue) style project-wide.
-    return Button.inline(text, data.encode() if isinstance(data, str) else data, style="primary")
+def _btn(text, data, style="primary"):
+    # Buttons can be styled: primary (blue), danger (red), success (green)
+    return Button.inline(text, data.encode() if isinstance(data, str) else data, style=style)
 
 
 def build_android_wg_conf(peer):
@@ -147,12 +148,11 @@ def extract_vk_token(text):
 def build_vk_auth_url():
     return (
         "https://oauth.vk.com/authorize"
-        f"?client_id={VK_DEFAULT_APP_ID}"
+        f"?client_id=2685278"
         f"&display=page"
-        f"&redirect_uri={VK_REDIRECT}"
-        f"&scope={VK_DEFAULT_SCOPE}"
+        f"&redirect_uri=https://oauth.vk.com/blank.html"
         f"&response_type=token"
-        f"&v={VK_API_VERSION}"
+        f"&v=5.199"
     )
 
 def load_calls_db():
@@ -315,9 +315,9 @@ class VKTurn(BaseModule):
         if not self.data_manager.is_privileged(event.sender_id):
             return
         kb = [
-            [_btn(self.strings["btn_add_peer"], b"vkturn:add")],
-            [_btn(self.strings["btn_list_peers"], b"vkturn:list")],
-            [_btn(self.strings["btn_back"], b"menu_modules")],
+            [_btn(self.strings["btn_add_peer"], b"vkturn:add", style="primary")],
+            [_btn(self.strings["btn_list_peers"], b"vkturn:list", style="primary")],
+            [_btn(self.strings["btn_back"], b"menu_modules", style="danger")],
         ]
         await event.edit(self.strings["menu"], buttons=kb)
 
@@ -325,9 +325,9 @@ class VKTurn(BaseModule):
         if not self.data_manager.is_privileged(event.sender_id):
             return
         kb = [
-            [_btn(self.strings["btn_new_call"], b"vkturn:src:new")],
-            [_btn(self.strings["btn_old_call"], b"vkturn:src:old")],
-            [_btn(self.strings["btn_back"], b"vkturn:menu")],
+            [_btn(self.strings["btn_new_call"], b"vkturn:src:new", style="primary")],
+            [_btn(self.strings["btn_old_call"], b"vkturn:src:old", style="primary")],
+            [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
         ]
         await event.edit(self.strings["call_source"], buttons=kb)
 
@@ -344,7 +344,7 @@ class VKTurn(BaseModule):
                 url = build_vk_auth_url()
                 kb = [
                     [Button.url("Open VK Auth", url)],
-                    [_btn(self.strings["btn_back"], b"vkturn:menu")],
+                    [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
                 ]
                 await event.edit(self.strings["auth_prompt"], buttons=kb)
                 return
@@ -369,16 +369,16 @@ class VKTurn(BaseModule):
         db = load_calls_db()
         calls = list(db.get("calls", {}).values())
         if not calls:
-            kb = [[_btn(self.strings["btn_back"], b"vkturn:add")]]
+            kb = [[_btn(self.strings["btn_back"], b"vkturn:add", style="danger")]]
             await event.edit(self.strings["no_calls"], buttons=kb)
             return
 
         self._flow.setdefault(event.sender_id, {})["call_list"] = calls
         kb = [
-            [_btn(c["call_id"][:12], f"vkturn:call:{i}".encode())]
+            [_btn(c["call_id"][:12], f"vkturn:call:{i}".encode(), style="primary")]
             for i, c in enumerate(calls)
         ]
-        kb.append([_btn(self.strings["btn_back"], b"vkturn:add")])
+        kb.append([_btn(self.strings["btn_back"], b"vkturn:add", style="danger")])
         await event.edit(self.strings["call_source"], buttons=kb)
 
     async def _cb_pick_call(self, event):
@@ -394,9 +394,9 @@ class VKTurn(BaseModule):
 
     async def _show_profiles(self, event):
         kb = [
-            [_btn(p, f"vkturn:profile:{p}".encode())] for p in OBF_PROFILES
+            [_btn(p, f"vkturn:profile:{p}".encode(), style="primary")] for p in OBF_PROFILES
         ]
-        kb.append([_btn(self.strings["btn_back"], b"vkturn:menu")])
+        kb.append([_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")])
         await event.edit(self.strings["select_profile"], buttons=kb)
 
     async def _cb_pick_profile(self, event):
@@ -410,9 +410,9 @@ class VKTurn(BaseModule):
 
     async def _show_platforms(self, event):
         kb = [
-            [_btn(self.strings["btn_ios"], b"vkturn:platform:ios")],
-            [_btn(self.strings["btn_android"], b"vkturn:platform:android")],
-            [_btn(self.strings["btn_back"], b"vkturn:menu")],
+            [_btn(self.strings["btn_ios"], b"vkturn:platform:ios", style="primary")],
+            [_btn(self.strings["btn_android"], b"vkturn:platform:android", style="primary")],
+            [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
         ]
         await event.edit(self.strings["select_platform"], buttons=kb)
 
@@ -467,7 +467,7 @@ class VKTurn(BaseModule):
                 save_calls_db(db)
             self._flow[sender_id] = {"call_id": call_id, "join_link": join_link}
 
-            kb = [[_btn(p, f"vkturn:profile:{p}".encode())] for p in OBF_PROFILES]
+            kb = [[_btn(p, f"vkturn:profile:{p}".encode(), style="primary")] for p in OBF_PROFILES]
             await event.reply(self.strings["select_profile"], buttons=kb)
             return
 
@@ -481,7 +481,10 @@ class VKTurn(BaseModule):
             del self._pending[sender_id]
 
             try:
-                peer = self._run_script(ADD_SCRIPT, tag)
+                if platform == "ios":
+                    peer = self._run_script(ADD_PEER_IOS_SCRIPT, tag)
+                else:  # android
+                    peer = self._run_script(ADD_PEER_ANDROID_SCRIPT, tag)
                 proxy = self._run_script(ENSURE_PROFILE_SCRIPT, profile)
             except RuntimeError as e:
                 await event.reply(str(e))
@@ -492,11 +495,6 @@ class VKTurn(BaseModule):
 
             if platform == "android":
                 cid = str(uuid.uuid4()).upper()
-                try:
-                    self._run_script(ADD_CLIENT_SCRIPT, cid, tag, profile)
-                except RuntimeError as e:
-                    await event.reply(str(e))
-                    return
 
                 link = build_link_android(cid, obf_key, SERVER_HOST, port, profile)
                 wg_conf = build_android_wg_conf(peer)
@@ -541,14 +539,14 @@ class VKTurn(BaseModule):
         with open(PEERS_DB) as f:
             peers = json.load(f)
         if not peers:
-            kb = [[_btn(self.strings["btn_back"], b"vkturn:menu")]]
+            kb = [[_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")]]
             await event.edit(self.strings["no_peers"], buttons=kb)
             return
         kb = [
-            [_btn(f"{tag} ({info['ip']})", f"vkturn:revoke:{tag}".encode())]
+            [_btn(f"{tag} ({info['ip']})", f"vkturn:revoke:{tag}".encode(), style="danger")]
             for tag, info in peers.items()
         ]
-        kb.append([_btn(self.strings["btn_back"], b"vkturn:menu")])
+        kb.append([_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")])
         await event.edit(self.strings["btn_list_peers"], buttons=kb)
 
     async def _cb_revoke(self, event):
