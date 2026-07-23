@@ -13,15 +13,15 @@ if [ -z "$TAG" ]; then
     exit 1
 fi
 
-[ -f "$PEERS_DB" ] || sudo -E bash -c "echo '{}' > '$PEERS_DB'"
-[ -f "$CLIENTS_DB" ] || sudo -E bash -c "echo '{}' > '$CLIENTS_DB'"
+[ -f "$PEERS_DB" ] || echo '{}' > "$PEERS_DB"
+[ -f "$CLIENTS_DB" ] || echo '{}' > "$CLIENTS_DB"
 
-if sudo -E jq -e --arg t "$TAG" 'has($t)' "$PEERS_DB" >/dev/null 2>&1; then
+if jq -e --arg t "$TAG" 'has($t)' "$PEERS_DB" >/dev/null 2>&1; then
     echo "ERROR: tag '$TAG' already exists, use revoke_peer.sh first" >&2
     exit 2
 fi
 
-NEXT_IP=$(sudo -E python3 - "$PEERS_DB" <<'PYEOF'
+NEXT_IP=$(python3 - "$PEERS_DB" <<'PYEOF'
 import json, sys
 db = json.load(open(sys.argv[1]))
 used = {int(v["ip"].split(".")[-1]) for v in db.values()}
@@ -38,20 +38,20 @@ CLIENT_PRIV=$(wg genkey)
 CLIENT_PUB=$(echo "$CLIENT_PRIV" | wg pubkey)
 PRESHARED_KEY=$(wg genpsk)
 CLIENT_IP="${WG_SUBNET_BASE}.${NEXT_IP}"
-SERVER_PUB=$(sudo -E cat "$SERVER_PUB_FILE")
+SERVER_PUB=$(cat "$SERVER_PUB_FILE")
 
-sudo -E wg set "$WG_IFACE" peer "$CLIENT_PUB" preshared-key <(echo "$PRESHARED_KEY") allowed-ips "${CLIENT_IP}/32"
+wg set "$WG_IFACE" peer "$CLIENT_PUB" preshared-key <(echo "$PRESHARED_KEY") allowed-ips "${CLIENT_IP}/32"
 
-sudo -E bash -c "cat >> '/etc/wireguard/${WG_IFACE}.conf' <<EOF
+cat >> "/etc/wireguard/${WG_IFACE}.conf" <<EOF
 
 [Peer]
 # tag=$TAG
 PublicKey = $CLIENT_PUB
 PresharedKey = $PRESHARED_KEY
 AllowedIPs = ${CLIENT_IP}/32
-EOF"
+EOF
 
-sudo -E python3 - "$PEERS_DB" "$TAG" "$CLIENT_IP" "$CLIENT_PUB" "$PRESHARED_KEY" <<'PYEOF'
+python3 - "$PEERS_DB" "$TAG" "$CLIENT_IP" "$CLIENT_PUB" "$PRESHARED_KEY" <<'PYEOF'
 import json, sys, os
 path, tag, ip, pub, psk = sys.argv[1:6]
 db = json.load(open(path))
