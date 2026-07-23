@@ -17,13 +17,9 @@ apt install -qq -y wireguard wireguard-tools python3 python3-pip python3-venv gi
 if ! id "$OBHOD_USER" &>/dev/null; then
     useradd -m -s /bin/bash "$OBHOD_USER"
 fi
-usermod -aG sudo "$OBHOD_USER" || true
 loginctl enable-linger "$OBHOD_USER" || true
 
 if [ -d "$INSTALL_DIR/.git" ]; then
-    # git pull only applies new commits; if HEAD is already up to date it
-    # won't restore tracked files that went missing from a prior interrupted
-    # install. fetch + hard reset always re-checks-out the full tree.
     sudo -u "$OBHOD_USER" bash -c "cd $INSTALL_DIR && git fetch origin main && git reset --hard origin/main"
 else
     sudo -u "$OBHOD_USER" git clone "$REPO_URL" "$INSTALL_DIR"
@@ -90,9 +86,6 @@ if [ ! -f "$ENV_FILE" ]; then
     chown "$OBHOD_USER:$OBHOD_USER" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
 
-    # Start the service now, with only BOT_TOKEN set: core.py's main() falls
-    # into run_echo_id_mode() in this state, so the bot is actually alive and
-    # able to reply with the sender's id before we ask the user to DM it.
     install_unit
     sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user enable --now "$SERVICE_NAME"
 
@@ -107,8 +100,6 @@ if [ ! -f "$ENV_FILE" ]; then
     echo "OWNER_ID=$OWNER_ID" >> "$ENV_FILE"
     chown "$OBHOD_USER:$OBHOD_USER" "$ENV_FILE"
 
-    # OWNER_ID is now set, so a restart moves core.py's main() out of
-    # echo-id mode and into run_setup_wizard() (API_ID/API_HASH collection).
     sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user restart "$SERVICE_NAME"
 else
     install_unit
