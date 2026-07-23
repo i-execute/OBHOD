@@ -70,6 +70,12 @@ iptables -C INPUT -p tcp --dport $PORT -j ACCEPT 2>/dev/null || \
     iptables -A INPUT -p tcp --dport $PORT -j ACCEPT
 iptables -C INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null || \
     iptables -A INPUT -p udp --dport $PORT -j ACCEPT
+if ! command -v netfilter-persistent &>/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    echo iptables-persistent iptables-persistent/autosave_v4 boolean false | debconf-set-selections
+    echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
+    apt-get install -qq -y iptables-persistent
+fi
 netfilter-persistent save
 
 python3 - "$PROFILES_DB" "$PROFILE" "$PORT" <<'PYEOF'

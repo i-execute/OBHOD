@@ -16,6 +16,16 @@ fi
 mkdir -p /etc/wireguard "$SCRIPTS_DIR"
 cd /etc/wireguard
 
+ensure_netfilter_persistent() {
+    if ! command -v netfilter-persistent &>/dev/null; then
+        export DEBIAN_FRONTEND=noninteractive
+        echo iptables-persistent iptables-persistent/autosave_v4 boolean false | debconf-set-selections
+        echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
+        apt-get install -qq -y iptables-persistent
+    fi
+    netfilter-persistent save
+}
+
 if [ ! -f server_private.key ]; then
     wg genkey | tee server_private.key | wg pubkey > server_public.key
     chmod 600 server_private.key
@@ -55,12 +65,12 @@ iptables -t nat -C POSTROUTING -s "$WG_SUBNET" -o "$EXT_IFACE" -j MASQUERADE 2>/
 iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg0 -j ACCEPT
 iptables -C FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
     iptables -A FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-netfilter-persistent save
+ensure_netfilter_persistent
 
 # Allow WireGuard port via iptables (ufw conflicts with iptables-persistent)
 iptables -C INPUT -p udp --dport $WG_PORT -j ACCEPT 2>/dev/null || \
     iptables -A INPUT -p udp --dport $WG_PORT -j ACCEPT
-netfilter-persistent save
+ensure_netfilter_persistent
 
 case "$(uname -m)" in
     x86_64|amd64) VKTURN_ARCH="amd64" ;;
