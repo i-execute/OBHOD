@@ -47,7 +47,7 @@ VK_API_BASE = "https://api.vk.ru/method"
 VK_DEFAULT_APP_ID = 3697615
 VK_REDIRECT = "https://oauth.vk.com/blank.html"
 VK_DEFAULT_SCOPE = "offline"
-VK_TOKEN_RE = re.compile(r"access_token=([A-Za-z0-9._-]+)")
+VK_TOKEN_RE = re.compile(r"access_token=([A-Za-z0-9._=-]+)")
 
 OBF_PROFILES = ["rtpopus", "rtpopus2", "rtpopus3"]
 PLATFORMS = ["ios", "android"]
@@ -216,6 +216,7 @@ class VKTurn(BaseModule):
         "call_source": "Select call source",
         "btn_new_call": "Create New Call",
         "btn_old_call": "Use Existing Call",
+        "btn_reauth": "Re-authorize VK",
         "select_profile": "Select obfuscation profile",
         "select_platform": "Select client platform",
         "btn_ios": "iOS",
@@ -223,6 +224,8 @@ class VKTurn(BaseModule):
         "no_calls": "No saved calls, create one first",
         "not_authorized": "VK not authorized, paste your auth URL",
         "auth_prompt": "Open the link, allow access, copy the full redirected URL and send it here",
+        "no_token_in_text": "Didn't find access_token= in that message. Paste the FULL redirected URL (the address bar content after you tapped Allow), not just a screenshot or partial link.",
+        "token_check_failed": "Found a token in that text, but VK rejected it (whoami call failed) — it's likely expired, revoked, or malformed. Get a fresh link and paste it again.",
         "ask_tag": "Send a tag for this peer",
         "peer_created": "Peer created",
         "no_peers": "No active peers",
@@ -236,6 +239,7 @@ class VKTurn(BaseModule):
         "call_source": "Выберите источник звонка",
         "btn_new_call": "Создать новый звонок",
         "btn_old_call": "Использовать старый",
+        "btn_reauth": "Переавторизовать VK",
         "select_profile": "Выберите профиль обфускации",
         "select_platform": "Выберите платформу клиента",
         "btn_ios": "iOS",
@@ -243,6 +247,8 @@ class VKTurn(BaseModule):
         "no_calls": "Нет сохраненных звонков, сначала создайте",
         "not_authorized": "VK не авторизован, вставьте ссылку авторизации",
         "auth_prompt": "Откройте ссылку, разрешите доступ, скопируйте полный URL и отправьте сюда",
+        "no_token_in_text": "Не нашёл access_token= в этом сообщении. Пришли ПОЛНЫЙ redirect URL из адресной строки (после нажатия Allow), а не скриншот или обрезанную ссылку.",
+        "token_check_failed": "Токен в тексте нашёлся, но VK его не принял (whoami не отработал) — похоже истёк, отозван или битый. Возьми свежую ссылку и пришли заново.",
         "ask_tag": "Отправьте тег для этого пира",
         "peer_created": "Пир создан",
         "no_peers": "Нет активных пиров",
@@ -256,6 +262,7 @@ class VKTurn(BaseModule):
         "call_source": "选择通话来源",
         "btn_new_call": "创建新通话",
         "btn_old_call": "使用现有通话",
+        "btn_reauth": "重新授权 VK",
         "select_profile": "选择混淆配置",
         "select_platform": "选择客户端平台",
         "btn_ios": "iOS",
@@ -263,6 +270,8 @@ class VKTurn(BaseModule):
         "no_calls": "没有保存的通话，请先创建",
         "not_authorized": "VK 未授权，请粘贴授权链接",
         "auth_prompt": "打开链接，允许访问，复制完整的重定向网址并发送到这里",
+        "no_token_in_text": "在消息中没有找到 access_token=。请粘贴完整的重定向 URL（点击允许后地址栏中的内容），而不是截图或部分链接。",
+        "token_check_failed": "文本中找到了 token，但 VK 拒绝了它（whoami 调用失败）——可能已过期、被撤销或格式错误。请获取新链接并重新发送。",
         "ask_tag": "发送此节点的标签",
         "peer_created": "节点已创建",
         "no_peers": "没有活动节点",
@@ -327,6 +336,7 @@ class VKTurn(BaseModule):
         kb = [
             [_btn(self.strings["btn_new_call"], b"vkturn:src:new", style="primary")],
             [_btn(self.strings["btn_old_call"], b"vkturn:src:old", style="primary")],
+            [_btn(self.strings["btn_reauth"], b"vkturn:src:reauth", style="danger")],
             [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
         ]
         await event.edit(self.strings["call_source"], buttons=kb)
@@ -335,6 +345,16 @@ class VKTurn(BaseModule):
         if not self.data_manager.is_privileged(event.sender_id):
             return
         source = event.data.decode().split(":")[-1]
+
+        if source == "reauth":
+            self._pending[event.sender_id] = {"stage": "vk_auth"}
+            url = build_vk_auth_url()
+            kb = [
+                [Button.url("Open VK Auth", url)],
+                [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
+            ]
+            await event.edit(self.strings["auth_prompt"], buttons=kb)
+            return
 
         if source == "new":
             db = load_calls_db()
@@ -441,10 +461,16 @@ class VKTurn(BaseModule):
         if pending["stage"] == "vk_auth":
             token = extract_vk_token(text)
             if not token:
+                await event.reply(self.strings["no_token_in_text"])
                 return
             client = VKClient(token)
-            uid = await client.whoami()
+            try:
+                uid = await client.whoami()
+            except VKAPIError as e:
+                await event.reply(f"{self.strings['token_check_failed']}\n\n{e.error}")
+                return
             if not uid:
+                await event.reply(self.strings["token_check_failed"])
                 return
             db = load_calls_db()
             db["token"] = token
