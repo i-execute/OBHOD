@@ -95,8 +95,9 @@ cp "$SCRIPT_SRC_DIR/add_peer_android.sh" "$SCRIPTS_DIR/add_peer_android.sh"
 chmod 750 "$SCRIPTS_DIR"/*.sh
 chown root:root "$SCRIPTS_DIR"/*.sh
 
+# NOTE: names below must match the scripts actually copied into $SCRIPTS_DIR above
 cat > /etc/sudoers.d/vkturn <<EOF
-$VKTURN_USER ALL=(root) NOPASSWD: $SCRIPTS_DIR/add_peer.sh, $SCRIPTS_DIR/revoke_peer.sh, $SCRIPTS_DIR/ensure_profile.sh, $SCRIPTS_DIR/update_core.sh, $SCRIPTS_DIR/add_client.sh
+$VKTURN_USER ALL=(root) NOPASSWD: $SCRIPTS_DIR/add_peer_ios.sh, $SCRIPTS_DIR/add_peer_android.sh, $SCRIPTS_DIR/revoke_peer.sh, $SCRIPTS_DIR/ensure_profile.sh, $SCRIPTS_DIR/update_core.sh
 EOF
 chmod 440 /etc/sudoers.d/vkturn
 visudo -c -f /etc/sudoers.d/vkturn
