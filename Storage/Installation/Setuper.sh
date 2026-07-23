@@ -29,6 +29,38 @@ if [ ! -f /etc/sudoers.d/vkturn ]; then
     bash "$INSTALL_DIR/Storage/VKTurn/setup_root.sh"
 fi
 
+# --- sudo-rs compatibility check ---
+# Older/classic sudo accepts a single NOPASSWD line with a comma-separated
+# command list. sudo-rs (the newer Rust reimplementation some Ubuntu images
+# now ship) has been observed to fail to match comma-separated command
+# lists on one line, silently denying every listed command. Probe it here:
+# if OBHOD can't run the first vkturn script NOPASSWD, rewrite the sudoers
+# file with one command per line, which both implementations accept.
+if [ -f /etc/sudoers.d/vkturn ]; then
+    ALLOWED=$(sudo -u "$OBHOD_USER" sudo -n -l 2>/dev/null | grep -c "/opt/vkturn/add_peer_ios.sh" || true)
+    if [ "$ALLOWED" -eq 0 ]; then
+        echo "detected sudo-rs (or similar) not matching comma-separated NOPASSWD list"
+        echo "rewriting /etc/sudoers.d/vkturn with one command per line..."
+        cat > /etc/sudoers.d/vkturn <<EOF
+$OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/add_peer_ios.sh
+$OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/add_peer_android.sh
+$OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/revoke_peer.sh
+$OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/ensure_profile.sh
+$OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/update_core.sh
+EOF
+        chmod 440 /etc/sudoers.d/vkturn
+        visudo -c -f /etc/sudoers.d/vkturn
+        if sudo -u "$OBHOD_USER" sudo -n -l 2>/dev/null | grep -q "/opt/vkturn/add_peer_ios.sh"; then
+            echo "sudoers fixed: OBHOD can now run vkturn scripts NOPASSWD"
+        else
+            echo "WARNING: sudoers still not matching after rewrite - check manually with:"
+            echo "  sudo -u $OBHOD_USER sudo -n -l"
+        fi
+    else
+        echo "sudoers OK: OBHOD already has NOPASSWD access to vkturn scripts"
+    fi
+fi
+
 sudo -u "$OBHOD_USER" python3 -m venv "$INSTALL_DIR/venv"
 sudo -u "$OBHOD_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 sudo -u "$OBHOD_USER" "$INSTALL_DIR/venv/bin/pip" install --quiet telethon aiohttp pyyaml gitpython requests
