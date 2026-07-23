@@ -87,11 +87,11 @@ fi
 "
 
 SCRIPT_SRC_DIR="$(dirname "$0")"
-cp "$SCRIPT_SRC_DIR/add_peer.sh" "$SCRIPTS_DIR/add_peer.sh"
+cp "$SCRIPT_SRC_DIR/add_peer_ios.sh" "$SCRIPTS_DIR/add_peer_ios.sh"
 cp "$SCRIPT_SRC_DIR/revoke_peer.sh" "$SCRIPTS_DIR/revoke_peer.sh"
 cp "$SCRIPT_SRC_DIR/ensure_profile.sh" "$SCRIPTS_DIR/ensure_profile.sh"
 cp "$SCRIPT_SRC_DIR/update_core.sh" "$SCRIPTS_DIR/update_core.sh"
-cp "$SCRIPT_SRC_DIR/add_client.sh" "$SCRIPTS_DIR/add_client.sh"
+cp "$SCRIPT_SRC_DIR/add_peer_android.sh" "$SCRIPTS_DIR/add_peer_android.sh"
 chmod 750 "$SCRIPTS_DIR"/*.sh
 chown root:root "$SCRIPTS_DIR"/*.sh
 
