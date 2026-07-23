@@ -21,7 +21,10 @@ usermod -aG sudo "$OBHOD_USER" || true
 loginctl enable-linger "$OBHOD_USER" || true
 
 if [ -d "$INSTALL_DIR/.git" ]; then
-    sudo -u "$OBHOD_USER" bash -c "cd $INSTALL_DIR && git pull origin main"
+    # git pull only applies new commits; if HEAD is already up to date it
+    # won't restore tracked files that went missing from a prior interrupted
+    # install. fetch + hard reset always re-checks-out the full tree.
+    sudo -u "$OBHOD_USER" bash -c "cd $INSTALL_DIR && git fetch origin main && git reset --hard origin/main"
 else
     sudo -u "$OBHOD_USER" git clone "$REPO_URL" "$INSTALL_DIR"
 fi
