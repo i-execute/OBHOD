@@ -55,7 +55,10 @@ class BotAPI:
         self.offset = 0
 
     async def start(self):
-        self.session = aiohttp.ClientSession()
+        import aiohttp
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=60, connect=10)
+        )
 
     async def close(self):
         if self.session:
@@ -109,14 +112,41 @@ async def run_echo_id_mode(token):
     api = BotAPI(token)
     await api.start()
     logger.info("Bootstrap: echo-id mode active")
+
+    # Drop any updates that piled up while the bot was offline so the
+    # installer only sees a reply to *their* /start, not backlog noise.
+    # A single getUpdates with offset=-1 acknowledges everything pending.
+    try:
+        stale = await api.call("getUpdates", offset=-1, timeout=0)
+        if stale.get("result"):
+            logger.info(f"Dropped {len(stale['result'])} stale update(s)")
+            api.offset = stale["result"][-1]["update_id"] + 1
+    except Exception as e:
+        logger.warning(f"Could not flush stale updates: {e}")
+
     try:
         while True:
-            updates = await api.get_updates()
+            try:
+                updates = await api.get_updates()
+            except Exception as e:
+                logger.warning(f"getUpdates error in echo-id mode: {e}")
+                await asyncio.sleep(3)
+                continue
+
             for u in updates:
                 msg = u.get("message")
-                if msg and "from" in msg:
-                    sender_id = msg["from"]["id"]
-                    await api.send_message(msg["chat"]["id"], str(sender_id), parse_mode=None)
+                if not msg:
+                    continue
+                chat_id = msg.get("chat", {}).get("id")
+                sender = msg.get("from") or msg.get("sender_chat") or {}
+                sender_id = sender.get("id")
+                if chat_id is None or sender_id is None:
+                    continue
+                logger.info(f"echo-id: replying to chat {chat_id} with id {sender_id}")
+                try:
+                    await api.send_message(chat_id, str(sender_id), parse_mode=None)
+                except Exception as e:
+                    logger.error(f"echo-id: send_message failed: {e}")
     finally:
         await api.close()
 

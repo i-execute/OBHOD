@@ -113,28 +113,37 @@ def build_link_ios(peer, join_link, obf_key_hex, server_host, server_port, profi
     return f"vkturnproxy://import?data={b64}"
 
 
-def build_link_android(cid, obf_key_hex, server_host, server_port, profile):
+def build_link_android(cid, obf_key_hex, server_host, server_port, profile, wg_conf, name=""):
     """freeturn:// share link for the Android client.
 
-    Per the freeturn:// URI spec, the vk.me/join call link is never embedded
-    in the payload (it's client-unique) - it must be handed to the Android
-    client separately as -link, same as the CLI does. The Android client
-    authenticates via `cid`, which the caller must first register into the
-    server's clients.json allowlist (see add_client.sh / ADD_CLIENT_SCRIPT).
+    Per the freeturn:// URI spec (docs/uri.md) and the Android parser
+    (FreeturnLink.kt), the link carries ALL connection parameters in one
+    base64url-encoded JSON payload.  The vk.me/join call link (-link) is
+    NOT included — it's client-unique and must be supplied separately on
+    the CLI / share screen.
+
+    The WireGuard config can be embedded directly in the `wg` field so
+    the Android app imports it atomically — no separate WG app import
+    step needed.
     """
+    peer = f"{server_host}:{server_port}" if server_host and server_port else ""
     metadata = {
         "v": 1,
         "provider": "vk",
-        "peer": f"{server_host}:{server_port}" if server_host and server_port else "127.0.0.1:9000",
+        "peer": peer,
         "transport": "tcp",
         "mode": "udp",
         "obf": profile,
         "key": obf_key_hex,
         "n": 15,
         "cid": cid,
-        "dnss": "1.1.1.1",
         "listen": ANDROID_LOCAL_LISTEN,
+        "dnss": "1.1.1.1",
     }
+    if name:
+        metadata["name"] = name
+    if wg_conf:
+        metadata["wg"] = wg_conf
     raw = json.dumps(metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
     b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return f"freeturn://{b64}"
@@ -522,15 +531,22 @@ class VKTurn(BaseModule):
             if platform == "android":
                 cid = str(uuid.uuid4()).upper()
 
-                link = build_link_android(cid, obf_key, SERVER_HOST, port, profile)
+                # Register cid into the server's clients.json allowlist
+                # so the freeturn client can actually authenticate.
+                try:
+                    self._run_script(ADD_CLIENT_SCRIPT, cid, tag)
+                except RuntimeError as e:
+                    await event.reply(f"add_client failed: {e}")
+                    return
+
                 wg_conf = build_android_wg_conf(peer)
-                # freeturn:// never embeds the vk call link (it's client-unique)
-                # or WireGuard fields (it's tunnel-only), so both are handed to
-                # the Android client separately.
+                link = build_link_android(cid, obf_key, SERVER_HOST, port, profile, wg_conf, name=tag)
+                # freeturn:// never embeds the vk call link (it's
+                # client-unique); it is handed to the Android client
+                # separately as -link.
                 link_line = (
                     f"{link}\n\n"
-                    f"-link (VK call, use separately):\n{join_link}\n\n"
-                    f"WireGuard config (import into WireGuard app):\n{wg_conf}"
+                    f"VK call link (use as -link):\n{join_link}"
                 )
             else:
                 link = build_link_ios(peer, join_link, obf_key, SERVER_HOST, port, profile)

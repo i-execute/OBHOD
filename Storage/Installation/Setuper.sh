@@ -44,6 +44,7 @@ if [ -f /etc/sudoers.d/vkturn ]; then
         cat > /etc/sudoers.d/vkturn <<EOF
 $OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/add_peer_ios.sh
 $OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/add_peer_android.sh
+$OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/add_client.sh
 $OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/revoke_peer.sh
 $OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/ensure_profile.sh
 $OBHOD_USER ALL=(root) NOPASSWD: /opt/vkturn/update_core.sh
@@ -122,7 +123,12 @@ if [ ! -f "$ENV_FILE" ]; then
     sudo -u "$OBHOD_USER" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user enable --now "$SERVICE_NAME"
 
     echo "connected to @$USERNAME successfully"
-    echo "message it now in DM with anything to learn your id"
+    echo ""
+    echo ">> Send ANY message to @$USERNAME in DM now."
+    echo ">> The bot will reply with your numeric user ID."
+    echo ">> If no reply within 10 seconds, check logs:"
+    echo "   sudo -u $OBHOD_USER XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR journalctl --user -u $SERVICE_NAME -f"
+    echo ""
 
     read -rp "Enter your id (from the bot's reply): " OWNER_ID < /dev/tty
     if ! [[ "$OWNER_ID" =~ ^[0-9]+$ ]]; then
