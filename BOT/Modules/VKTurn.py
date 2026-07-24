@@ -6,6 +6,8 @@ import base64
 import logging
 import subprocess
 
+import html as _html_mod
+
 import aiohttp
 from telethon import events, Button
 
@@ -552,17 +554,27 @@ class VKTurn(BaseModule):
                 link = build_link_ios(peer, join_link, obf_key, SERVER_HOST, port, profile)
                 link_line = link
 
-            message = (
-                f"{self.strings['peer_created']}\n\n"
-                f"tag: {tag}\n"
-                f"ip: {peer['IP']}\n"
-                f"profile: {profile}\n"
-                f"platform: {platform}\n\n"
-                f"{link_line}"
-            )
-            await event.reply(message)
+            esc_tag = _html_mod.escape(tag)
+            esc_ip = _html_mod.escape(peer['IP'])
+            esc_profile = _html_mod.escape(profile)
+            esc_platform = _html_mod.escape(platform)
+            esc_link = _html_mod.escape(link_line)
 
-            await self.data_manager.notify_admins(self.bot, message)
+            message = (
+                f"<b>✅ {self.strings['peer_created']}</b>\n\n"
+                f"<blockquote><b>Tag</b>: <code>{esc_tag}</code>\n"
+                f"<b>IP</b>: <code>{esc_ip}</code>\n"
+                f"<b>Profile</b>: <code>{esc_profile}</code>\n"
+                f"<b>Platform</b>: <code>{esc_platform}</code></blockquote>\n\n"
+                f"<blockquote>{esc_link}</blockquote>"
+            )
+            await event.reply(message, parse_mode="html")
+
+            # Notify other admins, but NOT the sender (they already got
+            # the reply above — this was causing duplicate messages).
+            await self.data_manager.notify_admins(
+                self.bot, message, exclude=sender_id
+            )
 
     def _read_wrap_key(self):
         """Read wrap key from file, return empty string if not found."""

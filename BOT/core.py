@@ -319,8 +319,10 @@ async def run_full_bot():
             self.data.setdefault("languages", {})[str(user_id)] = lang
             self.save_data()
 
-        async def notify_admins(self, bot, message):
+        async def notify_admins(self, bot, message, exclude=None):
             for user_id in [self.owner_id] + self.get_admins():
+                if exclude is not None and user_id == exclude:
+                    continue
                 try:
                     await bot.send_message(user_id, message, parse_mode="html")
                 except Exception:
