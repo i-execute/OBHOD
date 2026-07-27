@@ -4,7 +4,7 @@
 
 ### OBHOD
 
-A Telegram bot for managing [VK TURN proxy](https://github.com/anton48/vk-turn-proxy-ios) peers and WireGuard tunnels through a simple chat interface. Built on Telethon, runs as a systemd user service, and handles everything from initial server setup to peer creation, link generation, and remote revocation — all without SSH access to the VPS.
+A Telegram bot for managing [VK TURN proxy](https://github.com/samosvalishe/free-turn-proxy) peers and WireGuard tunnels through a simple chat interface. Built on Telethon, runs as a systemd user service, and handles everything from initial server setup to peer creation, link generation, and remote revocation — all without SSH access to the VPS.
 
 The bot wraps [samosvalishe/free-turn-proxy](https://github.com/samosvalishe/free-turn-proxy) server and automates the full lifecycle: WireGuard keypair generation, obfuscation profile provisioning (WRAP-A), VK Calls API integration for TURN credential sourcing, and shareable link generation for both iOS and Android clients. Each peer gets its own WireGuard config and TURN proxy port, dynamically allocated and managed through shell scripts executed via passwordless sudo.
 
