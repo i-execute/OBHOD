@@ -110,9 +110,14 @@ if [ ! -f "$ENV_FILE" ]; then
     INLINE_SUPPORTED=$(echo "$ME_JSON" | jq -r '.result.supports_inline_queries')
 
     if [ "$INLINE_SUPPORTED" != "true" ]; then
-        echo "inline mode is disabled for @$USERNAME"
-        echo "enable it via @BotFather -> /setinline, then re-run this script"
-        exit 1
+        echo ""
+        echo "⚠️  Inline mode is OFF for @$USERNAME"
+        echo "   The Updater module (GitHub token input) needs inline mode."
+        echo "   Enable it later via @BotFather -> /setinline -> @$USERNAME"
+        echo "   Other features (VKTurn, etc.) will work without it."
+        echo ""
+    else
+        echo "✅ Inline mode enabled for @$USERNAME"
     fi
 
     echo "BOT_TOKEN=$BOT_TOKEN" > "$ENV_FILE"

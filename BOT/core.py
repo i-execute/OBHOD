@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import json
+import time
 import asyncio
 import logging
 
@@ -78,13 +79,17 @@ class BotAPI:
         return updates
 
     async def send_message(self, chat_id, text, reply_markup=None, parse_mode="HTML"):
-        params = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+        params = {"chat_id": chat_id, "text": text}
+        if parse_mode:
+            params["parse_mode"] = parse_mode
         if reply_markup:
             params["reply_markup"] = reply_markup
         return await self.call("sendMessage", **params)
 
     async def edit_message(self, chat_id, message_id, text, reply_markup=None, parse_mode="HTML"):
-        params = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": parse_mode}
+        params = {"chat_id": chat_id, "message_id": message_id, "text": text}
+        if parse_mode:
+            params["parse_mode"] = parse_mode
         if reply_markup:
             params["reply_markup"] = reply_markup
         return await self.call("editMessageText", **params)
@@ -144,7 +149,10 @@ async def run_echo_id_mode(token):
                     continue
                 logger.info(f"echo-id: replying to chat {chat_id} with id {sender_id}")
                 try:
-                    await api.send_message(chat_id, str(sender_id), parse_mode=None)
+                    text = (
+                        f"<blockquote><b>This is your id</b> – <code>{sender_id}</code></blockquote>"
+                    )
+                    await api.send_message(chat_id, text, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"echo-id: send_message failed: {e}")
     finally:
@@ -197,6 +205,25 @@ async def run_setup_wizard(token, owner_id):
                         )
                         state["stage"] = "api_id"
 
+                    elif data == "retry_inline_check":
+                        me = await get_bot_username(token)
+                        inline_ok = me.get("supports_inline_queries", False) if me else False
+                        await api.answer_callback(cq["id"])
+                        if inline_ok:
+                            kb = {
+                                "inline_keyboard": [
+                                    [{"text": s.get("ask_api_hash"), "switch_inline_query_current_chat": "API_HASH "}]
+                                ]
+                            }
+                            await api.edit_message(
+                                owner_id, cq["message"]["message_id"],
+                                "✅ Inline mode enabled!\n" + s.get("ask_api_hash"),
+                                reply_markup=kb,
+                            )
+                            state["stage"] = "api_hash"
+                        else:
+                            await api.answer_callback(cq["id"], text="Inline still OFF. Enable it in @BotFather → /setinline")
+
                 iq = u.get("inline_query")
                 if iq and iq["from"]["id"] == owner_id:
                     query = iq["query"]
@@ -237,12 +264,36 @@ async def run_setup_wizard(token, owner_id):
                     if state["stage"] == "api_id" and API_ID_RE.match(text):
                         state["api_id"] = text
                         state["stage"] = "api_hash"
-                        kb = {
-                            "inline_keyboard": [
-                                [{"text": s.get("ask_api_hash"), "switch_inline_query_current_chat": "API_HASH "}]
-                            ]
-                        }
-                        await api.send_message(owner_id, s.get("ask_api_hash"), reply_markup=kb)
+
+                        # Check if inline mode is enabled.  The API hash
+                        # step uses switch_inline_query_current_chat which
+                        # requires inline queries to be turned on.
+                        me = await get_bot_username(token)
+                        inline_ok = me.get("supports_inline_queries", False) if me else False
+                        if not inline_ok:
+                            kb = {
+                                "inline_keyboard": [
+                                    [{"text": s.get("ask_api_hash"), "callback_data": "retry_inline_check"}]
+                                ]
+                            }
+                            await api.send_message(
+                                owner_id,
+                                f"⚠️ <b>Inline mode is OFF</b>\n\n"
+                                f"API ID saved ✅\n\n"
+                                f"To enter API Hash, inline mode must be enabled.\n"
+                                f"Go to <b>@BotFather</b> → /setinline → @{me.get('username','')} and enable it.\n\n"
+                                f"When done, tap the button below 👇",
+                                parse_mode="HTML",
+                                reply_markup=kb,
+                            )
+                            state["stage"] = "wait_inline"
+                        else:
+                            kb = {
+                                "inline_keyboard": [
+                                    [{"text": s.get("ask_api_hash"), "switch_inline_query_current_chat": "API_HASH "}]
+                                ]
+                            }
+                            await api.send_message(owner_id, s.get("ask_api_hash"), reply_markup=kb)
                     elif state["stage"] == "api_hash" and API_HASH_RE.match(text):
                         state["api_hash"] = text
                         write_env({"API_ID": state["api_id"], "API_HASH": state["api_hash"], "LANG": state["lang"]})
