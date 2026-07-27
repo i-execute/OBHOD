@@ -361,7 +361,7 @@ class VKTurn(BaseModule):
             self._pending[event.sender_id] = {"stage": "vk_auth"}
             url = build_vk_auth_url()
             kb = [
-                [Button.url("Open VK Auth", url)],
+                [Button.url("Open VK Auth", url, style="primary")],
                 [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
             ]
             await event.edit(self.strings["auth_prompt"], buttons=kb)
@@ -374,7 +374,7 @@ class VKTurn(BaseModule):
                 self._pending[event.sender_id] = {"stage": "vk_auth"}
                 url = build_vk_auth_url()
                 kb = [
-                    [Button.url("Open VK Auth", url)],
+                    [Button.url("Open VK Auth", url, style="primary")],
                     [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
                 ]
                 await event.edit(self.strings["auth_prompt"], buttons=kb)

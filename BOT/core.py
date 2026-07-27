@@ -171,9 +171,9 @@ async def run_setup_wizard(token, owner_id):
     lang_kb = {
         "inline_keyboard": [
             [
-                {"text": "English", "callback_data": "lang_en"},
-                {"text": "Russian", "callback_data": "lang_ru"},
-                {"text": "Chinese", "callback_data": "lang_ch"},
+                {"text": "English", "callback_data": "lang_en", "style": "primary"},
+                {"text": "Russian", "callback_data": "lang_ru", "style": "primary"},
+                {"text": "Chinese", "callback_data": "lang_ch", "style": "primary"},
             ]
         ]
     }
@@ -197,7 +197,7 @@ async def run_setup_wizard(token, owner_id):
                         await api.answer_callback(cq["id"])
                         kb = {
                             "inline_keyboard": [
-                                [{"text": s.get("ask_api_id"), "switch_inline_query_current_chat": "API_ID "}]
+                                [{"text": s.get("ask_api_id"), "switch_inline_query_current_chat": "API_ID ", "style": "primary"}]
                             ]
                         }
                         await api.edit_message(
@@ -212,7 +212,7 @@ async def run_setup_wizard(token, owner_id):
                         if inline_ok:
                             kb = {
                                 "inline_keyboard": [
-                                    [{"text": s.get("ask_api_hash"), "switch_inline_query_current_chat": "API_HASH "}]
+                                    [{"text": s.get("ask_api_hash"), "switch_inline_query_current_chat": "API_HASH ", "style": "primary"}]
                                 ]
                             }
                             await api.edit_message(
@@ -273,7 +273,7 @@ async def run_setup_wizard(token, owner_id):
                         if not inline_ok:
                             kb = {
                                 "inline_keyboard": [
-                                    [{"text": s.get("ask_api_hash"), "callback_data": "retry_inline_check"}]
+                                    [{"text": s.get("ask_api_hash"), "callback_data": "retry_inline_check", "style": "primary"}]
                                 ]
                             }
                             await api.send_message(
@@ -290,7 +290,7 @@ async def run_setup_wizard(token, owner_id):
                         else:
                             kb = {
                                 "inline_keyboard": [
-                                    [{"text": s.get("ask_api_hash"), "switch_inline_query_current_chat": "API_HASH "}]
+                                    [{"text": s.get("ask_api_hash"), "switch_inline_query_current_chat": "API_HASH ", "style": "primary"}]
                                 ]
                             }
                             await api.send_message(owner_id, s.get("ask_api_hash"), reply_markup=kb)

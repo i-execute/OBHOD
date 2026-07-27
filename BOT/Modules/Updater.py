@@ -110,9 +110,9 @@ class Updater(BaseModule):
         token = load_token()
         token_btn_text = self.strings["btn_change_token"] if token else self.strings["btn_set_token"]
         kb = [
-            [Button.switch_inline(token_btn_text, query="GITHUB_TOKEN ", same_peer=True)],
-            [Button.inline(self.strings["btn_update_core"], b"updater:update")],
-            [Button.inline(self.strings["btn_back"], b"menu_modules")],
+            [Button.switch_inline(token_btn_text, query="GITHUB_TOKEN ", same_peer=True, style="primary")],
+            [Button.inline(self.strings["btn_update_core"], b"updater:update", style="primary")],
+            [Button.inline(self.strings["btn_back"], b"menu_modules", style="danger")],
         ]
         await event.edit(self.strings["menu"], buttons=kb)
 
@@ -146,16 +146,16 @@ class Updater(BaseModule):
 
         releases = await self._fetch_releases(entry["repository"])
         if not releases:
-            kb = [[Button.inline(self.strings["btn_back"], b"updater:menu")]]
+            kb = [[Button.inline(self.strings["btn_back"], b"updater:menu", style="danger")]]
             await event.edit(self.strings["no_releases"], buttons=kb)
             return
 
         self._releases_cache[event.sender_id] = releases[:10]
         kb = [
-            [Button.inline(r.get("tag_name", "?"), f"updater:rel:{i}".encode())]
+            [Button.inline(r.get("tag_name", "?"), f"updater:rel:{i}".encode(), style="primary")]
             for i, r in enumerate(releases[:10])
         ]
-        kb.append([Button.inline(self.strings["btn_back"], b"updater:menu")])
+        kb.append([Button.inline(self.strings["btn_back"], b"updater:menu", style="danger")])
         await event.edit(self.strings["select_release"], buttons=kb)
 
     def _run_script(self, script, *args):
@@ -199,5 +199,5 @@ class Updater(BaseModule):
         if entry:
             set_mutal_core_version("VKTurn", release.get("tag_name"))
 
-        kb = [[Button.inline(self.strings["btn_back"], b"updater:menu")]]
+        kb = [[Button.inline(self.strings["btn_back"], b"updater:menu", style="danger")]]
         await event.edit(self.strings["update_done"], buttons=kb)
