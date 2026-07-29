@@ -23,18 +23,23 @@ The installer will:
 - Configure sudoers for passwordless script execution
 - Ask you for a bot token (get one from [@BotFather](https://t.me/BotFather))
 - Ask for your Telegram user ID (the bot will tell you it after you message it)
-- Ask for API ID and API Hash (get them from [my.telegram.org](https://my.telegram.org))
 - Start the bot as a systemd user service
 
 After setup, everything is managed through the Telegram chat with the bot — no SSH needed.
 
+Continue installation in telegram:
+
+- Firstly enable inline mode via [@BotFather](https://t.me/BotFather)-> /setinline -> @your_bot
+- Then bot ask you for API ID and API Hash (get them from [my.telegram.org](https://my.telegram.org))
+
 ###⚠️ Warning 
 
-If you have issues when creating application on [my.telegram.org](https://my.telegram.org) just run that as root after SSH installation:
+If you have issues when creating application on [my.telegram.org](https://my.telegram.org) like ERROR: error - just run that as root after SSH installation:
 
 ```bash
 python3 /home/OBHOD/OBHOD/Storage/Installation/APICerds.py
 ```
+Also you can use resident proxy instead that.
 
 ### Abilities
 
