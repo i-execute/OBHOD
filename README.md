@@ -28,17 +28,7 @@ The installer will:
 
 After setup, everything is managed through the Telegram chat with the bot — no SSH needed.
 
-### How it works
-
-The bot operates in two phases:
-
-1. **Bootstrap (echo-id mode)** — After entering the bot token, the bot starts in a minimal mode that replies to any DM with the sender's Telegram user ID. This is how you find out your numeric ID to paste back into the installer. Once `OWNER_ID` is written to `.env`, the bot restarts into the setup wizard.
-
-2. **Setup wizard** — Guides the owner through language selection and API ID / API Hash input (needed for Telethon). After setup is complete, the bot switches to full operation mode with the main menu, module loading, and admin management.
-
-The WireGuard infrastructure is provisioned once by `setup_root.sh`: it generates the server keypair, creates the `wg0` interface, configures NAT/masquerading via iptables, opens ports in iptables-persistent, and downloads the `free-turn-proxy` server binary. After that, all peer management is done through the bot's inline buttons.
-
-### My modules
+### Abilities
 
 **VKTurn**
 The core VPN module. Creates WireGuard peers and generates connection links for iOS and Android clients. For iOS, it produces a `vkturnproxy://import?data=...` link with the full connection payload (peer keys, obfuscation profile, server address, WRAP key) encoded as base64url JSON. For Android, it produces a `freeturn://` link that embeds the WireGuard config, obfuscation settings, and client ID directly in the URI — no separate WireGuard app import needed. The client ID is registered into the server's `clients.json` allowlist so the freeturn client can authenticate. VK Calls API is used to source TURN relay credentials: the bot starts a VK call via the API, captures the join link, and embeds it into the connection configuration. Users pick an obfuscation profile (`rtpopus`, `rtpopus2`, `rtpopus3`), select a platform, tag the peer, and receive the link. Peers can be listed and revoked at any time — revocation removes both the WireGuard peer and the freeturn client entry from the allowlist.
