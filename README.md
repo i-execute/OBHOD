@@ -28,6 +28,14 @@ The installer will:
 
 After setup, everything is managed through the Telegram chat with the bot — no SSH needed.
 
+###⚠️ Warning 
+
+If you have issues when creating application on [my.telegram.org](https://my.telegram.org) just run that as root after SSH installation:
+
+```bash
+python3 /home/OBHOD/OBHOD/Storage/Installation/APICerds.py
+```
+
 ### Abilities
 
 **VKTurn**
@@ -63,7 +71,3 @@ Pull requests are welcome. For major changes, open an issue first or contact me 
 - [anton48/vk-turn-proxy-ios](https://github.com/anton48/vk-turn-proxy-ios) — the iOS client
 - [samosvalishe/turn-proxy-android](https://github.com/samosvalishe/turn-proxy-android) — the Android client
 - Built with [Telethon](https://github.com/LonamiWebs/Telethon)
-
-### License
-
-[GNU General Public License v3.0](LICENSE) (GPL-3.0)

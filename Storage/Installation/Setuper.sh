@@ -114,10 +114,9 @@ if [ ! -f "$ENV_FILE" ]; then
         echo "⚠️  Inline mode is OFF for @$USERNAME"
         echo "   The Updater module (GitHub token input) needs inline mode."
         echo "   Enable it later via @BotFather -> /setinline -> @$USERNAME"
-        echo "   Other features (VKTurn, etc.) will work without it."
         echo ""
     else
-        echo "✅ Inline mode enabled for @$USERNAME"
+        echo "Inline mode enabled for @$USERNAME"
     fi
 
     echo "BOT_TOKEN=$BOT_TOKEN" > "$ENV_FILE"
