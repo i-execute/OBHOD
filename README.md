@@ -73,7 +73,7 @@ For major changes, open an issue first or contact me in Telegram via comments in
 
 ### Credits
 
-- Built with [Telethon](https://github.com/LonamiWebs/Telethon)
+- Built with [Telethon](https://codeberg.org/Lonami/Telethon)
 
 ###⚠️ If everything goes wrong:
 
