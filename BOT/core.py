@@ -317,7 +317,6 @@ async def run_full_bot():
     DEFAULT_LANG = env.get("LANG", "en")
 
     DATA_FILE = os.path.join(BOT_DIR, "OBHOD.json")
-    PREFIX = "."
 
     class DataManager:
         def __init__(self, owner_id, default_lang):
@@ -567,7 +566,7 @@ async def run_full_bot():
         rows = [[{"text": label, "data": f"btn:{label}"}] for label, _ in installer.get_menu_buttons()]
         await event.edit(s.get("btn_modules"), buttons=to_telethon_buttons(rows))
 
-    @bot.on(events.NewMessage(pattern=rf"^\{PREFIX}(\w+)(?:\s+(.*))?$"))
+    @bot.on(events.NewMessage(pattern=r"^[./](\w+)(?:\s+(.*))?$"))
     async def command_handler(event):
         if not data_manager.is_privileged(event.sender_id):
             return
@@ -577,6 +576,29 @@ async def run_full_bot():
 
         cmd_name = event.pattern_match.group(1)
         args = event.pattern_match.group(2) or ""
+
+        if cmd_name == "graph":
+            modules = installer.get_loaded()
+            commands = installer.get_commands()
+            menu_buttons = installer.get_menu_buttons()
+            lines = [
+                "OBHOD graph",
+                "│",
+                f"├─ bot: {BOT_DIR}",
+                f"├─ modules ({len(modules)}): {', '.join(modules) or 'none'}",
+                f"├─ commands ({len(commands)}): {', '.join(sorted(commands)) or 'none'}",
+                (
+                    f"├─ menu buttons ({len(menu_buttons)}): "
+                    f"{', '.join(label for label, _ in menu_buttons) or 'none'}"
+                ),
+                "│",
+                "└─ update flow",
+                "   ├─ /graph or .graph → diagnostics",
+                "   ├─ Updater → bot checkout → restart obhod.service",
+                "   └─ Updater → GitHub release → free-turn-proxy binary",
+            ]
+            await event.reply("\n".join(lines))
+            return
 
         commands = installer.get_commands()
         handler = commands.get(cmd_name)
