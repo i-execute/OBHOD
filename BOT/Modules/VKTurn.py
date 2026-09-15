@@ -5,7 +5,6 @@ import uuid
 import base64
 import logging
 import subprocess
-
 import html as _html_mod
 
 import aiohttp
@@ -50,6 +49,7 @@ VK_DEFAULT_APP_ID = 3697615
 VK_REDIRECT = "https://oauth.vk.com/blank.html"
 VK_DEFAULT_SCOPE = "offline"
 VK_TOKEN_RE = re.compile(r"access_token=([A-Za-z0-9._=-]+)")
+VK_CALL_LINK_RE = re.compile(r"^https://(?:vk\.ru/call/join|vk\.me/join)/[^/?#]+(?:[?#][^\s]*)?$", re.IGNORECASE)
 
 OBF_PROFILES = ["rtpopus", "rtpopus2", "rtpopus3"]
 PLATFORMS = ["ios", "android"]
@@ -156,6 +156,16 @@ def extract_vk_token(text):
     m = VK_TOKEN_RE.search(text)
     return m.group(1) if m else None
 
+
+def extract_vk_call_link(text):
+    """Return a supported VK call join URL from a user message."""
+    if not text:
+        return None
+    candidate = text.strip().split()[0]
+    if VK_CALL_LINK_RE.fullmatch(candidate):
+        return candidate
+    return None
+
 def build_vk_auth_url():
     return (
         "https://oauth.vk.com/authorize"
@@ -227,6 +237,7 @@ class VKTurn(BaseModule):
         "call_source": "Select call source",
         "btn_new_call": "Create New Call",
         "btn_old_call": "Use Existing Call",
+        "btn_link_call": "Use VK Call Link",
         "btn_reauth": "Re-authorize VK",
         "select_profile": "Select obfuscation profile",
         "select_platform": "Select client platform",
@@ -237,6 +248,8 @@ class VKTurn(BaseModule):
         "auth_prompt": "Open the link, allow access, copy the full redirected URL and send it here",
         "no_token_in_text": "Didn't find access_token= in that message. Paste the FULL redirected URL (the address bar content after you tapped Allow), not just a screenshot or partial link.",
         "token_check_failed": "Found a token in that text, but VK rejected it (whoami call failed) — it's likely expired, revoked, or malformed. Get a fresh link and paste it again.",
+        "call_link_prompt": "Send the existing VK call link (for example: https://vk.ru/call/join/...).",
+        "invalid_call_link": "That doesn't look like a VK call link. Send a full https://vk.ru/call/join/... or https://vk.me/join/... link.",
         "ask_tag": "Send a tag for this peer",
         "peer_created": "Peer created",
         "no_peers": "No active peers",
@@ -250,6 +263,7 @@ class VKTurn(BaseModule):
         "call_source": "Выберите источник звонка",
         "btn_new_call": "Создать новый звонок",
         "btn_old_call": "Использовать старый",
+        "btn_link_call": "Вставить ссылку на звонок",
         "btn_reauth": "Переавторизовать VK",
         "select_profile": "Выберите профиль обфускации",
         "select_platform": "Выберите платформу клиента",
@@ -260,6 +274,8 @@ class VKTurn(BaseModule):
         "auth_prompt": "Откройте ссылку, разрешите доступ, скопируйте полный URL и отправьте сюда",
         "no_token_in_text": "Не нашёл access_token= в этом сообщении. Пришли ПОЛНЫЙ redirect URL из адресной строки (после нажатия Allow), а не скриншот или обрезанную ссылку.",
         "token_check_failed": "Токен в тексте нашёлся, но VK его не принял (whoami не отработал) — похоже истёк, отозван или битый. Возьми свежую ссылку и пришли заново.",
+        "call_link_prompt": "Отправьте существующую ссылку на VK-звонок (например: https://vk.ru/call/join/...).",
+        "invalid_call_link": "Это не похоже на ссылку VK-звонка. Пришлите полную ссылку https://vk.ru/call/join/... или https://vk.me/join/...",
         "ask_tag": "Отправьте тег для этого пира",
         "peer_created": "Пир создан",
         "no_peers": "Нет активных пиров",
@@ -273,6 +289,7 @@ class VKTurn(BaseModule):
         "call_source": "选择通话来源",
         "btn_new_call": "创建新通话",
         "btn_old_call": "使用现有通话",
+        "btn_link_call": "使用 VK 通话链接",
         "btn_reauth": "重新授权 VK",
         "select_profile": "选择混淆配置",
         "select_platform": "选择客户端平台",
@@ -283,6 +300,8 @@ class VKTurn(BaseModule):
         "auth_prompt": "打开链接，允许访问，复制完整的重定向网址并发送到这里",
         "no_token_in_text": "在消息中没有找到 access_token=。请粘贴完整的重定向 URL（点击允许后地址栏中的内容），而不是截图或部分链接。",
         "token_check_failed": "文本中找到了 token，但 VK 拒绝了它（whoami 调用失败）——可能已过期、被撤销或格式错误。请获取新链接并重新发送。",
+        "call_link_prompt": "发送现有的 VK 通话链接（例如：https://vk.ru/call/join/...）。",
+        "invalid_call_link": "这不是有效的 VK 通话链接。请发送完整的 https://vk.ru/call/join/... 或 https://vk.me/join/... 链接。",
         "ask_tag": "发送此节点的标签",
         "peer_created": "节点已创建",
         "no_peers": "没有活动节点",
@@ -347,6 +366,7 @@ class VKTurn(BaseModule):
         kb = [
             [_btn(self.strings["btn_new_call"], b"vkturn:src:new", style="primary")],
             [_btn(self.strings["btn_old_call"], b"vkturn:src:old", style="primary")],
+            [_btn(self.strings["btn_link_call"], b"vkturn:src:link", style="primary")],
             [_btn(self.strings["btn_reauth"], b"vkturn:src:reauth", style="danger")],
             [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
         ]
@@ -365,6 +385,12 @@ class VKTurn(BaseModule):
                 [_btn(self.strings["btn_back"], b"vkturn:menu", style="danger")],
             ]
             await event.edit(self.strings["auth_prompt"], buttons=kb)
+            return
+
+        if source == "link":
+            self._pending[event.sender_id] = {"stage": "vk_call_link"}
+            kb = [[_btn(self.strings["btn_back"], b"vkturn:add", style="danger")]]
+            await event.edit(self.strings["call_link_prompt"], buttons=kb)
             return
 
         if source == "new":
@@ -468,6 +494,18 @@ class VKTurn(BaseModule):
             return
 
         text = (event.raw_text or "").strip()
+
+        if pending["stage"] == "vk_call_link":
+            join_link = extract_vk_call_link(text)
+            if not join_link:
+                await event.reply(self.strings["invalid_call_link"])
+                return
+            del self._pending[sender_id]
+            self._flow[sender_id] = {"call_id": "existing", "join_link": join_link}
+            await event.reply(self.strings["select_profile"], buttons=[
+                [_btn(p, f"vkturn:profile:{p}", style="primary")] for p in OBF_PROFILES
+            ])
+            return
 
         if pending["stage"] == "vk_auth":
             token = extract_vk_token(text)
