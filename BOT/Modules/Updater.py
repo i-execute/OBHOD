@@ -2,6 +2,7 @@ import os
 import json
 import platform
 import subprocess
+import asyncio
 
 import aiohttp
 from telethon import events, Button
@@ -9,6 +10,8 @@ from telethon import events, Button
 from installer import BaseModule, need_button, need_inline_input, get_mutal_access, set_mutal_core_version
 
 UPDATE_SCRIPT = "/opt/vkturn/update_core.sh"
+BOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+BOT_SERVICE = "obhod.service"
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "..", "github_token.json")
 TOKEN_FILE = os.path.abspath(TOKEN_FILE)
 
@@ -48,12 +51,14 @@ class Updater(BaseModule):
         "btn_set_token": "Set Token",
         "btn_change_token": "Change Token",
         "btn_update_core": "Update Core",
+        "btn_update_bot": "Update Bot",
         "btn_back": "Back",
         "token_saved": "Token saved",
         "no_releases": "No releases found",
         "select_release": "Select a version",
         "updating": "Updating, please wait...",
         "update_done": "Core updated",
+        "bot_update_done": "Bot updated; restarting...",
         "update_failed": "Update failed",
         "no_module": "VKTurn module not tracked yet",
     }
@@ -62,12 +67,14 @@ class Updater(BaseModule):
         "btn_set_token": "Указать токен",
         "btn_change_token": "Сменить токен",
         "btn_update_core": "Обновить ядро",
+        "btn_update_bot": "Обновить бота",
         "btn_back": "Назад",
         "token_saved": "Токен сохранен",
         "no_releases": "Релизы не найдены",
         "select_release": "Выберите версию",
         "updating": "Обновление, подождите...",
         "update_done": "Ядро обновлено",
+        "bot_update_done": "Бот обновлен, перезапускаю...",
         "update_failed": "Обновление не удалось",
         "no_module": "Модуль VKTurn еще не отслеживается",
     }
@@ -76,12 +83,14 @@ class Updater(BaseModule):
         "btn_set_token": "设置令牌",
         "btn_change_token": "更改令牌",
         "btn_update_core": "更新核心",
+        "btn_update_bot": "更新机器人",
         "btn_back": "返回",
         "token_saved": "令牌已保存",
         "no_releases": "未找到发行版",
         "select_release": "选择版本",
         "updating": "正在更新，请稍候...",
         "update_done": "核心已更新",
+        "bot_update_done": "机器人已更新，正在重启...",
         "update_failed": "更新失败",
         "no_module": "VKTurn 模块尚未被跟踪",
     }
@@ -95,6 +104,7 @@ class Updater(BaseModule):
         self.data_manager = data_manager
         bot.add_event_handler(self._cb_back_menu, events.CallbackQuery(pattern=b"^updater:menu$"))
         bot.add_event_handler(self._cb_update_core, events.CallbackQuery(pattern=b"^updater:update$"))
+        bot.add_event_handler(self._cb_update_bot, events.CallbackQuery(pattern=b"^updater:bot$"))
         bot.add_event_handler(self._cb_pick_release, events.CallbackQuery(pattern=b"^updater:rel:"))
 
     @need_button("Updater")
@@ -112,6 +122,7 @@ class Updater(BaseModule):
         kb = [
             [Button.switch_inline(token_btn_text, query="GITHUB_TOKEN ", same_peer=True, style="primary")],
             [Button.inline(self.strings["btn_update_core"], b"updater:update", style="primary")],
+            [Button.inline(self.strings["btn_update_bot"], b"updater:bot", style="primary")],
             [Button.inline(self.strings["btn_back"], b"menu_modules", style="danger")],
         ]
         await event.edit(self.strings["menu"], buttons=kb)
@@ -122,6 +133,39 @@ class Updater(BaseModule):
             return
         save_token(value)
         await event.reply(self.strings["token_saved"])
+
+    def _update_bot_checkout(self):
+        """Fast-forward the deployed checkout to origin/main."""
+        proc = subprocess.run(
+            ["git", "-C", BOT_DIR, "pull", "--ff-only", "origin", "main"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or proc.stdout.strip())
+        return proc.stdout.strip()
+
+    async def _cb_update_bot(self, event):
+        if not self.data_manager.is_privileged(event.sender_id):
+            return
+        await event.edit(self.strings["updating"])
+        try:
+            self._update_bot_checkout()
+        except (OSError, RuntimeError) as exc:
+            await event.edit(f"{self.strings['update_failed']}\n\n{exc}")
+            return
+
+        await event.edit(self.strings["bot_update_done"])
+        # Give Telegram time to deliver the confirmation before systemd
+        # terminates this process and starts the updated code.
+        asyncio.get_running_loop().call_later(
+            0.5, lambda: subprocess.Popen(
+                ["systemctl", "--user", "restart", BOT_SERVICE],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        )
 
     async def _fetch_releases(self, repo_url):
         owner, repo = parse_repo_url(repo_url)

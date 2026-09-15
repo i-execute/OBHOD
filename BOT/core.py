@@ -418,7 +418,10 @@ async def run_full_bot():
     def build_main_menu(user_id):
         lang = data_manager.get_language(user_id)
         s = Strings(lang)
-        rows = [[{"text": s.get("btn_users"), "data": "menu_users"}, {"text": s.get("btn_modules"), "data": "menu_modules"}]]
+        # Module buttons are rendered directly below.  The old aggregate
+        # "Modules" button duplicated the VKTurn/Updater entries and added
+        # an unnecessary navigation level.
+        rows = [[{"text": s.get("btn_users"), "data": "menu_users"}]]
         for label, handler in installer.get_menu_buttons():
             rows.append([{"text": label, "data": f"btn:{label}"}])
         return s.get("main_menu"), rows
