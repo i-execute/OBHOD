@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=@ENV_FILE@
+Environment=HOME=/root
 WorkingDirectory=@PREFIX@
 ExecStart=@PREFIX@/venv/bin/python -m BOT
 Restart=always
@@ -17,8 +18,8 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=@STATE_DIR@ /var/log/obhod
+ProtectHome=read-only
+ReadWritePaths=@STATE_DIR@ /var/log/obhod /root/.goygram
 Environment=OBHOD_SECURITY_LOG=/var/log/obhod/security.log
 ProtectKernelTunables=true
 ProtectKernelModules=true

@@ -172,6 +172,7 @@ write_service() {
     return 0
   fi
   [ -f "$UNIT_SRC" ] || die "unit template not found at $UNIT_SRC"
+  mkdir -p -m 700 /root/.goygram
   sed -e "s|@PREFIX@|$PREFIX|g" -e "s|@ENV_FILE@|$ENV_FILE|g" -e "s|@STATE_DIR@|$STATE_DIR|g" "$UNIT_SRC" > "$SERVICE"
   chmod 644 "$SERVICE"
   systemctl daemon-reload
