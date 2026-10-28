@@ -149,6 +149,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory={root}
 EnvironmentFile={env}
+Environment=HOME=/root
 ExecStart={root}/.venv/bin/python -m BOT
 Restart=on-failure
 RestartSec=5
@@ -157,7 +158,7 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
@@ -166,8 +167,8 @@ ProtectClock=true
 RestrictSUIDSGID=true
 RestrictNamespaces=true
 LockPersonality=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-ReadWritePaths={state} /var/log/obhod
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ReadWritePaths={state} /var/log/obhod /root/.goygram -/etc/fail2ban -/etc/ssh -/etc/systemd/system -/usr/local/bin -/usr/local/etc/xray -/usr/local/share/xray -/var/lib/xray-manager -/var/log/xray -/root/.ssh -/home
 LogsDirectory=obhod
 LogsDirectoryMode=0700
 
@@ -188,6 +189,10 @@ def install_script(plan: BootstrapPlan, phase: str = "deps") -> str:
         'if [ "$(id -u)" != "0" ]; then ' + _printf(t("BOOT_ROOT_FIRST")) + "; exit 1; fi",
         'if ! command -v "$PY" >/dev/null 2>&1; then ' + _printf(t("BOOT_NO_PYTHON")) + "; exit 1; fi",
         'mkdir -p "$ROOT" "$STATE" "$(dirname "$ENV_FILE")"',
+        'mkdir -p -m 700 /root/.goygram /root/.ssh',
+        'mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d',
+        'mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system',
+        'mkdir -p /var/lib/xray-manager /var/log/xray',
         'chmod 700 "$STATE"',
     ]
     lines = list(head)

@@ -7,7 +7,7 @@
     "BOT/ratelimit.py": "cd89721d1914c42b469ff1782c2305ceb2664f4c1f2b816447d9f754bd5ddc6c",
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
     "BOT/shell.py": "1f87254423b2d8a3566281c8c88f8bcdead57f358ec273b3cb8f8c4b788bf844",
-    "Storage/remote/fail2ban_agent.py": "0fee34a1f2493359286004dce718829d4c6577125631e6500b638dc8ae969f0a",
+    "Storage/remote/fail2ban_agent.py": "0bde432bfb527c529ae491154597d800e02893e1d7c5c074265345e8fccd6067",
     "Storage/remote/freeturn_agent.py": "be61b771fbf709f36c55f939f04c6df8349517fa3d65a05ef57ee833cb03c0a7",
     "Storage/remote/ssh_agent.py": "eb87fef525aa3855758765b934b932e5a5042c3db7e5c194da7ef912e43abce8",
     "Storage/remote/sub_server.py": "bb9838a2ae0ebd7a47f07c27051f996f564e023f0cbd1577c1b27e231290cef9",

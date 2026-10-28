@@ -19,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=@STATE_DIR@ /var/log /root/.goygram -/etc/fail2ban
+ReadWritePaths=@STATE_DIR@ /var/log/obhod /root/.goygram -/etc/fail2ban -/etc/ssh -/etc/systemd/system -/usr/local/bin -/usr/local/etc/xray -/usr/local/share/xray -/var/lib/xray-manager -/var/log/xray -/root/.ssh -/home
 Environment=OBHOD_SECURITY_LOG=/var/log/obhod/security.log
 ProtectKernelTunables=true
 ProtectKernelModules=true

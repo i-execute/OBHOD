@@ -68,7 +68,7 @@ def test_guard_calls_use_the_fail2ban_script() -> None:
     captured: list[tuple[str, list[str]]] = []
 
     async def fake_call(cfg_in: object, argv: list[str], timeout: float | None = None, source: str = "") -> object:
-        captured.append((source[:20], argv))
+        captured.append((source, argv))
         from BOT.xrayrpc import XrayResponse
 
         return XrayResponse(result="ok", data={"installed": True, "jails": ["3x-ipl"], "port": 2096})
@@ -80,7 +80,8 @@ def test_guard_calls_use_the_fail2ban_script() -> None:
     assert argv[0] == "install"
     assert "--bantime=45" in argv
     assert "--port=2096" in argv
-    assert source.startswith("import json")
+    assert "JAIL_FILE" in source
+    assert "SECURITY_FILTER" in source
 
 
 def test_guard_status_and_ssh_calls() -> None:

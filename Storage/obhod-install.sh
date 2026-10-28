@@ -172,7 +172,10 @@ write_service() {
     return 0
   fi
   [ -f "$UNIT_SRC" ] || die "unit template not found at $UNIT_SRC"
-  mkdir -p -m 700 /root/.goygram
+  mkdir -p -m 700 /root/.goygram /root/.ssh
+  mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d
+  mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system
+  mkdir -p /var/lib/xray-manager /var/log/xray
   sed -e "s|@PREFIX@|$PREFIX|g" -e "s|@ENV_FILE@|$ENV_FILE|g" -e "s|@STATE_DIR@|$STATE_DIR|g" "$UNIT_SRC" > "$SERVICE"
   chmod 644 "$SERVICE"
   systemctl daemon-reload

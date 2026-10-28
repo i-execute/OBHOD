@@ -1,3 +1,4 @@
+import errno
 import json
 import ipaddress
 import os
@@ -164,13 +165,28 @@ def exempt_ports(extra):
     return ports
 
 
+def write_reason(target, exc):
+    number = getattr(exc, "errno", 0)
+    if number == errno.EROFS:
+        return (
+            "the file system is read only at %s, the service unit of the bot must list that directory "
+            "in ReadWritePaths because it runs with ProtectSystem=strict" % target
+        )
+    if number in (errno.EACCES, errno.EPERM):
+        return "the bot is not allowed to write %s" % target
+    return "the file %s could not be written: %s" % (target, getattr(exc, "strerror", "") or str(exc))
+
+
 def write_file(target, body, mode=0o644):
     folder = os.path.dirname(target)
-    if not os.path.isdir(folder):
-        os.makedirs(folder, exist_ok=True)
-    with open(target, "w", encoding="utf-8") as handle:
-        handle.write(body)
-    os.chmod(target, mode)
+    try:
+        if not os.path.isdir(folder):
+            os.makedirs(folder, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        os.chmod(target, mode)
+    except OSError as exc:
+        raise ScriptError("write_failed", write_reason(target, exc), "write") from None
 
 
 IP_OR_NET = re.compile(r"^[0-9A-Fa-f:.]{2,64}(/[0-9]{1,3})?$")
