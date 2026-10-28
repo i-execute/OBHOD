@@ -50,11 +50,11 @@ def test_settings_screen_shows_subscription_path_format(tmp_path: Path) -> None:
 
 
 def test_ban_screen_reports_jail_and_rules(tmp_path: Path) -> None:
-    ban = BanState(installed=True, jails=["3x-ipl", "obhod-sshd"], banned=["1.2.3.4"], chain_rules=["DROP all -- 1.2.3.4"])
+    ban = BanState(installed=True, jails=["obhod-ipl", "obhod-sshd"], banned=["1.2.3.4"], chain_rules=["DROP all -- 1.2.3.4"])
     view = make_view(tmp_path, ban=ban)
     view.state.xray.fail2ban_enabled = True
     html = screens.ban_screen(view).to_html()
-    assert "3x-ipl" in html
+    assert "obhod-ipl" in html
     assert "1.2.3.4" in html
     assert "OBHOD-IPL" in html
 
@@ -140,7 +140,7 @@ def render_all(lang: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, object]]:
     state.xray.add(inbound)
     state.xray.scan_targets = ["www.google.com:443"]
     core = {"installed": True, "service": "active", "version": "26.10.21", "listening": [443], "ports": [443]}
-    view = screens.View(state=state, core=core, ban=BanState(installed=True, jails=["3x-ipl"], banned=["1.2.3.4"]), sshd=SshState(ports=[22]), lang=lang)
+    view = screens.View(state=state, core=core, ban=BanState(installed=True, jails=["obhod-ipl"], banned=["1.2.3.4"]), sshd=SshState(ports=[22]), lang=lang)
     xview = xscreens.XrayView(state=state.xray, core=core, lang=lang)
     xview.draft = {"network": "xhttp", "security": "reality", "port": "443"}
     result = ScanResult(

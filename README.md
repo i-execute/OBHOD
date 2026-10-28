@@ -43,7 +43,7 @@ the bot opens by default.
 | Core switch | `Core switch` screen picks Xray or FreeTurn for the interface, both cores may run side by side |
 | Scanner | certificate check, TLS 1.3, `h2`, and a raw ClientHello carrying a real ML-KEM-768 key share |
 | Subscriptions | `http://host:port/<64 chars>/<64 chars>`, both segments from `secrets`, url safe alphabet |
-| Fail2ban | jail `3x-ipl` plus `obhod-sshd`, iptables chain `OBHOD-IPL` with exempt ports |
+| Fail2ban | jail `obhod-ipl` plus `obhod-sshd`, iptables chain `OBHOD-IPL` with exempt ports |
 | SSH | port, password login, root login and public keys managed by a script that runs on the server |
 | SSH key gate | the password switch is refused while the account has no public key, the screen lists the keys that open this machine with their `SHA256` fingerprints |
 | Interface | rich GoyGram messages, only `callback_data` buttons, every input through an opaque inline token |
@@ -190,12 +190,19 @@ headers, answering `404` for a wrong key and `403` for a disabled entry.
 
 | Jail | Filter | Threshold | Ban |
 | --- | --- | --- | --- |
-| `3x-ipl` | `[LIMIT_IP] Email = ... \|\| Disconnecting OLD IP = ...` in the xray access log | `maxretry = 1`, `findtime = 1920` | `30m`, editable in minutes |
+| `obhod-ipl` | `[LIMIT_IP] Email = ... \|\| Disconnecting OLD IP = ...` in the xray access log | `maxretry = 1`, `findtime = 1920` | `30m`, editable in minutes |
 | `obhod-sshd` | the sshd filter over `/var/log/auth.log` or `/var/log/secure` | `maxretry = 3`, `findtime = 3600` | `3d` by default, any value with `s`, `m`, `h`, `d` or `w` |
 | `obhod-subs` | `^sub 40[34] <ADDR>$` from the subscription log | `maxretry = 20`, `findtime = 600` | `3d`, the same duration as the ssh jail |
 
-`action.d/3x-ipl.conf` keeps an `OBHOD-IPL` chain as the first rule of `INPUT` in both `iptables` and `ip6tables`, with the
+`action.d/obhod-ipl.conf` keeps an `OBHOD-IPL` chain as the first rule of `INPUT` in both `iptables` and `ip6tables`, with the
 ssh and subscription ports exempted, so a banned address is dropped for TCP and still cannot reach the proxy.
+Everything the agent writes is prefixed with `obhod`, so a machine that already runs [3x-ui](https://github.com/MHSanaei/3x-ui)
+keeps its own `3x-ipl` jail, its `filter.d`, `jail.d` and `action.d` files and its `f2b-3x-ipl` chain untouched: the two
+mechanisms sit next to each other and never share a name. An install also looks at the three `3x-ipl` files, removes them
+only when the content is byte for byte what an older build of this bot wrote, and reports the presence of a foreign jail as
+`coexists_3x_ui` in the status. The ssh port for the exempt list is read from `/etc/ssh/sshd_config` and from every
+`/etc/ssh/sshd_config.d/*.conf`, with `Match` blocks ignored, so a non standard port never ends up banned.
+
 All three jails carry `ignoreip = 127.0.0.1/8 ::1` by default, editable from the bot (addresses are parsed and validated,
 a newline never reaches the config). Durations are written with an explicit suffix, so `bantime = 30m` is thirty minutes
 and `bantime = 3d` is three days, never a bare number that fail2ban would read as seconds. The bot can install, remove,

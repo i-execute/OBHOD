@@ -167,7 +167,7 @@ class FakeGuard:
         ignoreip: str = "127.0.0.1/8 ::1",
     ) -> BanState:
         self.calls.append("install")
-        return BanState(installed=True, jails=["3x-ipl", "obhod-sshd"], banned=["1.2.3.4"], port=port)
+        return BanState(installed=True, jails=["obhod-ipl", "obhod-sshd"], banned=["1.2.3.4"], port=port)
 
     async def remove(self, cfg: Any, port: int = 0) -> BanState:
         self.calls.append("remove")
@@ -175,15 +175,15 @@ class FakeGuard:
 
     async def status(self, cfg: Any, port: int = 0) -> BanState:
         self.calls.append("status")
-        return BanState(installed=True, jails=["3x-ipl"], banned=["5.6.7.8"], port=port)
+        return BanState(installed=True, jails=["obhod-ipl"], banned=["5.6.7.8"], port=port)
 
     async def ban(self, cfg: Any, address: str, port: int = 0) -> BanState:
         self.calls.append("ban")
-        return BanState(installed=True, jails=["3x-ipl"], banned=[address])
+        return BanState(installed=True, jails=["obhod-ipl"], banned=[address])
 
     async def unban(self, cfg: Any, address: str, port: int = 0) -> BanState:
         self.calls.append("unban")
-        return BanState(installed=True, jails=["3x-ipl"], banned=[])
+        return BanState(installed=True, jails=["obhod-ipl"], banned=[])
 
     async def ssh_status(self, cfg: Any) -> SshState:
         self.calls.append("ssh_status")

@@ -10,15 +10,18 @@ import sys
 PROTO = 3
 LOGS = []
 
-JAIL = "3x-ipl"
+JAIL = "obhod-ipl"
 JAIL_SSH = "obhod-sshd"
+THIRD_PARTY_JAIL = "3x-ipl"
 FAIL2BAN_DIR = "/etc/fail2ban"
 FILTER_DIR = "/etc/fail2ban/filter.d"
 JAIL_DIR = "/etc/fail2ban/jail.d"
 ACTION_DIR = "/etc/fail2ban/action.d"
-JAIL_FILE = os.path.join(JAIL_DIR, "3x-ipl.conf")
-FILTER_FILE = os.path.join(FILTER_DIR, "3x-ipl.conf")
-ACTION_FILE = os.path.join(ACTION_DIR, "3x-ipl.conf")
+JAIL_FILE = os.path.join(JAIL_DIR, JAIL + ".conf")
+FILTER_FILE = os.path.join(FILTER_DIR, JAIL + ".conf")
+ACTION_FILE = os.path.join(ACTION_DIR, JAIL + ".conf")
+SSHD_CONFIG = "/etc/ssh/sshd_config"
+SSHD_DROPIN = "/etc/ssh/sshd_config.d"
 XRAY_LOG = "/var/log/xray/access.log"
 SUB_LOG = "/var/log/xray/sub.log"
 JAIL_SUB = "obhod-subs"
@@ -128,22 +131,50 @@ def have(tool):
     return shutil.which(tool) is not None
 
 
-def ssh_port():
-    code, text = run(["bash", "-lc", "ss -tlnp 2>/dev/null | grep -o 'sshd' | head -n1"])
+def read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def ports_in_config(path):
     ports = []
-    conf = "/etc/ssh/sshd_config"
-    if os.path.isfile(conf):
-        try:
-            with open(conf, "r", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    token = line.strip()
-                    if token.lower().startswith("port ") and token.split()[-1].isdigit():
-                        ports.append(int(token.split()[-1]))
-        except OSError:
-            ports = []
-    if not ports:
-        ports = [22]
+    inside_match = False
+    for raw in read_text(path).splitlines():
+        token = raw.strip()
+        if not token or token.startswith("#"):
+            continue
+        lowered = token.lower()
+        if lowered.startswith("match"):
+            inside_match = True
+            continue
+        if inside_match:
+            continue
+        if lowered.startswith("port ") or lowered.startswith("port="):
+            value = token.replace("=", " ").split()[-1]
+            if value.isdigit() and 0 < int(value) < 65536:
+                ports.append(int(value))
     return ports
+
+
+def ssh_port():
+    ports = ports_in_config(SSHD_CONFIG)
+    try:
+        names = sorted(os.listdir(SSHD_DROPIN))
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".conf"):
+            ports.extend(ports_in_config(os.path.join(SSHD_DROPIN, name)))
+    unique = []
+    for item in ports:
+        if item not in unique:
+            unique.append(item)
+    if not unique:
+        unique = [22]
+    return unique
 
 
 def auth_log_path():
@@ -151,6 +182,19 @@ def auth_log_path():
         if os.path.isfile(candidate):
             return candidate
     return "/var/log/auth.log"
+
+
+def systemd_backend_ready():
+    code, _text = run([sys.executable or "python3", "-c", "import systemd.journal"], timeout=60)
+    return code == 0
+
+
+def ssh_backend():
+    if os.path.isfile(auth_log_path()):
+        return "auto"
+    if systemd_backend_ready():
+        return "systemd"
+    return "auto"
 
 
 def exempt_ports(extra):
@@ -276,12 +320,26 @@ def jail_body(
     sec_maxretry=DEFAULT_SEC_MAXRETRY,
     sec_findtime=DEFAULT_SEC_FINDTIME,
     sec_bantime=DEFAULT_SEC_BANTIME,
+    ssh_backend="auto",
 ):
+    ssh_lines = ["filter = sshd", "port = " + ",".join(str(item) for item in ports)]
+    if ssh_backend != "systemd":
+        ssh_lines.append("logpath = " + (auth_log or "/var/log/auth.log"))
+    ssh_lines.extend(
+        [
+            "maxretry = {}".format(minutes_of(ssh_maxretry, DEFAULT_SSH_MAXRETRY)),
+            "findtime = {}".format(seconds_of(ssh_findtime, DEFAULT_SSH_FINDTIME)),
+            "bantime = " + duration_of(ssh_bantime, DEFAULT_SSH_BANTIME),
+            "backend = " + ("systemd" if ssh_backend == "systemd" else "auto"),
+            "ignoreip = " + ignore,
+            "",
+        ]
+    )
     lines = [
         "[{}]".format(JAIL),
         "enabled = true",
-        "filter = 3x-ipl",
-        "action = 3x-ipl",
+        "filter = " + JAIL,
+        "action = " + JAIL,
         "logpath = " + logpath,
         "maxretry = {}".format(minutes_of(maxretry, 1)),
         "findtime = {}".format(seconds_of(findtime, 1920)),
@@ -291,19 +349,11 @@ def jail_body(
         "",
         "[{}]".format(JAIL_SSH),
         "enabled = {}".format("true" if ssh else "false"),
-        "filter = sshd",
-        "port = " + ",".join(str(item) for item in ports),
-        "logpath = " + (auth_log or "/var/log/auth.log"),
-        "maxretry = {}".format(minutes_of(ssh_maxretry, DEFAULT_SSH_MAXRETRY)),
-        "findtime = {}".format(seconds_of(ssh_findtime, DEFAULT_SSH_FINDTIME)),
-        "bantime = " + duration_of(ssh_bantime, DEFAULT_SSH_BANTIME),
-        "backend = auto",
-        "ignoreip = " + ignore,
-        "",
+        *ssh_lines,
         "[{}]".format(JAIL_SUB),
         "enabled = true",
         "filter = obhod-subs",
-        "action = 3x-ipl",
+        "action = " + JAIL,
         "logpath = " + sub_log,
         "maxretry = {}".format(minutes_of(sub_maxretry, 20)),
         "findtime = {}".format(seconds_of(600, 600)),
@@ -314,7 +364,7 @@ def jail_body(
         "[{}]".format(JAIL_SEC),
         "enabled = {}".format("true" if security else "false"),
         "filter = obhod-security",
-        "action = 3x-ipl",
+        "action = " + JAIL,
         "logpath = " + sec_log,
         "maxretry = {}".format(minutes_of(sec_maxretry, DEFAULT_SEC_MAXRETRY)),
         "findtime = {}".format(seconds_of(sec_findtime, DEFAULT_SEC_FINDTIME)),
@@ -324,6 +374,51 @@ def jail_body(
         "",
     ]
     return "\n".join(lines)
+
+
+def legacy_paths():
+    return (
+        os.path.join(FILTER_DIR, THIRD_PARTY_JAIL + ".conf"),
+        os.path.join(JAIL_DIR, THIRD_PARTY_JAIL + ".conf"),
+        os.path.join(ACTION_DIR, THIRD_PARTY_JAIL + ".conf"),
+    )
+
+
+def legacy_is_ours(path):
+    text = read_text(path)
+    if not text:
+        return False
+    folder = os.path.dirname(path)
+    if folder == FILTER_DIR:
+        return text.strip() == LIMIT_FILTER.strip()
+    if folder == ACTION_DIR:
+        return "OBHOD-IPL" in text
+    return "[obhod-subs]" in text or "[obhod-security]" in text
+
+
+def adopt_legacy():
+    removed = []
+    foreign = []
+    for path in legacy_paths():
+        if not os.path.isfile(path):
+            continue
+        if not legacy_is_ours(path):
+            foreign.append(path)
+            continue
+        try:
+            os.unlink(path)
+            removed.append(path)
+        except OSError:
+            foreign.append(path)
+    if removed:
+        note("the old %s files of obhod were removed" % THIRD_PARTY_JAIL)
+    if foreign:
+        note("the %s jail of 3x-ui was found and is left untouched" % THIRD_PARTY_JAIL)
+    return removed, foreign
+
+
+def third_party_jail():
+    return any(os.path.isfile(path) and not legacy_is_ours(path) for path in legacy_paths())
 
 
 def security_paths():
@@ -347,7 +442,16 @@ def jail_state(name):
 
 def report(port):
     installed = have("fail2ban-client") and have("iptables")
-    state = {"installed": installed, "jail": JAIL, "ssh_jail": JAIL_SSH, "sub_jail": JAIL_SUB, "security_jail": JAIL_SEC, "jails": [], "chain": CHAIN}
+    state = {
+        "installed": installed,
+        "jail": JAIL,
+        "ssh_jail": JAIL_SSH,
+        "sub_jail": JAIL_SUB,
+        "security_jail": JAIL_SEC,
+        "jails": [],
+        "chain": CHAIN,
+        "coexists_3x_ui": third_party_jail(),
+    }
     if installed:
         code, text = run(["fail2ban-client", "status"], timeout=60)
         if code == 0:
@@ -393,6 +497,7 @@ def install(flags):
         port = str(safe_port_list([port])[0])
     ssh = flag_on(flags.get("ssh"), True)
     ports = exempt_ports([port] if port else [])
+    adopt_legacy()
     write_file(FILTER_FILE, LIMIT_FILTER)
     write_file(os.path.join(FILTER_DIR, "xray-reject.conf"), REJECT_FILTER)
     write_file(os.path.join(FILTER_DIR, "obhod-subs.conf"), SUB_FILTER)
@@ -405,7 +510,7 @@ def install(flags):
                 "[xray-reject]",
                 "enabled = true",
                 "filter = xray-reject",
-                "action = 3x-ipl",
+                "action = " + JAIL,
                 "logpath = " + logpath,
                 "maxretry = 3",
                 "findtime = 300",
@@ -416,29 +521,35 @@ def install(flags):
             ]
         ),
     )
-    write_file(
-        JAIL_FILE,
-        jail_body(
-            bantime,
-            findtime,
-            maxretry,
-            logpath,
-            ssh,
-            ports,
-            auth_log_path(),
-            ignore,
-            ssh_bantime,
-            ssh_findtime,
-            ssh_maxretry,
-            sub_log,
-            minutes_of(flags.get("submaxretry", 20), 20),
-            sec_log,
-            security,
-            sec_maxretry,
-            sec_findtime,
-            sec_bantime,
-        ),
-    )
+    backend = ssh_backend()
+
+    def write_jails(mode):
+        write_file(
+            JAIL_FILE,
+            jail_body(
+                bantime,
+                findtime,
+                maxretry,
+                logpath,
+                ssh,
+                ports,
+                auth_log_path(),
+                ignore,
+                ssh_bantime,
+                ssh_findtime,
+                ssh_maxretry,
+                sub_log,
+                minutes_of(flags.get("submaxretry", 20), 20),
+                sec_log,
+                security,
+                sec_maxretry,
+                sec_findtime,
+                sec_bantime,
+                ssh_backend=mode,
+            ),
+        )
+
+    write_jails(backend)
     for target in (logpath, sub_log, sec_log):
         folder = os.path.dirname(target)
         if folder and not os.path.isdir(folder):
@@ -448,6 +559,11 @@ def install(flags):
                 pass
     note("jail files are written")
     code, text = run(["fail2ban-client", "-t"], timeout=120)
+    if code != 0 and "log file" in text.lower() and backend != "systemd" and systemd_backend_ready():
+        backend = "systemd"
+        write_jails(backend)
+        note("the ssh jail now reads the journal because no auth log was found")
+        code, text = run(["fail2ban-client", "-t"], timeout=120)
     if code != 0:
         raise ScriptError("config_invalid", "fail2ban rejected the configuration: " + text[:400], "test")
     if not have("systemctl"):
@@ -460,13 +576,16 @@ def install(flags):
 
 
 def uninstall(flags):
+    legacy = tuple(path for path in legacy_paths() if legacy_is_ours(path))
     for target in (
         JAIL_FILE,
         os.path.join(JAIL_DIR, "xray-reject.conf"),
         FILTER_FILE,
+        ACTION_FILE,
         os.path.join(FILTER_DIR, "xray-reject.conf"),
         os.path.join(FILTER_DIR, "obhod-subs.conf"),
         *security_paths(),
+        *legacy,
     ):
         if os.path.isfile(target):
             try:

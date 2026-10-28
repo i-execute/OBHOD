@@ -28,10 +28,19 @@ def script_code(path: Path, name: str) -> str:
         raise XrayError("%s is missing next to the bot: %s" % (name, exc), "internal") from None
 
 
+DEFAULT_JAIL = "obhod-ipl"
+LEGACY_JAIL = "3x-ipl"
+
+
+def jail_name(raw: object) -> str:
+    value = str(raw or "").strip() or DEFAULT_JAIL
+    return DEFAULT_JAIL if value == LEGACY_JAIL else value
+
+
 @dataclass
 class BanState:
     installed: bool = False
-    jail: str = "3x-ipl"
+    jail: str = DEFAULT_JAIL
     ssh_jail: str = "obhod-sshd"
     sub_jail: str = "obhod-subs"
     jails: list[str] = field(default_factory=list)
@@ -53,7 +62,7 @@ class BanState:
         ssh = data.get("ssh") or {}
         return cls(
             installed=bool(data.get("installed", False)),
-            jail=str(data.get("jail", "3x-ipl") or "3x-ipl"),
+            jail=jail_name(data.get("jail")),
             ssh_jail=str(data.get("ssh_jail", "obhod-sshd") or "obhod-sshd"),
             jails=[str(item) for item in data.get("jails") or []],
             banned=[str(item) for item in main.get("banned") or []],

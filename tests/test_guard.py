@@ -41,7 +41,7 @@ def test_ban_state_parsing() -> None:
     state = guard.BanState.from_dict(
         {
             "installed": True,
-            "jails": ["3x-ipl", "obhod-sshd"],
+            "jails": ["obhod-ipl", "obhod-sshd"],
             "main": {"banned": ["1.2.3.4"]},
             "ssh": {"banned": ["5.6.7.8"]},
             "chain_rules": ["DROP all -- 1.2.3.4"],
@@ -71,7 +71,7 @@ def test_guard_calls_use_the_fail2ban_script() -> None:
         captured.append((source, argv))
         from BOT.xrayrpc import XrayResponse
 
-        return XrayResponse(result="ok", data={"installed": True, "jails": ["3x-ipl"], "port": 2096})
+        return XrayResponse(result="ok", data={"installed": True, "jails": ["obhod-ipl"], "port": 2096})
 
     control.call = fake_call
     state = asyncio.run(client.install(cfg, port=2096, bantime=45))
@@ -118,7 +118,7 @@ def test_fail2ban_agent_writes_expected_files(tmp_path: Path, monkeypatch: pytes
     assert spec.loader is not None
     sys.modules["fail2ban_agent"] = module
     spec.loader.exec_module(module)
-    filter_file = tmp_path / "3x-ipl.conf"
+    filter_file = tmp_path / "obhod-ipl.conf"
     module.write_file(str(filter_file), module.LIMIT_FILTER)
     body = filter_file.read_text(encoding="utf-8")
     assert "[Definition]" in body
@@ -126,7 +126,7 @@ def test_fail2ban_agent_writes_expected_files(tmp_path: Path, monkeypatch: pytes
     assert "<ADDR>" in body
     assert body.count("\n") >= 3
     jail = module.jail_body(30, 1920, 1, "/var/log/xray/access.log", True, [22, 2096])
-    assert "[3x-ipl]" in jail
+    assert "[obhod-ipl]" in jail
     assert "maxretry = 1" in jail
     assert "findtime = 1920" in jail
     assert "bantime = 30m" in jail

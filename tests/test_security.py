@@ -425,9 +425,9 @@ def test_fail2ban_install_writes_three_jails_and_ipv6_rules(tmp_path: Path, monk
     monkeypatch.setattr(module, "FILTER_DIR", str(etc / "filter.d"))
     monkeypatch.setattr(module, "JAIL_DIR", str(etc / "jail.d"))
     monkeypatch.setattr(module, "ACTION_DIR", str(etc / "action.d"))
-    monkeypatch.setattr(module, "JAIL_FILE", str(etc / "jail.d" / "3x-ipl.conf"))
-    monkeypatch.setattr(module, "FILTER_FILE", str(etc / "filter.d" / "3x-ipl.conf"))
-    monkeypatch.setattr(module, "ACTION_FILE", str(etc / "action.d" / "3x-ipl.conf"))
+    monkeypatch.setattr(module, "JAIL_FILE", str(etc / "jail.d" / "obhod-ipl.conf"))
+    monkeypatch.setattr(module, "FILTER_FILE", str(etc / "filter.d" / "obhod-ipl.conf"))
+    monkeypatch.setattr(module, "ACTION_FILE", str(etc / "action.d" / "obhod-ipl.conf"))
     monkeypatch.setattr(module, "have", lambda tool: True)
     monkeypatch.setattr(module, "run", lambda argv, timeout=120: (0, ""))
     monkeypatch.setattr(module, "report", lambda port: {"ok": True})
@@ -445,14 +445,14 @@ def test_fail2ban_install_writes_three_jails_and_ipv6_rules(tmp_path: Path, monk
         }
     )
     assert data == {"ok": True}
-    action = (etc / "action.d" / "3x-ipl.conf").read_text(encoding="utf-8")
+    action = (etc / "action.d" / "obhod-ipl.conf").read_text(encoding="utf-8")
     assert "ip6tables -A OBHOD-IPL -s <ip> -j DROP" in action
     assert "-I INPUT" not in action
     assert "iptables -F" not in action
     assert "iptables -P" not in action
     assert "ip6tables -A OBHOD-IPL -p tcp --dport" in action
     assert "exemptports = 22 2096" in action
-    jail = (etc / "jail.d" / "3x-ipl.conf").read_text(encoding="utf-8")
+    jail = (etc / "jail.d" / "obhod-ipl.conf").read_text(encoding="utf-8")
     assert "bantime = 45m" in jail
     assert "bantime = 3d" in jail
     assert "maxretry = 3" in jail

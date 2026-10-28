@@ -12,6 +12,14 @@ from typing import Any
 from . import i18n
 from .scan import DEFAULT_CANDIDATES
 
+LEGACY_JAIL = "3x-ipl"
+DEFAULT_JAIL = "obhod-ipl"
+
+
+def guard_jail(raw: Any) -> str:
+    value = str(raw or "").strip() or DEFAULT_JAIL
+    return DEFAULT_JAIL if value == LEGACY_JAIL else value
+
 PROTOCOLS = ("vless",)
 NETWORKS = ("raw", "grpc", "xhttp")
 SECURITIES = ("reality", "tls", "none")
@@ -982,7 +990,7 @@ class XrayState:
     fail2ban_ssh_bantime: str = DEFAULT_SSH_BANTIME
     fail2ban_ssh_maxretry: int = DEFAULT_SSH_MAXRETRY
     fail2ban_ignoreip: str = DEFAULT_IGNOREIP
-    fail2ban_jail: str = "3x-ipl"
+    fail2ban_jail: str = DEFAULT_JAIL
     scan_candidates: list[str] = field(default_factory=list)
     scan_sni: str = ""
     scan_xver: int = 0
@@ -1042,7 +1050,7 @@ class XrayState:
             fail2ban_ssh_bantime=str(data.get("fail2ban_ssh_bantime", DEFAULT_SSH_BANTIME) or DEFAULT_SSH_BANTIME),
             fail2ban_ssh_maxretry=int(data.get("fail2ban_ssh_maxretry", DEFAULT_SSH_MAXRETRY) or DEFAULT_SSH_MAXRETRY),
             fail2ban_ignoreip=str(data.get("fail2ban_ignoreip", DEFAULT_IGNOREIP) or DEFAULT_IGNOREIP),
-            fail2ban_jail=str(data.get("fail2ban_jail", "3x-ipl") or "3x-ipl"),
+            fail2ban_jail=guard_jail(data.get("fail2ban_jail")),
             scan_candidates=[str(item) for item in data.get("scan_candidates") or []],
             scan_sni=str(data.get("scan_sni", "") or ""),
             scan_xver=int(data.get("scan_xver", 0) or 0),
