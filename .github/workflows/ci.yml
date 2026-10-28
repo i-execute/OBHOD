@@ -1,0 +1,101 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: tests 3.12
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: unit and screen tests
+        run: python -m pytest -q --ignore=tests/test_pentest.py --ignore=tests/test_security.py
+      - name: lint
+        run: python -m pyflakes BOT Storage/remote tools tests
+
+  security:
+    name: pentest and protection drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: fast
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: pentest and hardening suite
+        run: python -m pytest -q tests/test_pentest.py tests/test_security.py
+      - name: protection watchdog
+        run: |
+          python tools/obhod_watchdog.py policy
+          python tools/obhod_watchdog.py verify
+      - name: watchdog self tests
+        run: python -m pytest -q tests/test_watchdog.py
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "### protection report"
+            echo '```'
+            python tools/obhod_watchdog.py verify || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  full:
+    name: tests ${{ matrix.python }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: whole suite
+        run: python -m pytest -q

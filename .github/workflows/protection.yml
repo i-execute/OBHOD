@@ -1,0 +1,64 @@
+name: protection
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "BOT/**"
+      - "Storage/**"
+      - "tools/**"
+  pull_request:
+    paths:
+      - "BOT/**"
+      - "Storage/**"
+      - "tools/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: protection-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    name: protection drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: policy
+        run: python tools/obhod_watchdog.py policy
+      - name: baseline
+        id: verify
+        continue-on-error: true
+        run: python tools/obhod_watchdog.py verify
+      - name: comment on drift
+        if: steps.verify.outcome == 'failure' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = [
+              "### protection drift",
+              "A file that carries a security decision changed without a new baseline.",
+              "Run `python tools/obhod_watchdog.py verify` locally, read the diff,",
+              "then either revert it or re-seal with `python tools/obhod_watchdog.py seal`",
+              "and say in the pull request why the protection changed.",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+      - name: fail on drift
+        if: steps.verify.outcome == 'failure'
+        run: exit 1
