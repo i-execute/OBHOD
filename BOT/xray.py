@@ -39,8 +39,9 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHORT_ID_RE = re.compile(r"^[0-9a-f]{0,16}$")
 SUB_ALPHABET = string.ascii_letters + string.digits + "-_"
 SUB_PORT = 2096
-XRAY_VERSION = "v26.10.21"
-VERSION_CHOICES = (XRAY_VERSION, "latest")
+XRAY_VERSION = "v26.10.29"
+LATEST_CHOICE = "latest"
+VERSION_CHOICES = (XRAY_VERSION, LATEST_CHOICE)
 LOG_LEVELS = ("debug", "info", "warning", "error")
 SUB_SEGMENT_LEN = 64
 API_TAG = "api"
@@ -977,7 +978,7 @@ class Subscription:
 @dataclass
 class XrayState:
     inbounds: list[XrayInbound] = field(default_factory=list)
-    version: str = XRAY_VERSION
+    version: str = LATEST_CHOICE
     log_level: str = "warning"
     scan_targets: list[str] = field(default_factory=list)
     scan_results: list[dict[str, Any]] = field(default_factory=list)
@@ -1037,7 +1038,7 @@ class XrayState:
         targets = [str(item) for item in data.get("scan_targets") or []]
         return XrayState(
             inbounds=[XrayInbound.from_dict(item) for item in data.get("inbounds") or [] if isinstance(item, dict)],
-            version=str(data.get("version", XRAY_VERSION) or XRAY_VERSION),
+            version=str(data.get("version", LATEST_CHOICE) or LATEST_CHOICE),
             log_level=str(data.get("log_level", "warning") or "warning"),
             scan_targets=targets,
             scan_results=[item for item in data.get("scan_results") or [] if isinstance(item, dict)],
@@ -1163,8 +1164,11 @@ class XrayState:
         return VLESS_HANDSHAKE
 
     def pinned(self) -> str:
-        value = str(self.version or "")
-        return value if value in VERSION_CHOICES and value != "latest" else XRAY_VERSION
+        return XRAY_VERSION
+
+    def install_version(self) -> str:
+        value = str(self.version or LATEST_CHOICE).strip()
+        return value if value in VERSION_CHOICES else LATEST_CHOICE
 
     def sub_path_pattern(self) -> str:
         return "/<%d>/<%d>" % (SUB_SEGMENT_LEN, SUB_SEGMENT_LEN)

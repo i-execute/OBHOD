@@ -15,7 +15,7 @@ import urllib.request
 import zipfile
 
 PROTO = 3
-PINNED = "v26.10.21"
+PINNED = "v26.10.29"
 ASSETS = {
     "x86_64": "64",
     "amd64": "64",
@@ -30,13 +30,13 @@ ASSETS = {
     "riscv64": "riscv64",
 }
 DIGESTS = {
-    "64": "0eec3ed4163c273d8c8bf821f7d219e257921cf584aa3fb970715e458e631978",
-    "arm64-v8a": "d1304946c486d98e6b886e9b931eaaaebb23835b30e217638037b7f2721d4e9c",
-    "arm32-v7a": "89978508fa2ebb4a1e661f2c6ed51d241c4091b3cd17f4c65fdf20baae7dedac",
-    "arm32-v6": "cbc12722c484c022f9e31593bd29d5cd4593c98397514ebfc3289953eeb36a64",
-    "32": "dde802c3c932aa1b8cdc5010de81b54719ff5e334f7c4800354825ed6c9d68b6",
-    "s390x": "12797bc3d865c7339f7722b088d1b0bdbdae179c2e50f41ea2566b0a331d5c6b",
-    "riscv64": "3045051037f5f543bd9e4787f331de9e8c83db0a072a26e49ef88512da5bfd48",
+    "64": "8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2",
+    "arm64-v8a": "afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58",
+    "arm32-v7a": "263fa7325c63b3a7f7316405f561e7c790b44c1461992ea648007f0374e9bdf4",
+    "arm32-v6": "7c2f4ececc528eb4115a990f326a070a7e9a1712b8be6969ef5dc8f59543895d",
+    "32": "a02065c652dd8f25806242edc9656a21495a0afc10b3c2f22dda14cd71b70726",
+    "s390x": "cd0ddcde6e0bcf42a62dfd4e18857309b5efe23a931402c9cbb04e921bcbe7fe",
+    "riscv64": "ca16e1a932d8a7e58cc06686d08c3787b71c054ed78b5760e4eb8bfd916540a2",
 }
 API_URL = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 API_TTL = 600
@@ -441,7 +441,7 @@ def fetch_digest(version, asset, url):
 
 def install_core(version, url, sha256, force):
     if not SAFE_VERSION.match(str(version or "")):
-        raise ScriptError("bad_arg", "the version must look like v26.10.21", "download")
+        raise ScriptError("bad_arg", "the version must look like v26.10.29", "download")
     asset = asset_for(machine())
     if not asset:
         raise ScriptError("unsupported_arch", "architecture %s is not supported" % machine(), "download")

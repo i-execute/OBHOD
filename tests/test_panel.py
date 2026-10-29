@@ -270,7 +270,7 @@ def test_core_actions(tmp_path: Path) -> None:
     run(item.core_action(1, 0, "ver", "latest"))
     assert bot.state.xray.version == "latest"
     run(item.core_action(1, 0, "ver", "pin"))
-    assert bot.state.xray.version == "26.10.21" or bot.state.xray.version.startswith("v26")
+    assert bot.state.xray.version == "26.10.29" or bot.state.xray.version.startswith("v26")
     run(item.purge(1, 0))
     assert item.core == {}
 

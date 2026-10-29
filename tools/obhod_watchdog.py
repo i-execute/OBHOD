@@ -206,6 +206,21 @@ def check_release_pins() -> list[str]:
         problems.append("freeturn.py must pin the digest of its fallback version")
     if sorted(bot_pins) != sorted(scripts):
         problems.append("freeturn.py and freeturn_agent.py must pin the same versions")
+    if len(scripts) != 1:
+        problems.append("freeturn_agent.py must pin exactly one fallback version")
+    if len(bot_pins) != 1:
+        problems.append("freeturn.py must pin exactly one fallback version")
+    if "if not expected:" not in turn:
+        problems.append("freeturn_agent.py must refuse an install script without a published digest")
+    if "checksums.txt" not in turn or "https://github.com" not in turn:
+        problems.append("freeturn_agent.py must read the release checksums from github")
+    if "checksums.txt" not in bot:
+        problems.append("freeturn.py must read the release checksums of a newer tag")
+    core = read(ROOT / "BOT" / "xray.py")
+    if "VERSION_CHOICES = (XRAY_VERSION, LATEST_CHOICE)" not in core:
+        problems.append("xray.py must offer the single pinned version and latest, nothing else")
+    if "version: str = LATEST_CHOICE" not in core:
+        problems.append("xray.py must install the latest release by default")
     return problems
 
 

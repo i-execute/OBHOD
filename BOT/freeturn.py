@@ -3,6 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,7 +23,15 @@ SCRIPT_URL = RELEASE_URL
 PINNED_SCRIPT_SHA256 = {
     "v4.1.1": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
 }
-VERSION_CHOICES = ("latest", "v4.1.1")
+VERSION_CHOICES = ("latest", FALLBACK_VERSION)
+CHECKSUMS_ASSET = "checksums.txt"
+CHECKSUMS_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
+CHECKSUMS_MAX = 512 * 1024
+CHECKSUMS_TIMEOUT = 8.0
+CHECKSUMS_OK_TTL = 3600.0
+CHECKSUMS_FAIL_TTL = 300.0
+CHECKSUMS_CACHE = {}
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 ASSET_BY_ARCH = {
     "x86_64": "server-linux-amd64",
     "amd64": "server-linux-amd64",
@@ -120,7 +132,66 @@ def normalize_version(version: str = "") -> str:
     return text if text.startswith("v") else "v" + text
 
 
-def resolve_version(version: str = "", lookup: object = None) -> tuple[str, str]:
+def checksums_url(version: str = FALLBACK_VERSION) -> str:
+    tag = version if version.startswith("v") else "v" + version
+    return RELEASE_URL.format(version=tag, asset=CHECKSUMS_ASSET)
+
+
+def allowed_checksums_url(url: str) -> bool:
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme != "https":
+        return False
+    return (parts.hostname or "").lower() in CHECKSUMS_HOSTS
+
+
+def digest_of_checksums(body: bytes) -> str:
+    try:
+        text = body.decode("utf-8", "replace")
+    except (UnicodeDecodeError, AttributeError):
+        return ""
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or parts[1] != "install.sh":
+            continue
+        value = parts[0].strip().lower()
+        if DIGEST_RE.match(value):
+            return value
+    return ""
+
+
+def fetch_release_digest(version: str, timeout: float = CHECKSUMS_TIMEOUT) -> str:
+    url = checksums_url(version)
+    if not allowed_checksums_url(url):
+        return ""
+    request = urllib.request.Request(url, headers={"User-Agent": "obhod-releases/1"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if not allowed_checksums_url(response.geturl()):
+                return ""
+            body = response.read(CHECKSUMS_MAX + 1)
+    except (OSError, ValueError):
+        return ""
+    if len(body) > CHECKSUMS_MAX:
+        return ""
+    return digest_of_checksums(body)
+
+
+def release_digest(version: str) -> str:
+    tag = version if version.startswith("v") else "v" + version
+    if tag in PINNED_SCRIPT_SHA256:
+        return PINNED_SCRIPT_SHA256[tag]
+    hit = CHECKSUMS_CACHE.get(tag)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    digest = fetch_release_digest(tag)
+    CHECKSUMS_CACHE[tag] = (time.monotonic() + (CHECKSUMS_OK_TTL if digest else CHECKSUMS_FAIL_TTL), digest)
+    return digest
+
+
+def resolve_version(version: str = "", lookup: object = None, digest_lookup: object = None) -> tuple[str, str]:
     tag = normalize_version(version)
     if tag == "local":
         return FALLBACK_VERSION, "local"
@@ -129,9 +200,13 @@ def resolve_version(version: str = "", lookup: object = None) -> tuple[str, str]
             raise FtError("freeturn %s has no pinned install script yet" % tag, "not_pinned")
         return tag, "pinned"
     found, reason = (lookup or (lambda repo: releases.latest_tag(repo)))(SCRIPT_REPO)
-    if found and found in PINNED_SCRIPT_SHA256:
+    if not found:
+        return FALLBACK_VERSION, "fallback"
+    if found in PINNED_SCRIPT_SHA256:
         return found, "api"
-    return FALLBACK_VERSION, "fallback" if not found else "not_pinned"
+    if (digest_lookup or release_digest)(found):
+        return found, "api"
+    return FALLBACK_VERSION, "not_pinned"
 
 
 def script_url(version: str = DEFAULT_VERSION) -> str:
@@ -139,9 +214,11 @@ def script_url(version: str = DEFAULT_VERSION) -> str:
     return SCRIPT_URL.format(version=tag, asset="install.sh")
 
 
-def script_digest(version: str = DEFAULT_VERSION) -> str:
+def script_digest(version: str = DEFAULT_VERSION, digest_lookup: object = None) -> str:
     tag = version if version.startswith("v") else "v" + version
-    return PINNED_SCRIPT_SHA256.get(tag, "")
+    if tag in PINNED_SCRIPT_SHA256:
+        return PINNED_SCRIPT_SHA256[tag]
+    return (digest_lookup or release_digest)(tag)
 
 
 def asset_of_arch(arch: str) -> str:

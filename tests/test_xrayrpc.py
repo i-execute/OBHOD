@@ -39,7 +39,7 @@ import time
 
 argv = sys.argv[1:]
 if argv[:1] == ["version"]:
-    print("Xray 26.10.21 (Xray, Penetrates Everything.)")
+    print("Xray 26.10.29 (Xray, Penetrates Everything.)")
     raise SystemExit(0)
 if argv[:1] == ["x25519"]:
     print("Private key: cHJpdmF0ZQ")
@@ -131,8 +131,8 @@ def payload(config: dict) -> str:
 
 
 def test_default_version_matches_fallback() -> None:
-    assert DEFAULT_VERSION == "v26.10.21"
-    assert pinned_digest("x86_64") == "0eec3ed4163c273d8c8bf821f7d219e257921cf584aa3fb970715e458e631978"
+    assert DEFAULT_VERSION == "v26.10.29"
+    assert pinned_digest("x86_64") == "8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2"
     assert PINNED_SHA256["64"] == pinned_digest("x86_64")
 
 
@@ -144,8 +144,8 @@ def test_asset_mapping() -> None:
 
 
 def test_release_asset_url() -> None:
-    url = release_asset("v26.10.21", "64")
-    assert url == "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-linux-64.zip"
+    url = release_asset("v26.10.29", "64")
+    assert url == "https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-linux-64.zip"
 
 
 def test_parse_dgst_body() -> None:
@@ -156,7 +156,7 @@ def test_parse_dgst_body() -> None:
 
 
 def test_parse_xray_version_text() -> None:
-    assert parse_xray_version("Xray 26.10.21 (Xray, Penetrates Everything.)") == "26.10.21"
+    assert parse_xray_version("Xray 26.10.29 (Xray, Penetrates Everything.)") == "26.10.29"
     assert parse_xray_version("") == ""
 
 
@@ -212,28 +212,28 @@ def test_probe_script_reports_clean_host(sandbox: dict[str, str]) -> None:
     assert body["result"] == "ok"
     data = body["data"]
     assert data["installed"] is False
-    assert data["pinned"] == "v26.10.21"
+    assert data["pinned"] == "v26.10.29"
     assert data["systemd"] is False
     assert data["ports"] == []
 
 
 def test_install_core_from_file_url(sandbox: dict[str, str]) -> None:
-    body = call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    body = call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     assert body["result"] == "ok", body
     assert body["data"]["installed"] is True
-    assert body["data"]["version"] == "26.10.21"
+    assert body["data"]["version"] == "26.10.29"
     assert body["data"]["downloaded"] is True
     assert Path(sandbox["root"], "usr/local/bin/xray").is_file()
 
 
 def test_install_core_rejects_bad_digest(sandbox: dict[str, str]) -> None:
-    body = call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + "0" * 64)
+    body = call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + "0" * 64)
     assert body["result"] == "err"
     assert body["code"] == "digest_mismatch"
 
 
 def test_install_core_reports_missing_archive(sandbox: dict[str, str]) -> None:
-    body = call("install-core", "--version=v26.10.21", "--url=file:///tmp/obhod-missing/core.zip", "--sha256=" + "0" * 64)
+    body = call("install-core", "--version=v26.10.29", "--url=file:///tmp/obhod-missing/core.zip", "--sha256=" + "0" * 64)
     assert body["result"] == "err"
     assert body["code"] == "download_failed"
 
@@ -242,15 +242,15 @@ def test_install_core_latest_falls_back_to_pinned(sandbox: dict[str, str]) -> No
     body = call(
         "install-core",
         "--version=latest",
-        "--tag=v26.10.21",
+        "--tag=v26.10.29",
         "--url=file:///tmp/obhod-missing/latest.zip",
         "--fallback-url=file://" + sandbox["archive"],
         "--fallback-sha256=" + sandbox["digest"],
     )
     assert body["result"] == "ok", body
     assert body["data"]["fallback"] is True
-    assert body["data"]["fallback_version"] == "v26.10.21"
-    assert body["data"]["version"] == "26.10.21"
+    assert body["data"]["fallback_version"] == "v26.10.29"
+    assert body["data"]["version"] == "26.10.29"
     assert any("falling back" in line for line in body["logs"])
     assert Path(sandbox["root"], "usr/local/bin/xray").is_file()
 
@@ -259,18 +259,18 @@ def test_install_core_latest_reports_fallback_log(sandbox: dict[str, str]) -> No
     body = call(
         "install-core",
         "--version=latest",
-        "--tag=v26.10.21",
+        "--tag=v26.10.29",
         "--url=file://" + sandbox["archive"],
         "--sha256=" + sandbox["digest"],
     )
     assert body["result"] == "ok", body
     assert body["data"]["fallback"] is False
-    assert body["data"]["version"] == "26.10.21"
+    assert body["data"]["version"] == "26.10.29"
     assert any("latest release" in line for line in body["logs"])
 
 
 def test_install_core_pinned_failure_does_not_fallback(sandbox: dict[str, str]) -> None:
-    body = call("install-core", "--version=v26.10.21", "--url=file:///tmp/obhod-missing/x.zip")
+    body = call("install-core", "--version=v26.10.29", "--url=file:///tmp/obhod-missing/x.zip")
     assert body["result"] == "err"
     assert body["code"] == "download_failed"
     assert not any("falling back" in line for line in body["logs"])
@@ -280,7 +280,7 @@ def test_install_core_latest_fails_when_fallback_unreachable(sandbox: dict[str, 
     body = call(
         "install-core",
         "--version=latest",
-        "--tag=v26.10.21",
+        "--tag=v26.10.29",
         "--url=file:///tmp/obhod-missing/x.zip",
         "--fallback-url=file:///tmp/obhod-missing/pin.zip",
     )
@@ -301,28 +301,28 @@ def test_apply_installs_latest_with_fallback(sandbox: dict[str, str]) -> None:
         "apply",
         "--config-b64=" + payload(config),
         "--version=latest",
-        "--tag=v26.10.21",
+        "--tag=v26.10.29",
         "--url=file:///tmp/obhod-missing/latest.zip",
         "--fallback-url=file://" + sandbox["archive"],
         "--fallback-sha256=" + sandbox["digest"],
     )
     assert body["result"] == "ok", body
     assert body["data"]["fallback"] is True
-    assert body["data"]["version"] == "26.10.21"
+    assert body["data"]["version"] == "26.10.29"
 
 
 def test_install_core_is_idempotent(sandbox: dict[str, str]) -> None:
-    first = call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    first = call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     assert first["data"]["downloaded"] is True
-    second = call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    second = call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     assert second["result"] == "ok"
     assert second["data"]["downloaded"] is False
-    forced = call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"], "--force")
+    forced = call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"], "--force")
     assert forced["data"]["downloaded"] is True
 
 
 def test_test_config_validates(sandbox: dict[str, str]) -> None:
-    call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     good = call("test-config", "--config-b64=" + payload(GOOD_CONFIG))
     assert good["result"] == "ok"
     assert good["data"]["valid"] is True
@@ -335,7 +335,7 @@ def test_test_config_validates(sandbox: dict[str, str]) -> None:
 
 
 def test_apply_requires_inbounds(sandbox: dict[str, str]) -> None:
-    call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     body = call("apply", "--config-b64=" + payload({"outbounds": []}))
     assert body["result"] == "err"
     assert body["code"] == "config_invalid"
@@ -351,8 +351,8 @@ def test_apply_start_stop_cycle(sandbox: dict[str, str]) -> None:
     port = free_port()
     config = json.loads(json.dumps(GOOD_CONFIG))
     config["inbounds"][0]["port"] = port
-    call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
-    body = call("apply", "--config-b64=" + payload(config), "--version=v26.10.21")
+    call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    body = call("apply", "--config-b64=" + payload(config), "--version=v26.10.29")
     assert body["result"] == "ok", body
     data = body["data"]
     assert data["applied"] is True
@@ -366,7 +366,7 @@ def test_apply_start_stop_cycle(sandbox: dict[str, str]) -> None:
 
 
 def test_apply_no_restart_keeps_service_stopped(sandbox: dict[str, str]) -> None:
-    call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     body = call("apply", "--config-b64=" + payload(GOOD_CONFIG), "--no-restart")
     assert body["result"] == "ok"
     assert body["data"]["service"] in {"inactive", "absent"}
@@ -381,7 +381,7 @@ def test_restart_without_config(sandbox: dict[str, str]) -> None:
 def test_x25519_command(sandbox: dict[str, str]) -> None:
     body = call("x25519")
     assert body["result"] == "err"
-    call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     body = call("x25519")
     assert body["result"] == "ok"
     assert body["data"]["private"] == "cHJpdmF0ZQ"
@@ -395,7 +395,7 @@ def test_logs_command(sandbox: dict[str, str]) -> None:
 
 
 def test_uninstall_purges(sandbox: dict[str, str]) -> None:
-    call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     call("apply", "--config-b64=" + payload(GOOD_CONFIG), "--no-restart")
     body = call("uninstall", "--purge")
     assert body["result"] == "ok"
@@ -406,7 +406,7 @@ def test_uninstall_purges(sandbox: dict[str, str]) -> None:
 
 
 def test_uninstall_keeps_core_without_purge(sandbox: dict[str, str]) -> None:
-    call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
     body = call("uninstall")
     assert body["result"] == "ok"
     assert call("probe")["data"]["installed"] is True
@@ -453,7 +453,7 @@ def test_control_client_over_fake_shell(sandbox: dict[str, str]) -> None:
     cfg = SshSettings()
     state = asyncio.run(control.probe(cfg))
     assert state.installed is False
-    assert state.pinned == "v26.10.21"
+    assert state.pinned == "v26.10.29"
     asyncio.run(control.install_core(cfg, url="file://" + sandbox["archive"], sha256=sandbox["digest"]))
     applied = asyncio.run(control.apply(cfg, json.dumps(GOOD_CONFIG), restart=False))
     assert applied.config_exists is True

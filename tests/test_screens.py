@@ -28,9 +28,9 @@ def test_home_renders_without_server_state(tmp_path: Path) -> None:
 
 
 def test_home_reports_core_and_ban_state(tmp_path: Path) -> None:
-    view = make_view(tmp_path, core={"installed": True, "service": "active", "version": "26.10.21", "listening": [443]})
+    view = make_view(tmp_path, core={"installed": True, "service": "active", "version": "26.10.29", "listening": [443]})
     html = screens.home(view).to_html()
-    assert "26.10.21" in html
+    assert "26.10.29" in html
     assert "443" in html
 
 
@@ -139,7 +139,7 @@ def render_all(lang: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, object]]:
     inbound.make_client("owner")
     state.xray.add(inbound)
     state.xray.scan_targets = ["www.google.com:443"]
-    core = {"installed": True, "service": "active", "version": "26.10.21", "listening": [443], "ports": [443]}
+    core = {"installed": True, "service": "active", "version": "26.10.29", "listening": [443], "ports": [443]}
     view = screens.View(state=state, core=core, ban=BanState(installed=True, jails=["obhod-ipl"], banned=["1.2.3.4"]), sshd=SshState(ports=[22]), lang=lang)
     xview = xscreens.XrayView(state=state.xray, core=core, lang=lang)
     xview.draft = {"network": "xhttp", "security": "reality", "port": "443"}

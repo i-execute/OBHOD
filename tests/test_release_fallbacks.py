@@ -114,15 +114,15 @@ def test_a_good_tag_is_cached_and_an_empty_one_is_not_trusted(monkeypatch: pytes
             return None
 
         def read(self, _limit: int = 0) -> bytes:
-            return b'{"tag_name": "v26.10.21"}'
+            return b'{"tag_name": "v26.10.29"}'
 
     def answer(request: object, timeout: float = 0) -> Answer:
         calls.append(1)
         return Answer()
 
     monkeypatch.setattr(module, "open_url", answer)
-    assert module.latest_tag() == "v26.10.21"
-    assert module.latest_tag() == "v26.10.21"
+    assert module.latest_tag() == "v26.10.29"
+    assert module.latest_tag() == "v26.10.29"
     assert len(calls) == 1
     assert module.API_REASON == ""
 
@@ -176,3 +176,85 @@ def test_the_pin_points_at_the_published_release() -> None:
         "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100"
     )
     assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.1", "")) == ("v4.1.1", "api")
+
+
+def test_exactly_one_xray_version_is_kept_as_the_fallback() -> None:
+    from BOT import xray
+
+    module = load(XRAY_AGENT, "xray_agent_single_pin")
+    assert xray.XRAY_VERSION == xrayrpc.DEFAULT_VERSION == module.PINNED == "v26.10.29"
+    assert xray.VERSION_CHOICES == (xray.XRAY_VERSION, "latest")
+    assert xray.XrayState().install_version() == "latest"
+    assert xray.XrayState().pinned() == "v26.10.29"
+    state = xray.XrayState()
+    state.version = "v26.10.29"
+    assert state.install_version() == "v26.10.29"
+    state.version = "v0.0.1"
+    assert state.install_version() == "latest"
+
+
+def test_the_xray_pins_are_the_published_release_digests() -> None:
+    module = load(XRAY_AGENT, "xray_agent_release_digests")
+    published = {
+        "64": "8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2",
+        "arm64-v8a": "afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58",
+        "arm32-v7a": "263fa7325c63b3a7f7316405f561e7c790b44c1461992ea648007f0374e9bdf4",
+        "arm32-v6": "7c2f4ececc528eb4115a990f326a070a7e9a1712b8be6969ef5dc8f59543895d",
+        "32": "a02065c652dd8f25806242edc9656a21495a0afc10b3c2f22dda14cd71b70726",
+        "s390x": "cd0ddcde6e0bcf42a62dfd4e18857309b5efe23a931402c9cbb04e921bcbe7fe",
+        "riscv64": "ca16e1a932d8a7e58cc06686d08c3787b71c054ed78b5760e4eb8bfd916540a2",
+    }
+    assert module.DIGESTS == published
+    assert xrayrpc.PINNED_SHA256 == published
+    assert len(published) == 7
+
+
+def test_exactly_one_freeturn_version_is_kept_as_the_fallback() -> None:
+    module = load(TURN_AGENT, "freeturn_agent_single_pin")
+    assert len(freeturn.PINNED_SCRIPT_SHA256) == 1
+    assert len(module.SCRIPT_SHA256) == 1
+    assert freeturn.FALLBACK_VERSION == module.FALLBACK_VERSION == "v4.1.1"
+    assert freeturn.VERSION_CHOICES == ("latest", freeturn.FALLBACK_VERSION)
+
+
+def test_a_newer_freeturn_release_installs_with_its_published_digest() -> None:
+    published = "d" * 64
+    assert freeturn.resolve_version("latest", lambda repo: ("v4.2.0", ""), lambda tag: published) == ("v4.2.0", "api")
+    assert freeturn.resolve_version("latest", lambda repo: ("v4.2.0", ""), lambda tag: "") == (
+        freeturn.FALLBACK_VERSION,
+        "not_pinned",
+    )
+    assert freeturn.resolve_version("latest", lambda repo: ("", "rate_limited"), lambda tag: published) == (
+        freeturn.FALLBACK_VERSION,
+        "fallback",
+    )
+    assert freeturn.script_digest("v4.2.0", lambda tag: published) == published
+    assert freeturn.script_digest(freeturn.FALLBACK_VERSION) == freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION]
+
+
+def test_the_checksums_file_is_parsed_strictly() -> None:
+    body = (
+        b"51592ed16012f48d7765ae61b4e8a19179c8903e2cbaa141dd5c11318985ac1a  client-darwin-amd64\n"
+        b"91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100  install.sh\n"
+    )
+    assert freeturn.digest_of_checksums(body) == "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100"
+    assert freeturn.digest_of_checksums(b"") == ""
+    assert freeturn.digest_of_checksums(b"not a checksum  install.sh\n") == ""
+    assert freeturn.digest_of_checksums(b"zz  install.sh\n") == ""
+    module = load(TURN_AGENT, "freeturn_agent_checksums")
+    assert module.digest_of_checksums(body) == freeturn.digest_of_checksums(body)
+
+
+def test_the_checksums_are_read_from_github_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert freeturn.checksums_url("v4.1.1") == (
+        "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/checksums.txt"
+    )
+    assert freeturn.allowed_checksums_url(freeturn.checksums_url("v4.1.1")) is True
+    assert freeturn.allowed_checksums_url("https://example.com/checksums.txt") is False
+    assert freeturn.allowed_checksums_url("http://github.com/checksums.txt") is False
+    module = load(TURN_AGENT, "freeturn_agent_checksum_hosts")
+    assert module.allowed_url(freeturn.checksums_url("v4.1.1")) is True
+    freeturn.CHECKSUMS_CACHE.clear()
+    monkeypatch.setattr(freeturn, "fetch_release_digest", lambda tag, timeout=None: "")
+    assert freeturn.release_digest("v4.2.0") == ""
+    assert freeturn.CHECKSUMS_CACHE["v4.2.0"][1] == ""

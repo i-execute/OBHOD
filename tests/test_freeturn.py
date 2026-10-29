@@ -140,8 +140,9 @@ def test_release_urls() -> None:
     assert script_url("v4.1.1").endswith("/v4.1.1/install.sh")
     assert script_url("4.1.1").endswith("/v4.1.1/install.sh")
     assert len(script_digest("v4.1.1")) == 64
-    assert script_digest("v0.0.1") == ""
-    assert script_digest("v4.1.0") == ""
+    assert script_digest("v0.0.1", digest_lookup=lambda tag: "") == ""
+    assert script_digest("v4.1.0", digest_lookup=lambda tag: "") == ""
+    assert script_digest("v4.2.0", digest_lookup=lambda tag: "c" * 64) == "c" * 64
     assert asset_of_arch("x86_64") == "server-linux-amd64"
     assert asset_of_arch("aarch64") == "server-linux-arm64"
     assert asset_of_arch("mips") == ""
@@ -802,4 +803,51 @@ def test_the_dropped_version_is_refused_everywhere() -> None:
     module = load_agent()
     with pytest.raises(module.AgentError) as caught:
         module.resolve_version("v4.1.0")
+    assert caught.value.code == "not_pinned"
+
+
+def test_the_plan_passes_the_published_digest_of_a_newer_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    control = FtControl(shell=FakeShell())
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.2.0", ""))
+    monkeypatch.setattr(freeturn, "release_digest", lambda tag: "d" * 64)
+    items = control.plan_argv(["apply", "--version=latest"])
+    assert "--version=v4.2.0" in items
+    assert "--script-sha256=" + "d" * 64 in items
+    assert "releases/download/v4.2.0/install.sh" in " ".join(items)
+
+
+def test_the_plan_falls_back_when_the_newer_release_publishes_no_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    control = FtControl(shell=FakeShell())
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.2.0", ""))
+    monkeypatch.setattr(freeturn, "release_digest", lambda tag: "")
+    items = control.plan_argv(["apply", "--version=latest"])
+    assert "--version=v4.2.0" not in items
+    assert "--version=" + freeturn.FALLBACK_VERSION in items
+    assert "--script-sha256=" + freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION] in items
+
+
+def test_the_agent_installs_the_newest_release_with_its_published_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_agent()
+    seen: dict[str, str] = {}
+
+    def fake_download(url: str, expected: str) -> str:
+        seen["url"] = url
+        seen["digest"] = expected
+        return "/tmp/not-a-script"
+
+    monkeypatch.setattr(module, "read_cache", lambda digest: "")
+    monkeypatch.setattr(module, "download", fake_download)
+    monkeypatch.setattr(module, "release_digest", lambda tag: "d" * 64)
+    module.script_source({"version": "latest"}, lookup=lambda repo: ("v4.2.0", ""))
+    assert seen["url"].endswith("/v4.2.0/install.sh")
+    assert seen["digest"] == "d" * 64
+
+
+def test_the_agent_refuses_a_script_without_a_published_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_agent()
+    monkeypatch.setattr(module, "read_cache", lambda digest: "")
+    monkeypatch.setattr(module, "release_digest", lambda tag: "")
+    monkeypatch.setattr(module, "download", lambda url, expected: pytest.fail("the download must not start"))
+    with pytest.raises(module.AgentError) as caught:
+        module.script_source({"version": "latest"}, lookup=lambda repo: ("v4.2.0", ""))
     assert caught.value.code == "not_pinned"

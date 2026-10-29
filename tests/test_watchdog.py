@@ -159,3 +159,37 @@ def test_the_cli_commands_work(tmp_path: Path, name: str) -> None:
     target = clone(tmp_path)
     result = run_tool(target, name)
     assert result.returncode == 0
+
+
+def test_a_second_freeturn_pin_is_reported(tmp_path: Path) -> None:
+    target = clone(tmp_path)
+    agent = target / "Storage" / "remote" / "freeturn_agent.py"
+    body = agent.read_text(encoding="utf-8").replace(
+        'FALLBACK_VERSION = "v4.1.1"\nSCRIPT_SHA256 = {\n',
+        'FALLBACK_VERSION = "v4.1.1"\nSCRIPT_SHA256 = {\n    "v4.1.0": "b" * 64,\n',
+        1,
+    )
+    agent.write_text(body, encoding="utf-8")
+    result = run_tool(target, "policy")
+    assert result.returncode == 1
+    assert "exactly one fallback version" in result.stdout
+
+
+def test_a_digestless_install_is_reported(tmp_path: Path) -> None:
+    target = clone(tmp_path)
+    agent = target / "Storage" / "remote" / "freeturn_agent.py"
+    body = agent.read_text(encoding="utf-8").replace("    if not expected:\n", "    if False:\n", 1)
+    agent.write_text(body, encoding="utf-8")
+    result = run_tool(target, "policy")
+    assert result.returncode == 1
+    assert "without a published digest" in result.stdout
+
+
+def test_a_pinned_default_xray_is_reported(tmp_path: Path) -> None:
+    target = clone(tmp_path)
+    core = target / "BOT" / "xray.py"
+    body = core.read_text(encoding="utf-8").replace("    version: str = LATEST_CHOICE\n", '    version: str = XRAY_VERSION\n', 1)
+    core.write_text(body, encoding="utf-8")
+    result = run_tool(target, "policy")
+    assert result.returncode == 1
+    assert "latest release by default" in result.stdout

@@ -54,8 +54,8 @@ class FakeControl:
         self.calls: list[list[str]] = []
         self.core = {
             "installed": True,
-            "version": "26.10.21",
-            "pinned": "v26.10.21",
+            "version": "26.10.29",
+            "pinned": "v26.10.29",
             "core_path": "/usr/local/bin/xray",
             "config_path": "/usr/local/etc/xray/config.json",
             "config_exists": True,

@@ -13,14 +13,14 @@ def view(security: str = "reality", network: str = "raw") -> xscreens.XrayView:
 
     state = XrayState()
     state.inbounds.append(new_inbound("vless", 443, network, security))
-    return xscreens.XrayView(state=state, core={"installed": True, "service": "active", "version": "26.10.21"})
+    return xscreens.XrayView(state=state, core={"installed": True, "service": "active", "version": "26.10.29"})
 
 
 def test_home_and_core_line() -> None:
     item = view()
     html = xscreens.home(item).to_html()
     assert "Xray" in html
-    assert "26.10.21" in html
+    assert "26.10.29" in html
     assert count_buttons(html) <= MAX_BUTTONS
     assert i18n.t("HOME_CORE_MISSING") in xscreens.core_line(xscreens.XrayView(state=item.state, core={"installed": False}), i18n.translator())
     assert i18n.t("HOME_CORE_MISSING", "zh") in xscreens.core_line(xscreens.XrayView(state=item.state, core={"installed": False}, lang="zh"), i18n.translator("zh"))
@@ -130,7 +130,7 @@ def test_subs_screen_shows_path_format() -> None:
 def test_core_screen_with_and_without_state() -> None:
     item = view()
     html = xscreens.core_screen(item).to_html()
-    assert "26.10.21" in html
+    assert "26.10.29" in html
     empty = xscreens.XrayView(state=item.state)
     assert i18n.t("XR_CORE_UNKNOWN") in xscreens.core_screen(empty).to_html()
 
@@ -184,6 +184,6 @@ def test_confirm_logs_busy() -> None:
 
 
 def test_version_row_and_defaults() -> None:
-    assert "xr:core:ver:latest" in xscreens.version_row("v26.10.21")
+    assert "xr:core:ver:latest" in xscreens.version_row("v26.10.29")
     assert len(xscreens.default_targets()) >= 100
     assert xscreens.stat_line(new_inbound("vless", 443, "raw", "reality")) == "vless 443 raw reality"

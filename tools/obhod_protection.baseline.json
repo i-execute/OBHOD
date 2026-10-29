@@ -9,11 +9,11 @@
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
     "BOT/shell.py": "1f87254423b2d8a3566281c8c88f8bcdead57f358ec273b3cb8f8c4b788bf844",
     "Storage/remote/fail2ban_agent.py": "42c99a743ca77aa1d55c84f6f62366e102cd31374b2d6292952bae3373a1add1",
-    "Storage/remote/freeturn_agent.py": "63b668ccf440f163761e7813f3bfc390bbf7fc966b89e3ebbe7e0ed97ffe674c",
+    "Storage/remote/freeturn_agent.py": "0b80d8eb23718c18fb566ce2805fac4650dc0279458d6c2b6022b687059a9b07",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "bb9838a2ae0ebd7a47f07c27051f996f564e023f0cbd1577c1b27e231290cef9",
-    "Storage/remote/xray_agent.py": "212a6782a4df8ab30fbb415ac352c6c85d2d0627448e2f7c7a944e030e7c5e8b",
-    "tools/obhod_watchdog.py": "84f54d6a133b3acb3c448e2aad0350a792db043645e4fe382af11803e8a6d7c2"
+    "Storage/remote/xray_agent.py": "5b569f60525797ae727d576e85af18ba7a0c084823bde284f6e55ce26540c60f",
+    "tools/obhod_watchdog.py": "1bf73b4c72b3300aa5555172cf31a72b3157716f6721f3c0dcc19c20356fc0f3"
   },
   "policy": [
     "dangerous_calls",

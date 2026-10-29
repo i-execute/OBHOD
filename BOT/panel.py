@@ -523,7 +523,7 @@ class XrayPanel:
         await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=t("NOTICE_VERSION_SELECTED", value=value))))
 
     async def install_core(self, chat_id: int, msg_id: int) -> None:
-        version = self.state.version or DEFAULT_VERSION
+        version = self.state.install_version()
         t = self.tr()
         await self.render(
             chat_id,
@@ -559,7 +559,7 @@ class XrayPanel:
         except XrayError as exc:
             await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=str(exc))))
             return
-        version = self.state.version or DEFAULT_VERSION
+        version = self.state.install_version()
         await self.render(
             chat_id,
             msg_id,

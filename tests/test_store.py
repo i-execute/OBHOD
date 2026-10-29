@@ -39,7 +39,9 @@ def test_state_from_empty_dict() -> None:
     assert state.log_tail == 200
     assert state.sub_port == 2096
     assert state.xray.inbounds == []
-    assert state.xray.version.startswith("v26")
+    assert state.xray.version == "latest"
+    assert state.xray.install_version() == "latest"
+    assert state.xray.pinned().startswith("v26")
 
 
 def test_save_and_load_permissions(tmp_path: Path) -> None:

@@ -24,6 +24,12 @@ API_TIMEOUT = 8
 API_TTL = 600
 API_FAIL_TTL = 300
 PIN_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+CHECKSUMS_ASSET = "checksums.txt"
+CHECKSUMS_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/%s/" + CHECKSUMS_ASSET
+CHECKSUMS_MAX = 512 * 1024
+CHECKSUMS_TTL = 3600
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+CHECKSUMS_CACHE = {}
 API_CACHE = {}
 DEFAULT_URL = SCRIPT_URL % FALLBACK_VERSION
 DEFAULT_SHA256 = SCRIPT_SHA256[FALLBACK_VERSION]
@@ -157,7 +163,50 @@ def rate_limited(exc):
     return code == 403 and str(headers.get("X-RateLimit-Remaining", "") or "").strip() == "0"
 
 
-def resolve_version(requested, lookup=None):
+def digest_of_checksums(body):
+    try:
+        text = body.decode("utf-8", "replace")
+    except (UnicodeDecodeError, AttributeError):
+        return ""
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or parts[1] != "install.sh":
+            continue
+        value = parts[0].strip().lower()
+        if DIGEST_RE.match(value):
+            return value
+    return ""
+
+
+def fetch_release_digest(tag):
+    url = CHECKSUMS_URL % tag
+    if not allowed_url(url):
+        return ""
+    request = urllib.request.Request(url, headers={"User-Agent": "obhod-freeturn/3"})
+    try:
+        with urllib.request.urlopen(request, timeout=API_TIMEOUT) as response:
+            if not allowed_url(response.geturl()):
+                return ""
+            body = response.read(CHECKSUMS_MAX + 1)
+    except (OSError, ValueError):
+        return ""
+    if len(body) > CHECKSUMS_MAX:
+        return ""
+    return digest_of_checksums(body)
+
+
+def release_digest(tag):
+    if tag in SCRIPT_SHA256:
+        return SCRIPT_SHA256[tag]
+    hit = CHECKSUMS_CACHE.get(tag)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    digest = fetch_release_digest(tag)
+    CHECKSUMS_CACHE[tag] = (time.monotonic() + CHECKSUMS_TTL, digest)
+    return digest
+
+
+def resolve_version(requested, lookup=None, digest_lookup=None):
     text = str(requested or "").strip().lower()
     if text == "local":
         return FALLBACK_VERSION, "local"
@@ -171,7 +220,11 @@ def resolve_version(requested, lookup=None):
             raise AgentError("not_pinned", "the install script of %s is not pinned yet" % tag, "fetch")
         return tag, "pinned"
     found, reason = (lookup or api_tag)(SCRIPT_REPO)
-    if found and found in SCRIPT_SHA256:
+    if not found:
+        return FALLBACK_VERSION, "fallback"
+    if found in SCRIPT_SHA256:
+        return found, "api"
+    if (digest_lookup or release_digest)(found):
         return found, "api"
     return FALLBACK_VERSION, "fallback"
 
@@ -253,10 +306,12 @@ def download(url, expected):
     return write_cache(got, body)
 
 
-def script_source(flags, lookup=None):
-    tag, _source = resolve_version(flags.get("version", ""), lookup)
+def script_source(flags, lookup=None, digest_lookup=None):
+    tag, _source = resolve_version(flags.get("version", ""), lookup, digest_lookup)
     url = str(flags.get("script_url", "") or script_url(tag))
-    expected = str(flags.get("script_sha256", "") or SCRIPT_SHA256[tag]).strip().lower()
+    expected = str(flags.get("script_sha256", "") or release_digest(tag)).strip().lower()
+    if not expected:
+        raise AgentError("not_pinned", "the install script of %s has no published digest" % tag, "fetch")
     if expected and not all(ch in "0123456789abcdef" for ch in expected):
         raise AgentError("bad_arg", "the script digest is not hexadecimal", "fetch")
     if len(expected) not in (0, 64):

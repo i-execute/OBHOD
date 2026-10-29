@@ -190,7 +190,7 @@ def test_slow_client_cannot_hold_a_thread(tmp_path: Path) -> None:
 
 def test_release_urls_are_allowlisted() -> None:
     module = load(AGENT, "agent_url_checks")
-    assert module.safe_url("https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-linux-64.zip")
+    assert module.safe_url("https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-linux-64.zip")
     for bad in (
         "http://github.com/x.zip",
         "https://evil.example/x.zip",

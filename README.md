@@ -38,8 +38,8 @@ the bot opens by default.
 | Security | `reality`, `tls`, `none` |
 | VLESS encryption | `mlkem768x25519plus.<native\|xorpub\|random>.<600s\|300-600s\|0s>[.<padding>].<key>` |
 | REALITY signature | optional `ML-DSA-65`, enabled only when the target chain is at least 3500 bytes |
-| Core | Xray pinned to `v26.10.21`, `latest` also selectable, release zip checked against a pinned digest for every architecture |
-| Second core | FreeTurn (`vk` turn transport) pinned to `v4.1.1`, install script fetched from the release on every call and checked against a pinned digest |
+| Core | Xray `latest` from the release api by default, the only other choice is the hardcoded fallback `v26.10.29`, every release zip is checked against a pinned digest per architecture |
+| Second core | FreeTurn (`vk` turn transport) `latest` from the release api by default, the hardcoded fallback is `v4.1.1`, the install script is checked against the digest published in the release checksums and against the pinned one |
 | Core switch | `Core switch` screen picks Xray or FreeTurn for the interface, both cores may run side by side |
 | Scanner | certificate check, TLS 1.3, `h2`, and a raw ClientHello carrying a real ML-KEM-768 key share |
 | Subscriptions | `http://host:port/<64 chars>/<64 chars>`, both segments from `secrets`, url safe alphabet |
@@ -99,9 +99,10 @@ FreeTurn is a second engine next to Xray, driven through the same proto 3 envelo
 | --- | --- |
 | Script source | `https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/install.sh`, https only, github hosts only, certificate verified |
 | Integrity | sha256 `91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100`, a mismatch stops the run before anything executes |
-| Pinned release | `v4.1.1`, published 2026-10-28 with the captcha power of work cooldown fix, it is the only pinned version and any other tag is refused with `not_pinned` |
-| Version choice | `latest` asks the github api once and keeps the answer for ten minutes, a rate limited, blocked or broken api answer falls back to the hardcoded `v4.1.1` with its pinned digest, so a host without api access still installs a verified release |
-| Unknown versions | a version without a pinned digest is refused with `not_pinned` instead of running an unverified script |
+| Pinned release | `v4.1.1`, published 2026-10-28 with the captcha power of work cooldown fix, it is the only hardcoded version and it is used only as the fallback |
+| Version choice | `latest` asks the github api once and keeps the answer for ten minutes and installs that tag, the digest of its `install.sh` is read from the `checksums.txt` of the same release, so a new release installs without a code change |
+| Fallback | a rate limited, blocked or broken api answer, a newer tag without a published digest, or an offline host all end on the hardcoded `v4.1.1` with its pinned digest, so the bot never installs an unverified script |
+| Unknown versions | a version asked for by hand without a pinned digest is refused with `not_pinned` instead of running an unverified script |
 | Cache | `/var/lib/obhod/freeturn`, directory 0700, file 0600, digest rechecked on every read |
 | Invocation | `bash <script> <command> --key=value`, argv only, no shell, stdin closed, per command timeouts |
 | Plan fields | method `systemd\|docker`, backend `new\|external`, udp port, tunnel port and subnet, mode `udp\|tcp`, obfuscation `rtpopus3\|rtpopus2\|rtpopus\|none`, core version |
@@ -222,9 +223,9 @@ The repository is written for a host that is exposed to the whole internet, so t
   with a semaphore (`503` when the queue is full), sets a fifteen second socket timeout so a slow client cannot hold a
   thread, truncates the request path, and sanitizes every header value, so a title or a filename cannot inject a header.
 * The github api is a hint, never a dependency: `latest` is resolved once and cached for ten minutes, a `403` that
-  reports `X-RateLimit-Remaining: 0`, a `429`, a `Retry-After`, a dead connection or a tag that carries no pinned digest
-  all end on the hardcoded pin (`v26.10.21` for Xray with a digest per architecture, `v4.1.1` for FreeTurn), and the log
-  line says which of the two happened. The lookup sends no token and no credential of any kind.
+  reports `X-RateLimit-Remaining: 0`, a `429`, a `Retry-After`, a dead connection or a tag that carries no published
+  digest all end on the single hardcoded fallback (`v26.10.29` for Xray with a digest per architecture, `v4.1.1` for
+  FreeTurn), and the log line says which of the two happened. The lookup sends no token and no credential of any kind.
 * The release download is allowlisted: `https` only, `github.com`, `objects.githubusercontent.com` or
   `release-assets.githubusercontent.com` only, `.zip` or `.dgst` only, no credentials in the url, at most three
   redirects and every redirect hop is checked against the same allowlist, and a local `file://` archive must live under
