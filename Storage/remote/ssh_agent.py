@@ -72,9 +72,12 @@ def ports_of(text):
         if not line or line.startswith("#"):
             continue
         parts = line.replace("=", " ").split()
-        if len(parts) >= 2 and parts[0].lower() == "port" and parts[1].isdigit():
-            value = int(parts[1])
-            if value not in ports:
+        if len(parts) >= 2 and parts[0].lower() == "port":
+            token = parts[1]
+            if not token.isdigit() or len(token) > 5:
+                continue
+            value = int(token)
+            if 0 < value < 65536 and value not in ports:
                 ports.append(value)
     return ports or [22]
 

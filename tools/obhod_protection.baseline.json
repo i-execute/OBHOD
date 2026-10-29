@@ -7,9 +7,9 @@
     "BOT/ratelimit.py": "cd89721d1914c42b469ff1782c2305ceb2664f4c1f2b816447d9f754bd5ddc6c",
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
     "BOT/shell.py": "1f87254423b2d8a3566281c8c88f8bcdead57f358ec273b3cb8f8c4b788bf844",
-    "Storage/remote/fail2ban_agent.py": "5373b05ad80477b537350166c7a98815dccd220bdb57af89ca61ef1ac2182366",
+    "Storage/remote/fail2ban_agent.py": "42c99a743ca77aa1d55c84f6f62366e102cd31374b2d6292952bae3373a1add1",
     "Storage/remote/freeturn_agent.py": "be61b771fbf709f36c55f939f04c6df8349517fa3d65a05ef57ee833cb03c0a7",
-    "Storage/remote/ssh_agent.py": "eb87fef525aa3855758765b934b932e5a5042c3db7e5c194da7ef912e43abce8",
+    "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "bb9838a2ae0ebd7a47f07c27051f996f564e023f0cbd1577c1b27e231290cef9",
     "Storage/remote/xray_agent.py": "62935586a2710fb8abfb1fa8097e75fc6f94903f56733cf0d48c5340b2b733f1",
     "tools/obhod_watchdog.py": "7c445c3a4825a0d6844622e984bb5da23691771ad4d7c739c7e548baa0d2026c"

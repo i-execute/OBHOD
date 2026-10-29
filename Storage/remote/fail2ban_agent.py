@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 PROTO = 3
 LOGS = []
@@ -131,12 +132,33 @@ def have(tool):
     return shutil.which(tool) is not None
 
 
-def read_text(path):
+def bounded_int(value, low, high, default=None):
+    text = str(value if value is not None else "").strip()
+    if not text.isdigit() or len(text) > 9:
+        return default
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            return handle.read()
+        number = int(text)
+    except ValueError:
+        return default
+    if number < low or number > high:
+        return default
+    return number
+
+
+READ_LIMIT = 65536
+
+
+def read_text(path, limit=READ_LIMIT):
+    if os.path.islink(path) or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(limit + 1)
     except OSError:
         return ""
+    if len(raw) > limit:
+        return ""
+    return raw.decode("utf-8", "replace")
 
 
 def ports_in_config(path):
@@ -153,9 +175,9 @@ def ports_in_config(path):
         if inside_match:
             continue
         if lowered.startswith("port ") or lowered.startswith("port="):
-            value = token.replace("=", " ").split()[-1]
-            if value.isdigit() and 0 < int(value) < 65536:
-                ports.append(int(value))
+            port = bounded_int(token.replace("=", " ").split()[-1], 1, 65535)
+            if port is not None:
+                ports.append(port)
     return ports
 
 
@@ -222,13 +244,27 @@ def write_reason(target, exc):
 
 
 def write_file(target, body, mode=0o644):
-    folder = os.path.dirname(target)
+    folder = os.path.dirname(target) or "."
+    if os.path.islink(target):
+        raise ScriptError("unsafe_path", "the file %s is a link, refusing to write through it" % target, "write")
     try:
         if not os.path.isdir(folder):
             os.makedirs(folder, exist_ok=True)
-        with open(target, "w", encoding="utf-8") as handle:
-            handle.write(body)
-        os.chmod(target, mode)
+        handle, temp = tempfile.mkstemp(dir=folder, prefix=".obhod-", suffix=".tmp")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as sink:
+                sink.write(body)
+                sink.flush()
+                os.fsync(sink.fileno())
+            os.chmod(temp, mode)
+            os.replace(temp, target)
+        except OSError:
+            if os.path.exists(temp):
+                try:
+                    os.unlink(temp)
+                except OSError:
+                    pass
+            raise
     except OSError as exc:
         raise ScriptError("write_failed", write_reason(target, exc), "write") from None
 
@@ -569,7 +605,9 @@ def install(flags):
     if not have("systemctl"):
         raise ScriptError("no_systemd", "systemd is required to run fail2ban", "start")
     run(["systemctl", "enable", "fail2ban"], timeout=90)
-    code, text = run(["systemctl", "restart", "fail2ban"], timeout=180)
+    code, text = run(["fail2ban-client", "reload"], timeout=180)
+    if code != 0:
+        code, text = run(["systemctl", "restart", "fail2ban"], timeout=180)
     if code != 0:
         raise ScriptError("start_failed", "fail2ban did not start: " + text[:400], "start")
     return report(port)
@@ -592,7 +630,8 @@ def uninstall(flags):
                 os.unlink(target)
             except OSError:
                 pass
-    run(["fail2ban-client", "unban", "--all"], timeout=60)
+    for jail in (JAIL, JAIL_SSH, JAIL_SUB, JAIL_SEC):
+        run(["fail2ban-client", "set", jail, "unban", "--all"], timeout=60)
     code, text = run(["iptables", "-D", "INPUT", "-j", CHAIN], timeout=30)
     run(["iptables", "-F", CHAIN], timeout=30)
     run(["iptables", "-X", CHAIN], timeout=30)

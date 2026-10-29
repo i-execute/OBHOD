@@ -291,3 +291,58 @@ def test_a_missing_auth_log_does_not_abort_the_install(
     section = jail.split("[obhod-sshd]", 1)[1].split("[obhod-subs]", 1)[0]
     assert "backend = systemd" in section
     assert "logpath" not in section
+
+
+def test_the_remove_never_unbans_a_jail_of_another_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, etc, flags = prepare(tmp_path, monkeypatch, "coexist_unban")
+    calls: list[list[str]] = []
+
+    def counting_run(argv, timeout=120):
+        calls.append(list(argv))
+        return 0, ""
+
+    module.install(flags)
+    calls.clear()
+    monkeypatch.setattr(module, "run", counting_run)
+    module.uninstall(flags)
+    assert ["fail2ban-client", "unban", "--all"] not in calls
+    unbanned = [item[2] for item in calls if item[:2] == ["fail2ban-client", "set"] and item[-2:] == ["unban", "--all"]]
+    assert sorted(unbanned) == sorted([module.JAIL, module.JAIL_SSH, module.JAIL_SUB, module.JAIL_SEC])
+    assert module.THIRD_PARTY_JAIL not in unbanned
+
+
+def test_the_install_reloads_the_daemon_instead_of_restarting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, etc, flags = prepare(tmp_path, monkeypatch, "coexist_reload")
+    calls: list[list[str]] = []
+
+    def counting_run(argv, timeout=120):
+        calls.append(list(argv))
+        return 0, ""
+
+    monkeypatch.setattr(module, "run", counting_run)
+    module.install(flags)
+    assert ["fail2ban-client", "reload"] in calls
+    assert ["systemctl", "restart", "fail2ban"] not in calls
+
+
+def test_the_install_still_restarts_when_the_reload_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, etc, flags = prepare(tmp_path, monkeypatch, "coexist_restart")
+    calls: list[list[str]] = []
+
+    def counting_run(argv, timeout=120):
+        calls.append(list(argv))
+        if argv[:2] == ["fail2ban-client", "reload"]:
+            return 1, "reload failed"
+        return 0, ""
+
+    monkeypatch.setattr(module, "run", counting_run)
+    module.install(flags)
+    assert ["fail2ban-client", "reload"] in calls
+    assert ["systemctl", "restart", "fail2ban"] in calls
+    assert calls.index(["fail2ban-client", "reload"]) < calls.index(["systemctl", "restart", "fail2ban"])
