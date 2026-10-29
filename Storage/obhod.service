@@ -19,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=@STATE_DIR@ /var/log/obhod /root/.goygram
+ReadWritePaths=@STATE_DIR@ /var/log /root/.goygram -/etc/fail2ban
 Environment=OBHOD_SECURITY_LOG=/var/log/obhod/security.log
 ProtectKernelTunables=true
 ProtectKernelModules=true
@@ -31,7 +31,7 @@ ProtectClock=true
 ProtectKernelLogs=true
 ProtectHostname=true
 RestrictNamespaces=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 MemoryDenyWriteExecute=false
 StandardOutput=journal
 StandardError=journal
