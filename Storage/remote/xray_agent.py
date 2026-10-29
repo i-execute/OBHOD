@@ -567,7 +567,7 @@ def restore_config(backup):
     try:
         with open(backup, "rb") as handle:
             previous = handle.read()
-        write_bytes_atomic(CONF, previous, 0o644)
+        write_bytes_atomic(CONF, previous, 0o600)
     except OSError:
         return False
     note("the previous configuration is restored")
@@ -584,7 +584,7 @@ def write_config(payload):
     if not ok:
         raise ScriptError("config_invalid", text[:600] or "the core rejected the configuration", "config")
     backup_config()
-    write_bytes_atomic(CONF, payload, 0o644)
+    write_bytes_atomic(CONF, payload, 0o600)
     note("the configuration is written")
     return config
 
