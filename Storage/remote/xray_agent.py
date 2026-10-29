@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -28,7 +29,20 @@ ASSETS = {
     "s390x": "s390x",
     "riscv64": "riscv64",
 }
-DIGESTS = {"64": "0eec3ed4163c273d8c8bf821f7d219e257921cf584aa3fb970715e458e631978"}
+DIGESTS = {
+    "64": "0eec3ed4163c273d8c8bf821f7d219e257921cf584aa3fb970715e458e631978",
+    "arm64-v8a": "d1304946c486d98e6b886e9b931eaaaebb23835b30e217638037b7f2721d4e9c",
+    "arm32-v7a": "89978508fa2ebb4a1e661f2c6ed51d241c4091b3cd17f4c65fdf20baae7dedac",
+    "arm32-v6": "cbc12722c484c022f9e31593bd29d5cd4593c98397514ebfc3289953eeb36a64",
+    "32": "dde802c3c932aa1b8cdc5010de81b54719ff5e334f7c4800354825ed6c9d68b6",
+    "s390x": "12797bc3d865c7339f7722b088d1b0bdbdae179c2e50f41ea2566b0a331d5c6b",
+    "riscv64": "3045051037f5f543bd9e4787f331de9e8c83db0a072a26e49ef88512da5bfd48",
+}
+API_URL = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+API_TTL = 600
+API_FAIL_TTL = 300
+API_CACHE = {}
+API_REASON = ""
 ROOT = os.environ.get("XRAY_ROOT", "")
 LOGS = []
 
@@ -362,18 +376,48 @@ def download(url, target):
         raise ScriptError("download_failed", "the download failed: " + str(exc)[:200], "download") from None
 
 
-def latest_tag(timeout=15):
+def api_rate_limited(exc):
+    code = int(getattr(exc, "code", 0) or 0)
+    headers = getattr(exc, "headers", None)
+    if code == 429:
+        return True
+    if headers is None:
+        return False
+    retry = str(headers.get("Retry-After", "") or "").strip()
+    if retry.isdigit():
+        return True
+    return code == 403 and str(headers.get("X-RateLimit-Remaining", "") or "").strip() == "0"
+
+
+def latest_tag(timeout=15, use_cache=True):
+    global API_REASON
+    now = time.monotonic()
+    cached = API_CACHE.get("Xray-core")
+    if use_cache and cached and cached[0] > now:
+        API_REASON = cached[2]
+        return cached[1]
+    tag = ""
+    reason = "unreachable"
     try:
         request = urllib.request.Request(
-            "https://api.github.com/repos/XTLS/Xray-core/releases/latest",
+            API_URL,
             headers={"User-Agent": "curl/8.5.0", "Accept": "application/vnd.github+json"},
         )
         with open_url(request, timeout) as response:
             body = json.loads(response.read(65536).decode("utf-8"))
+        candidate = str(body.get("tag_name", "") or "").strip()
+        if candidate.startswith("v"):
+            tag = candidate
+            reason = ""
+        else:
+            reason = "no_tag"
+    except urllib.error.HTTPError as exc:
+        reason = "rate_limited" if api_rate_limited(exc) else "http_%d" % int(getattr(exc, "code", 0) or 0)
     except (OSError, ValueError):
-        return ""
-    tag = str(body.get("tag_name", "") or "").strip()
-    return tag if tag.startswith("v") else ""
+        reason = "unreachable"
+    API_REASON = reason
+    API_CACHE["Xray-core"] = (now + (API_TTL if tag else API_FAIL_TTL), tag, reason)
+    return tag
 
 
 def fetch_digest(version, asset, url):
@@ -622,7 +666,11 @@ def pinned_with_fallback(version, url, sha256, force, tag="", fallback_url="", f
             note("latest release: " + resolved)
         else:
             resolved = PINNED
-            note("the github api is unreachable, using the pinned " + PINNED)
+            reason = API_REASON or "unreachable"
+            if reason == "rate_limited":
+                note("the github api is rate limited, using the pinned " + PINNED)
+            else:
+                note("the github api is unreachable, using the pinned " + PINNED)
     try:
         data = install_core(resolved, url, sha256, force)
         data["fallback"] = False

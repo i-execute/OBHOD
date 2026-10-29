@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from BOT import ftscreens, i18n
-from BOT.freeturn import FtClient, FtConfig, FtError, encode_link
+from BOT.freeturn import VERSION_CHOICES, FtClient, FtConfig, FtError, encode_link
 from BOT.ftpanel import FtPanel
 from tests.fakes import FakeFtControl, make_bot
 
@@ -60,7 +60,7 @@ def test_plan_cycles_fields(tmp_path: Path) -> None:
     panel.cycle("mode")
     panel.cycle("obf_profile")
     panel.cycle("version")
-    assert panel.draft.version in {"latest", "v4.1.0"}
+    assert panel.draft.version in set(VERSION_CHOICES)
     with pytest.raises(Exception):
         panel.cycle("nope")
 

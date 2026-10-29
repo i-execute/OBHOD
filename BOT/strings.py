@@ -349,6 +349,7 @@ class EN:
     FT_CODE_INTERNAL = "the install script failed on the inside"
     FT_CODE_TRANSPORT = "the install script did not answer"
     FT_CODE_PROTO_MISMATCH = "the install script protocol version does not match"
+    FT_CODE_NOT_PINNED = "this freeturn version has no pinned install script, update the pins or pick a pinned one"
 
     INL_SAVE_DESC = "pick this result to save it"
     INL_OPTION_DESC = "pick a ready value for {label}"
@@ -1133,6 +1134,7 @@ class RU:
     FT_CODE_INTERNAL = "скрипт установки упал внутри"
     FT_CODE_TRANSPORT = "скрипт установки не ответил"
     FT_CODE_PROTO_MISMATCH = "версия протокола скрипта установки не совпадает"
+    FT_CODE_NOT_PINNED = "для этой версии freeturn нет закреплённого скрипта установки, обновите закрепления или выберите закреплённую"
 
     INL_SAVE_DESC = "нажмите этот результат чтобы сохранить"
     INL_OPTION_DESC = "готовое значение для {label}"
@@ -1917,6 +1919,7 @@ class ZH:
     FT_CODE_INTERNAL = "安装脚本内部失败"
     FT_CODE_TRANSPORT = "安装脚本没有响应"
     FT_CODE_PROTO_MISMATCH = "安装脚本协议版本不匹配"
+    FT_CODE_NOT_PINNED = "该 freeturn 版本没有固定的安装脚本, 请更新固定值或选择已固定的版本"
 
     INL_SAVE_DESC = "点选此结果即保存"
     INL_OPTION_DESC = "{label} 的现成取值"

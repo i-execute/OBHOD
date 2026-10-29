@@ -7,15 +7,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import releases
 from .shell import LocalShell, ShellError, ShellOutput, agent_argv
 
 PROTO = 3
-DEFAULT_VERSION = "v4.1.0"
+SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
+FALLBACK_VERSION = "v4.1.1"
+DEFAULT_VERSION = FALLBACK_VERSION
 RELEASE_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/{version}/{asset}"
 SCRIPT_URL = RELEASE_URL
 PINNED_SCRIPT_SHA256 = {
     "v4.1.0": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
+    "v4.1.1": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
 }
+VERSION_CHOICES = ("latest", "v4.1.1", "v4.1.0")
 ASSET_BY_ARCH = {
     "x86_64": "server-linux-amd64",
     "amd64": "server-linux-amd64",
@@ -84,6 +89,7 @@ FT_ERROR_CODES = {
     "internal": "internal error of the install script",
     "transport": "the transport to the install script failed",
     "proto_mismatch": "the install script protocol version does not match",
+    "not_pinned": "this freeturn version has no pinned install script yet",
 }
 
 REMOTE_DIR = Path(__file__).resolve().parent.parent
@@ -102,6 +108,31 @@ def agent_code() -> str:
         return AGENT_PATH.read_text(encoding="utf-8")
     except OSError as exc:
         raise FtError(f"the freeturn script is missing next to the bot: {exc}", "internal") from None
+
+
+def normalize_version(version: str = "") -> str:
+    text = str(version or "").strip().lower()
+    if text in {"", "default"}:
+        return FALLBACK_VERSION
+    if text in {"latest", "auto"}:
+        return "latest"
+    if text == "local":
+        return "local"
+    return text if text.startswith("v") else "v" + text
+
+
+def resolve_version(version: str = "", lookup: object = None) -> tuple[str, str]:
+    tag = normalize_version(version)
+    if tag == "local":
+        return FALLBACK_VERSION, "local"
+    if tag != "latest":
+        if tag not in PINNED_SCRIPT_SHA256:
+            raise FtError("freeturn %s has no pinned install script yet" % tag, "not_pinned")
+        return tag, "pinned"
+    found, reason = (lookup or (lambda repo: releases.latest_tag(repo)))(SCRIPT_REPO)
+    if found and found in PINNED_SCRIPT_SHA256:
+        return found, "api"
+    return FALLBACK_VERSION, "fallback" if not found else "not_pinned"
 
 
 def script_url(version: str = DEFAULT_VERSION) -> str:
@@ -279,8 +310,13 @@ class FtConfig:
             raise FtError("the public address is not usable", "bad_arg")
         if self.connect and not valid_hostport(self.connect):
             raise FtError("the external endpoint must look like host:port", "bad_arg")
-        if self.version not in {"latest", "local"} and not re.fullmatch(r"v?\d+\.\d+\.\d+", self.version):
+        tag = normalize_version(self.version)
+        if tag == "latest" or tag == "local":
+            return self
+        if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
             raise FtError("the version must be latest or vX.Y.Z", "bad_arg")
+        if tag not in PINNED_SCRIPT_SHA256:
+            raise FtError(FT_ERROR_CODES["not_pinned"], "not_pinned")
         return self
 
     def free_port(self, used: list[int]) -> "FtConfig":
@@ -450,16 +486,31 @@ class FtControl:
         self.timeout = float(timeout)
         self.version = version
 
-    def script_flags(self) -> list[str]:
-        out = ["--script-url=%s" % script_url(self.version)]
-        digest = script_digest(self.version)
+    def script_flags(self, version: str = "") -> tuple[list[str], str]:
+        tag, _source = resolve_version(version or self.version)
+        out = ["--script-url=%s" % script_url(tag)]
+        digest = script_digest(tag)
         if digest:
             out.append("--script-sha256=%s" % digest)
-        return out
+        return out, tag
 
-    async def call(self, argv: list[str], timeout: float | None = None) -> FtResponse:
+    def plan_argv(self, argv: list[str], version: str = "") -> list[str]:
+        requested = ""
+        for item in argv:
+            if item.startswith("--version="):
+                requested = item.split("=", 1)[1]
+                break
+        chosen = version or requested or self.version
+        flags, tag = self.script_flags(chosen)
+        keep = normalize_version(chosen) == "local"
+        items = [item for item in argv if not item.startswith("--version=")]
+        if requested:
+            items.append("--version=%s" % ("local" if keep else tag))
+        return items + flags
+
+    async def call(self, argv: list[str], timeout: float | None = None, version: str = "") -> FtResponse:
         try:
-            out: ShellOutput = await self.shell.run_argv(agent_argv(argv + self.script_flags(), agent_code()), timeout=timeout or self.timeout)
+            out: ShellOutput = await self.shell.run_argv(agent_argv(self.plan_argv(argv, version), agent_code()), timeout=timeout or self.timeout)
         except ShellError as exc:
             raise FtError(exc.message, "transport") from None
         return parse_response(out.text)

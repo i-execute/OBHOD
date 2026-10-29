@@ -6,6 +6,7 @@ from . import ftscreens, i18n, xscreens
 from .freeturn import (
     BACKENDS,
     METHODS,
+    VERSION_CHOICES,
     is_port,
     MODES,
     OBF_PROFILES,
@@ -169,7 +170,7 @@ class FtPanel:
             self.draft.obf_profile = _next(OBF_PROFILES, self.draft.obf_profile)
             return
         if field == "version":
-            self.draft.version = "latest" if self.draft.version != "latest" else "v4.1.0"
+            self.draft.version = _next(VERSION_CHOICES, self.draft.version)
             return
         raise ModelError("unknown plan field: %s" % field[:24])
 

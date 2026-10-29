@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -15,6 +16,7 @@ PROTECTED = (
     "BOT/guard.py",
     "BOT/inline.py",
     "BOT/ratelimit.py",
+    "BOT/releases.py",
     "BOT/seclog.py",
     "BOT/shell.py",
     "Storage/remote/fail2ban_agent.py",
@@ -158,6 +160,68 @@ def check_release_allowlist() -> list[str]:
     return problems
 
 
+def literal(name: str, body: str):
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id == name:
+                try:
+                    return ast.literal_eval(node.value)
+                except (ValueError, SyntaxError):
+                    return None
+    return None
+
+
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def check_release_pins() -> list[str]:
+    problems: list[str] = []
+    xray = read(ROOT / "Storage" / "remote" / "xray_agent.py")
+    assets = literal("ASSETS", xray) or {}
+    digests = literal("DIGESTS", xray) or {}
+    pinned = str(literal("PINNED", xray) or "")
+    if not re.match(r"^v[0-9]+\.[0-9]+\.[0-9]+$", pinned):
+        problems.append("xray_agent.py must keep a pinned core version")
+    for asset in sorted(set(assets.values())):
+        value = str(digests.get(asset, "") or "")
+        if not HEX64.match(value):
+            problems.append("xray_agent.py has no pinned digest for the %s asset" % asset)
+    turn = read(ROOT / "Storage" / "remote" / "freeturn_agent.py")
+    scripts = literal("SCRIPT_SHA256", turn) or {}
+    fallback = str(literal("FALLBACK_VERSION", turn) or "")
+    if fallback not in scripts:
+        problems.append("freeturn_agent.py must pin the digest of its fallback version")
+    for version, value in sorted(scripts.items()):
+        if not HEX64.match(str(value or "")):
+            problems.append("freeturn_agent.py has a broken digest for %s" % version)
+    bot = read(ROOT / "BOT" / "freeturn.py")
+    bot_pins = literal("PINNED_SCRIPT_SHA256", bot) or {}
+    bot_fallback = str(literal("FALLBACK_VERSION", bot) or "")
+    if bot_fallback not in bot_pins:
+        problems.append("freeturn.py must pin the digest of its fallback version")
+    if sorted(bot_pins) != sorted(scripts):
+        problems.append("freeturn.py and freeturn_agent.py must pin the same versions")
+    return problems
+
+
+def check_release_api() -> list[str]:
+    body = read(ROOT / "BOT" / "releases.py")
+    problems: list[str] = []
+    if "https://api.github.com" not in body:
+        problems.append("releases.py must talk to the github api over https")
+    for token in ("Authorization", "token ", "GITHUB_TOKEN", "Bearer"):
+        if token in body:
+            problems.append("releases.py must hold no credential, %s found" % token.strip())
+    if "X-RateLimit-Remaining" not in body:
+        problems.append("releases.py must recognise a rate limited answer")
+    return problems
+
+
 def check_rate_limits() -> list[str]:
     body = read(ROOT / "BOT" / "ratelimit.py")
     app = read(ROOT / "BOT" / "app.py")
@@ -216,6 +280,8 @@ POLICIES = (
     ("inline_gate", check_inline_gate),
     ("key_injection", check_key_injection),
     ("release_allowlist", check_release_allowlist),
+    ("release_pins", check_release_pins),
+    ("release_api", check_release_api),
     ("rate_limits", check_rate_limits),
     ("no_credentials", check_no_credentials),
     ("subscription_path", check_subscription_path),

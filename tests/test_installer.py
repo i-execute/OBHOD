@@ -35,8 +35,8 @@ def test_unit_template_placeholders() -> None:
     assert "@STATE_DIR@" in body
     assert "Environment=HOME=/root" in body
     assert "ProtectHome=read-only" in body
-    assert "ReadWritePaths=@STATE_DIR@ /var/log/obhod /root/.goygram -/etc/fail2ban -/etc/ssh" in body
-    assert "-/var/log/xray -/root/.ssh -/home" in body
+    assert "ReadWritePaths=@STATE_DIR@ /var/log /root/.goygram -/etc/fail2ban -/etc/ssh" in body
+    assert "-/var/lib/xray-manager -/root/.ssh -/home" in body
     assert "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK" in body
     assert "mkdir -p -m 700 /root/.goygram /root/.ssh" in INSTALLER.read_text()
     assert "mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d" in INSTALLER.read_text()

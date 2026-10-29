@@ -280,7 +280,7 @@ async def test_control_sends_the_pinned_script_flags() -> None:
     argv, timeout = shell.calls[0]
     assert argv[0].endswith("python3") or "python" in argv[0]
     joined = " ".join(argv)
-    assert "--script-url=https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.0/install.sh" in joined
+    assert "--script-url=https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/install.sh" in joined
     assert "--script-sha256=91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100" in joined
     assert timeout == 120
 
@@ -578,3 +578,199 @@ def test_agent_never_shells_out_for_flags(tmp_path: Path, capsys: pytest.Capture
     assert out["result"] == "ok"
     assert out["data"]["argc"] == 2
     assert not Path("/tmp/pwned").exists()
+
+
+def test_the_bot_resolves_latest_and_falls_back_to_the_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.1.0", ""))
+    assert freeturn.resolve_version("latest") == ("v4.1.0", "api")
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.2.0", ""))
+    assert freeturn.resolve_version("latest") == (freeturn.FALLBACK_VERSION, "not_pinned")
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("", "rate_limited"))
+    assert freeturn.resolve_version("latest") == (freeturn.FALLBACK_VERSION, "fallback")
+
+
+def test_the_bot_resolves_a_requested_version_without_the_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    def explode(repo: str) -> tuple[str, str]:
+        raise AssertionError("the api must not be called for a pinned version")
+
+    monkeypatch.setattr(freeturn.releases, "latest_tag", explode)
+    assert freeturn.resolve_version("") == (freeturn.FALLBACK_VERSION, "pinned")
+    assert freeturn.resolve_version("4.1.0") == ("v4.1.0", "pinned")
+    assert freeturn.resolve_version("local") == (freeturn.FALLBACK_VERSION, "local")
+    with pytest.raises(FtError) as caught:
+        freeturn.resolve_version("v4.2.0")
+    assert caught.value.code == "not_pinned"
+
+
+def test_a_plan_version_must_be_pinned() -> None:
+    FtConfig(version="latest").check()
+    FtConfig(version="local").check()
+    FtConfig(version="v4.1.0").check()
+    FtConfig(version="4.1.1").check()
+    with pytest.raises(FtError) as caught:
+        FtConfig(version="v4.2.0").check()
+    assert caught.value.code == "not_pinned"
+    with pytest.raises(FtError) as wrong:
+        FtConfig(version="banana").check()
+    assert wrong.value.code == "bad_arg"
+
+
+def test_the_plan_rewrites_latest_to_the_resolved_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    control = FtControl(shell=FakeShell())
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("", "rate_limited"))
+    items = control.plan_argv(["apply", "--version=latest"])
+    joined = " ".join(items)
+    assert "--version=latest" not in items
+    assert "--version=" + freeturn.FALLBACK_VERSION in items
+    assert "releases/download/%s/install.sh" % freeturn.FALLBACK_VERSION in joined
+    assert "--script-sha256=" + freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION] in joined
+
+
+def test_the_plan_follows_the_api_when_it_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    control = FtControl(shell=FakeShell())
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.1.0", ""))
+    items = control.plan_argv(["apply", "--version=latest"])
+    assert "--version=v4.1.0" in items
+    assert " ".join(items).count("releases/download/v4.1.0/install.sh") == 1
+
+
+def test_the_local_version_keeps_its_flag_and_a_pinned_script(monkeypatch: pytest.MonkeyPatch) -> None:
+    control = FtControl(shell=FakeShell())
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.1.0", ""))
+    items = control.plan_argv(["apply", "--version=local"])
+    assert "--version=local" in items
+    assert "releases/download/%s/install.sh" % freeturn.FALLBACK_VERSION in " ".join(items)
+
+
+def test_the_version_choices_are_all_pinned() -> None:
+    assert "latest" in freeturn.VERSION_CHOICES
+    assert freeturn.FALLBACK_VERSION in freeturn.VERSION_CHOICES
+    for item in freeturn.VERSION_CHOICES:
+        if item == "latest":
+            continue
+        assert item in freeturn.PINNED_SCRIPT_SHA256
+
+
+def test_the_agent_resolves_the_version_the_same_way() -> None:
+    module = load_agent()
+    assert module.FALLBACK_VERSION == freeturn.FALLBACK_VERSION
+    assert module.SCRIPT_SHA256 == freeturn.PINNED_SCRIPT_SHA256
+    assert module.DEFAULT_URL.endswith("/%s/install.sh" % module.FALLBACK_VERSION)
+    assert module.DEFAULT_SHA256 == module.SCRIPT_SHA256[module.FALLBACK_VERSION]
+    assert module.resolve_version("")[0] == module.FALLBACK_VERSION
+    assert module.resolve_version("v4.1.0") == ("v4.1.0", "pinned")
+    assert module.resolve_version("local") == (module.FALLBACK_VERSION, "local")
+    assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.0", "")) == ("v4.1.0", "api")
+    assert module.resolve_version("latest", lookup=lambda repo: ("v4.2.0", ""))[0] == module.FALLBACK_VERSION
+    assert module.resolve_version("latest", lookup=lambda repo: ("", "rate_limited"))[0] == module.FALLBACK_VERSION
+    with pytest.raises(module.AgentError) as caught:
+        module.resolve_version("v4.2.0")
+    assert caught.value.code == "not_pinned"
+
+
+def test_the_agent_passes_the_resolved_tag_to_the_script() -> None:
+    module = load_agent()
+    plan = module.command_argv("apply", {"version": "latest"}, lookup=lambda repo: ("v4.1.0", ""))
+    assert "--version=v4.1.0" in plan
+    assert "--version=latest" not in plan
+    assert "--version=local" in module.command_argv("apply", {"version": "local"})
+    assert "--version=" + module.FALLBACK_VERSION in module.command_argv("apply", {"version": "latest"}, lookup=lambda repo: ("", "rate_limited"))
+
+
+def test_the_agent_downloads_the_script_of_the_resolved_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_agent()
+    seen: dict[str, str] = {}
+
+    def fake_download(url: str, expected: str) -> str:
+        seen["url"] = url
+        seen["digest"] = expected
+        return "/tmp/not-a-script"
+
+    monkeypatch.setattr(module, "read_cache", lambda digest: "")
+    monkeypatch.setattr(module, "download", fake_download)
+    module.script_source({"version": "v4.1.0"})
+    assert seen["url"].endswith("/v4.1.0/install.sh")
+    assert seen["digest"] == module.SCRIPT_SHA256["v4.1.0"]
+    module.script_source({})
+    assert seen["url"].endswith("/%s/install.sh" % module.FALLBACK_VERSION)
+    assert seen["digest"] == module.SCRIPT_SHA256[module.FALLBACK_VERSION]
+
+
+def test_the_agent_recognises_a_rate_limited_api() -> None:
+    module = load_agent()
+    import io
+    import urllib.error
+    from email.message import Message
+
+    message = Message()
+    message["X-RateLimit-Remaining"] = "0"
+    limited = urllib.error.HTTPError("https://api.github.com/x", 403, "forbidden", message, io.BytesIO(b""))
+    assert module.rate_limited(limited) is True
+    busy = urllib.error.HTTPError("https://api.github.com/x", 429, "slow down", Message(), io.BytesIO(b""))
+    assert module.rate_limited(busy) is True
+    plain = urllib.error.HTTPError("https://api.github.com/x", 500, "boom", Message(), io.BytesIO(b""))
+    assert module.rate_limited(plain) is False
+
+
+def test_the_agent_api_lookup_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_agent()
+    calls: list[int] = []
+
+    class Answer:
+        def __enter__(self) -> "Answer":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self, _limit: int = 0) -> bytes:
+            return b'{"tag_name": "v4.1.1"}'
+
+    def answer(request: object, timeout: float = 0) -> Answer:
+        calls.append(1)
+        return Answer()
+
+    module.API_CACHE.clear()
+    monkeypatch.setattr(module.urllib.request, "urlopen", answer)
+    assert module.api_tag() == ("v4.1.1", "")
+    assert module.api_tag() == ("v4.1.1", "")
+    assert len(calls) == 1
+
+
+def test_the_agent_survives_a_broken_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_agent()
+    module.API_CACHE.clear()
+
+    def explode(request: object, timeout: float = 0) -> object:
+        raise OSError("no route")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", explode)
+    assert module.api_tag() == ("", "unreachable")
+    assert module.resolve_version("latest")[0] == module.FALLBACK_VERSION
+
+
+def test_the_agent_api_lookup_gets_a_real_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_agent()
+    module.API_CACHE.clear()
+    seen: dict[str, object] = {}
+
+    class Answer:
+        def __enter__(self) -> "Answer":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self, _limit: int = 0) -> bytes:
+            return b'{"tag_name": "v4.1.1"}'
+
+    def answer(request: object, timeout: object = 0) -> Answer:
+        seen["timeout"] = timeout
+        seen["url"] = getattr(request, "full_url", "")
+        return Answer()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", answer)
+    assert module.api_tag(module.SCRIPT_REPO) == ("v4.1.1", "")
+    assert isinstance(seen["timeout"], (int, float))
+    assert seen["url"].endswith("/repos/%s/releases/latest" % module.SCRIPT_REPO)
+    assert module.resolve_version("latest") == ("v4.1.1", "api")

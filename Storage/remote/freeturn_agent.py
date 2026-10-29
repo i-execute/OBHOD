@@ -3,16 +3,31 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 PROTO = 3
-DEFAULT_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.0/install.sh"
-DEFAULT_SHA256 = "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100"
+SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
+SCRIPT_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/%s/install.sh"
+FALLBACK_VERSION = "v4.1.1"
+SCRIPT_SHA256 = {
+    "v4.1.0": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
+    "v4.1.1": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
+}
+API_URL = "https://api.github.com/repos/%s/releases/latest"
+API_TIMEOUT = 8
+API_TTL = 600
+API_FAIL_TTL = 300
+PIN_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+API_CACHE = {}
+DEFAULT_URL = SCRIPT_URL % FALLBACK_VERSION
+DEFAULT_SHA256 = SCRIPT_SHA256[FALLBACK_VERSION]
 CACHE_DIR = "/var/lib/obhod/freeturn"
 MAX_SCRIPT_BYTES = 512 * 1024
 FETCH_TIMEOUT = 120
@@ -98,6 +113,70 @@ def digest_of_file(path):
     return digest.hexdigest()
 
 
+def script_url(version):
+    return SCRIPT_URL % version
+
+
+def api_tag(repo=SCRIPT_REPO, timeout=API_TIMEOUT):
+    cached = API_CACHE.get(repo)
+    now = time.monotonic()
+    if cached and cached[0] > now:
+        return cached[1], cached[2]
+    request = urllib.request.Request(
+        API_URL % repo,
+        headers={"User-Agent": "obhod-freeturn/3", "Accept": "application/vnd.github+json"},
+    )
+    tag = ""
+    reason = "unreachable"
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read(65536).decode("utf-8"))
+        candidate = str(payload.get("tag_name", "") or "").strip()
+        if candidate and PIN_RE.match(candidate):
+            tag = candidate
+            reason = ""
+        else:
+            reason = "no_tag"
+    except urllib.error.HTTPError as exc:
+        reason = "rate_limited" if rate_limited(exc) else "http_%d" % int(getattr(exc, "code", 0) or 0)
+    except (OSError, ValueError):
+        reason = "unreachable"
+    API_CACHE[repo] = (now + (API_TTL if tag else API_FAIL_TTL), tag, reason)
+    return tag, reason
+
+
+def rate_limited(exc):
+    code = int(getattr(exc, "code", 0) or 0)
+    headers = getattr(exc, "headers", None)
+    if code == 429:
+        return True
+    if headers is None:
+        return False
+    retry = str(headers.get("Retry-After", "") or "").strip()
+    if retry.isdigit():
+        return True
+    return code == 403 and str(headers.get("X-RateLimit-Remaining", "") or "").strip() == "0"
+
+
+def resolve_version(requested, lookup=None):
+    text = str(requested or "").strip().lower()
+    if text == "local":
+        return FALLBACK_VERSION, "local"
+    if text in {"", "default"}:
+        return FALLBACK_VERSION, "default"
+    if text not in {"latest", "auto"}:
+        tag = text if text.startswith("v") else "v" + text
+        if not PIN_RE.match(tag):
+            raise AgentError("bad_arg", "the version must be latest or vX.Y.Z", "init")
+        if tag not in SCRIPT_SHA256:
+            raise AgentError("not_pinned", "the install script of %s is not pinned yet" % tag, "fetch")
+        return tag, "pinned"
+    found, reason = (lookup or api_tag)(SCRIPT_REPO)
+    if found and found in SCRIPT_SHA256:
+        return found, "api"
+    return FALLBACK_VERSION, "fallback"
+
+
 def allowed_url(url):
     try:
         parts = urllib.parse.urlsplit(url)
@@ -175,9 +254,10 @@ def download(url, expected):
     return write_cache(got, body)
 
 
-def script_source(flags):
-    url = str(flags.get("script_url", "") or DEFAULT_URL)
-    expected = str(flags.get("script_sha256", "") or DEFAULT_SHA256).strip().lower()
+def script_source(flags, lookup=None):
+    tag, _source = resolve_version(flags.get("version", ""), lookup)
+    url = str(flags.get("script_url", "") or script_url(tag))
+    expected = str(flags.get("script_sha256", "") or SCRIPT_SHA256[tag]).strip().lower()
     if expected and not all(ch in "0123456789abcdef" for ch in expected):
         raise AgentError("bad_arg", "the script digest is not hexadecimal", "fetch")
     if len(expected) not in (0, 64):
@@ -188,7 +268,7 @@ def script_source(flags):
     return download(url, expected)
 
 
-def command_argv(command, flags):
+def command_argv(command, flags, lookup=None):
     out = [command]
     skip = {"script_url", "script_sha256", "tail", "timeout"}
     order = (
@@ -216,9 +296,12 @@ def command_argv(command, flags):
         "kcp_mtu",
         "kcp_acknodelay",
     )
+    tag, _source = resolve_version(flags.get("version", ""), lookup)
     for key in order:
         if key in flags:
             value = str(flags[key])
+            if key == "version" and str(value).strip().lower() in {"latest", "auto"}:
+                value = tag
             if not value or "\n" in value or "\x00" in value:
                 raise AgentError("bad_arg", "flag %s has an unusable value" % key, "init")
             out.append("--%s=%s" % (key.replace("_", "-"), value))
