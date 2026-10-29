@@ -141,3 +141,38 @@ def test_the_not_pinned_error_is_translated_everywhere() -> None:
         text = i18n.t("FT_CODE_NOT_PINNED", language=language)
         assert text and not text.startswith("FT_CODE_"), language
     assert freeturn.FT_ERROR_CODES["not_pinned"]
+
+
+RELEASE_ASSETS_V4_1_1 = (
+    "server-linux-386",
+    "server-linux-amd64",
+    "server-linux-arm64",
+    "server-linux-armv7",
+    "server-linux-mips-softfloat",
+    "server-linux-mips64le-softfloat",
+    "server-linux-mipsle-softfloat",
+    "server-linux-riscv64",
+)
+
+
+def test_every_architecture_maps_to_an_asset_the_release_ships() -> None:
+    for arch, asset in freeturn.ASSET_BY_ARCH.items():
+        assert asset in RELEASE_ASSETS_V4_1_1, arch
+    assert "server-linux-amd64" in freeturn.ASSET_BY_ARCH.values()
+    for arch in ("x86_64", "aarch64", "armv7l"):
+        assert freeturn.core_url(freeturn.FALLBACK_VERSION, arch).startswith(
+            "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/"
+        )
+
+
+def test_the_pin_points_at_the_published_release() -> None:
+    module = load(TURN_AGENT, "freeturn_agent_published")
+    assert module.SCRIPT_REPO == "hackdiaz-dev/free-turn-proxy"
+    assert module.FALLBACK_VERSION == "v4.1.1"
+    assert module.script_url(module.FALLBACK_VERSION) == (
+        "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/install.sh"
+    )
+    assert module.SCRIPT_SHA256["v4.1.1"] == freeturn.PINNED_SCRIPT_SHA256["v4.1.1"] == (
+        "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100"
+    )
+    assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.1", "")) == ("v4.1.1", "api")

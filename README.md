@@ -99,6 +99,7 @@ FreeTurn is a second engine next to Xray, driven through the same proto 3 envelo
 | --- | --- |
 | Script source | `https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/install.sh`, https only, github hosts only, certificate verified |
 | Integrity | sha256 `91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100` for `v4.1.0` and `v4.1.1`, a mismatch stops the run before anything executes |
+| Pinned release | `v4.1.1`, published 2026-10-28 with the captcha power of work cooldown fix, its `install.sh` is byte for byte the `v4.1.0` script, so both tags share one digest |
 | Version choice | `latest` asks the github api once and keeps the answer for ten minutes, a rate limited, blocked or broken api answer falls back to the hardcoded `v4.1.1` with its pinned digest, so a host without api access still installs a verified release |
 | Unknown versions | a version without a pinned digest is refused with `not_pinned` instead of running an unverified script |
 | Cache | `/var/lib/obhod/freeturn`, directory 0700, file 0600, digest rechecked on every read |
