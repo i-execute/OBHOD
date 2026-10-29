@@ -17,10 +17,9 @@ DEFAULT_VERSION = FALLBACK_VERSION
 RELEASE_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/{version}/{asset}"
 SCRIPT_URL = RELEASE_URL
 PINNED_SCRIPT_SHA256 = {
-    "v4.1.0": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
     "v4.1.1": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
 }
-VERSION_CHOICES = ("latest", "v4.1.1", "v4.1.0")
+VERSION_CHOICES = ("latest", "v4.1.1")
 ASSET_BY_ARCH = {
     "x86_64": "server-linux-amd64",
     "amd64": "server-linux-amd64",

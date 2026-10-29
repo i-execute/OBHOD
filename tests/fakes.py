@@ -248,7 +248,7 @@ class FakeFtControl:
                 "euid": 0,
                 "arch": "x86_64",
                 "method": "systemd",
-                "version": "v4.1.0",
+                "version": "v4.1.1",
                 "config": {
                     "method": "systemd",
                     "backend": "new",
@@ -272,7 +272,7 @@ class FakeFtControl:
                 "euid": 0,
                 "arch": "x86_64",
                 "method": config.method,
-                "version": "v4.1.0",
+                "version": "v4.1.1",
                 "config": dict(config.to_dict(), obf_key=self.key),
             }
         )

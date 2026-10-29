@@ -17,7 +17,6 @@ SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
 SCRIPT_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/%s/install.sh"
 FALLBACK_VERSION = "v4.1.1"
 SCRIPT_SHA256 = {
-    "v4.1.0": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
     "v4.1.1": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
 }
 API_URL = "https://api.github.com/repos/%s/releases/latest"

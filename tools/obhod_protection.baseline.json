@@ -9,7 +9,7 @@
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
     "BOT/shell.py": "1f87254423b2d8a3566281c8c88f8bcdead57f358ec273b3cb8f8c4b788bf844",
     "Storage/remote/fail2ban_agent.py": "42c99a743ca77aa1d55c84f6f62366e102cd31374b2d6292952bae3373a1add1",
-    "Storage/remote/freeturn_agent.py": "5f7db160bbc4647f22cc1113d7b866af61c0f04633157257c7445f65aed9adb2",
+    "Storage/remote/freeturn_agent.py": "63b668ccf440f163761e7813f3bfc390bbf7fc966b89e3ebbe7e0ed97ffe674c",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "bb9838a2ae0ebd7a47f07c27051f996f564e023f0cbd1577c1b27e231290cef9",
     "Storage/remote/xray_agent.py": "75a4fe0e6c8be3816d633aa406938952650365377382066e43ae413e38f64b11",

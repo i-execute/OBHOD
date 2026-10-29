@@ -117,7 +117,7 @@ def test_a_failure_is_cached_for_a_shorter_time(monkeypatch: pytest.MonkeyPatch)
 
 def test_the_fallback_is_used_when_the_api_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(releases.urllib.request, "urlopen", lambda request, timeout=0: Answer(b'{"tag_name": "v4.1.1"}'))
-    assert releases.resolve("free-turn-proxy", "v4.1.1", {"v4.1.0": "a", "v4.1.1": "b"}) == ("v4.1.1", "api")
+    assert releases.resolve("free-turn-proxy", "v4.1.1", {"v4.1.1": "b"}) == ("v4.1.1", "api")
     releases.clear()
     monkeypatch.setattr(releases.urllib.request, "urlopen", lambda request, timeout=0: Answer(b'{"tag_name": "v4.2.0"}'))
     assert releases.resolve("free-turn-proxy", "v4.1.1", {"v4.1.1": "b"}) == ("v4.1.1", "not_pinned")
