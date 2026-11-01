@@ -178,13 +178,22 @@ Client apps for `freeturn://` links:
 
 ## Localization
 
-Every user facing string lives in `BOT/strings.py` as a class variable: `EN`, `RU` and `ZH` hold the same set of 746
+Every user facing string lives in `BOT/strings.py` as a class variable: `EN`, `RU` and `ZH` hold the same set of 817
 variables, the Chinese column is written in Chinese, and parameterized strings use `{placeholders}`. `BOT/i18n.py` looks a
 variable up by name (`i18n.t("HOME_TITLE", "ru")`), normalizes a language tag, falls back to English, refuses a key that is
 missing or a call that forgets a placeholder, and exposes `check_catalogs()` for the parity test. The bot starts in
 English, the language screen lists `en`, `ru` and `zh`, the choice is written into the state file by `store.py` and every
 later message, button, hint, error and inline result is rendered in it. Raise messages, log records, RPC stages and shell
 output stay English and are deliberately outside the catalogue.
+
+## Custom emoji
+
+The screens carry custom emoji from the Telegram iOS icon pack (`tgiosicons`, 55 icons in `BOT/icons.py` with their
+numeric ids and a plain unicode fallback). They are off by default: `ui.ico()`, `button(icon=...)` and `screen(icon=...)`
+emit nothing unless the switch is on, so every message stays plain text until asked. The switch lives in two places, the
+`OBHOD_EMOJI` key of the environment file (`0` by default, the installer writes it) and the button on the settings
+screen, which flips `state.emoji`, saves it and re-renders the screen. `BOT/icons.py` stores the fallbacks as `\U`
+escapes, so the module stays ASCII while the rendered tag keeps the icon id and the character.
 
 ## Inline input
 

@@ -8,7 +8,7 @@ import time
 
 from goygram import GoyGram
 
-from . import ftscreens, i18n, inline, screens, xscreens
+from . import ftscreens, i18n, inline, screens, ui, xscreens
 from .config import Config, ConfigError
 from .freeturn import FtControl, FtError
 from .ftpanel import FtPanel
@@ -99,6 +99,7 @@ class Bot:
         self.expensive_limit = EXPENSIVE_LIMIT
         self.inline_limit = INLINE_LIMIT
         self.inline_seen: dict[tuple[str, str, str], float] = {}
+        ui.use_icons(self.emoji_enabled)
 
     def is_busy(self) -> bool:
         if not self.busy:
@@ -143,6 +144,16 @@ class Bot:
     def language(self) -> str:
         return i18n.normalize(self.state.language)
 
+    @property
+    def emoji_enabled(self) -> bool:
+        if self.state.emoji is None:
+            return bool(getattr(self.cfg, "emoji_default", False))
+        return bool(self.state.emoji)
+
+    def apply_emoji(self) -> bool:
+        ui.use_icons(self.emoji_enabled)
+        return self.emoji_enabled
+
     def claim_open(self) -> bool:
         if self.admin_id:
             return False
@@ -173,6 +184,7 @@ class Bot:
             error=error,
             busy=busy,
             lang=self.language,
+            emoji_default=bool(getattr(self.cfg, "emoji_default", False)),
         )
 
     def ban_view(self, notice: str = "", error: str = "") -> screens.View:
@@ -550,6 +562,9 @@ class Bot:
         if head == "lang":
             await self.language_action(chat_id, msg_id, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
             return
+        if head == "set":
+            await self.setting_action(chat_id, msg_id, parts[1] if len(parts) > 1 else "")
+            return
         if head == "ssh":
             await self.ssh_action(chat_id, msg_id, parts[1] if len(parts) > 1 else "")
             return
@@ -572,6 +587,20 @@ class Bot:
             await self.core_action(chat_id, msg_id, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
             return
         await self.render(chat_id, msg_id, screens.home(self.view(notice=self.tr()("HOME_NOTICE_UNKNOWN"))))
+
+    async def setting_action(self, chat_id: int, msg_id: int, name: str) -> None:
+        t = self.tr()
+        if name != "emoji":
+            await self.render(chat_id, msg_id, screens.settings(self.view()))
+            return
+        enabled = not self.emoji_enabled
+        self.state.emoji = enabled
+        self.save()
+        ui.use_icons(enabled)
+        self.audit.note(self.admin_id, "set:emoji", "on" if enabled else "off")
+        notice = t("TOAST_EMOJI_ON") if enabled else t("TOAST_EMOJI_OFF")
+        await self.render(chat_id, msg_id, screens.settings(self.view(notice=notice)))
+        return
 
     async def language_action(self, chat_id: int, msg_id: int, action: str, code_value: str) -> None:
         choice = code_value or action

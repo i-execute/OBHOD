@@ -7,13 +7,30 @@ from typing import Iterable
 
 from goygram.rich import Rich
 
-from . import i18n
+from . import i18n, icons
 
 MAX_BUTTONS = 18
 COPY_TEXT_LIMIT = 256
 MAX_CALLBACK = 64
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 SEP = " · "
+_ICONS = False
+
+
+def use_icons(value: bool) -> None:
+    global _ICONS
+    _ICONS = bool(value)
+
+
+def icons_on() -> bool:
+    return _ICONS
+
+
+def ico(name: object, tail: str = " ") -> str:
+    if not _ICONS:
+        return ""
+    mark = icons.markup(name)
+    return mark + tail if mark else ""
 
 
 def esc(value: object) -> str:
@@ -45,16 +62,18 @@ class Button:
     label: str
     data: str
     style: str = ""
+    icon: str = ""
 
     def html(self) -> str:
         if len(self.data.encode("utf-8")) > MAX_CALLBACK:
             raise ValueError(f"callback data is too long: {self.data}")
         style = f' style="{esc(self.style)}"' if self.style else ""
-        return f'<tg-button type="callback_data"{style} data="{esc(self.data)}">{esc(self.label)}</tg-button>'
+        body = ico(self.icon, "") + esc(self.label)
+        return f'<tg-button type="callback_data"{style} data="{esc(self.data)}">{body}</tg-button>'
 
 
-def button(label: str, data: str, style: str = "") -> Button:
-    return Button(label=label, data=data, style=style)
+def button(label: str, data: str, style: str = "", icon: str = "") -> Button:
+    return Button(label=label, data=data, style=style, icon=icon)
 
 
 def copy_button(label: str, text: str) -> str:
@@ -126,8 +145,8 @@ def row(*buttons: Button | str, align: str = "left") -> str:
     return f'<tg-button-row align="{esc(align)}">{inner}</tg-button-row>'
 
 
-def big(label: str, data: str, style: str = "") -> str:
-    return row(button(label, data, style), align="left")
+def big(label: str, data: str, style: str = "", icon: str = "") -> str:
+    return row(button(label, data, style, icon), align="left")
 
 
 def rows(items: Iterable[str]) -> str:
@@ -161,8 +180,8 @@ def quote(body: str, cite: str = "") -> str:
     return f"<blockquote>{body}</blockquote>"
 
 
-def heading(text: str, level: int = 3) -> str:
-    return f"<h{level}>{esc(text)}</h{level}>"
+def heading(text: str, level: int = 3, icon: str = "") -> str:
+    return f"<h{level}>{ico(icon, '')}{esc(text)}</h{level}>"
 
 
 def divider() -> str:
@@ -181,9 +200,10 @@ def screen(
     blocks: Iterable[str] = (),
     buttons: Iterable[str] = (),
     footer: str = "",
+    icon: str = "",
 ) -> Rich:
     root = Rich()
-    root.add(f"<h2>{esc(title)}</h2>")
+    root.add(f"<h2>{ico(icon, '')}{esc(title)}</h2>")
     if subtitle:
         root.add(f"<p>{subtitle}</p>")
     for block in blocks:
@@ -201,12 +221,12 @@ def screen(
 
 def status_line(connected: bool, running: bool, installed: bool, lang: str = i18n.DEFAULT_LANGUAGE) -> str:
     if not connected:
-        return chip(i18n.t("STATUS_NOT_CONNECTED", lang))
+        return chip(ico("fail", "") + i18n.t("STATUS_NOT_CONNECTED", lang))
     if not installed:
-        return chip(i18n.t("STATUS_NOT_INSTALLED", lang))
+        return chip(ico("warn", "") + i18n.t("STATUS_NOT_INSTALLED", lang))
     if running:
-        return chip(i18n.t("STATUS_RUNNING", lang))
-    return chip(i18n.t("STATUS_STOPPED", lang))
+        return chip(ico("ok", "") + i18n.t("STATUS_RUNNING", lang))
+    return chip(ico("stop", "") + i18n.t("STATUS_STOPPED", lang))
 
 
 def count_buttons(html: str) -> int:

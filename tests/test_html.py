@@ -12,11 +12,11 @@ ALLOWED = {
     "h1", "h2", "h3", "h4", "h5", "h6", "p", "b", "i", "u", "s", "code", "pre",
     "a", "blockquote", "cite", "aside", "details", "summary", "ul", "ol", "li",
     "table", "caption", "tr", "th", "td", "footer", "mark", "span", "tg-button", "hr",
-    "tg-button-row", "tg-spoiler", "figure", "figcaption", "div", "hr",
+    "tg-button-row", "tg-spoiler", "figure", "figcaption", "div", "hr", "tg-emoji",
 }
 ATTRS = {
     "data", "type", "text", "url", "style", "align", "open", "href", "class",
-    "bordered", "striped", "query",
+    "bordered", "striped", "query", "emoji-id",
 }
 
 
@@ -53,6 +53,16 @@ class Checker(HTMLParser):
 
 def render_all() -> list[tuple[str, str]]:
     return [(name, rich.build()) for name, rich in _render_all()]
+
+
+def render_all_with_icons() -> list[tuple[str, str]]:
+    from BOT import ui
+
+    ui.use_icons(True)
+    try:
+        return [(name, rich.build()) for name, rich in _render_all()]
+    finally:
+        ui.use_icons(False)
 
 
 @pytest.mark.parametrize("name,html", render_all(), ids=[item[0] for item in render_all()])
@@ -92,3 +102,16 @@ def test_screen_is_not_empty() -> None:
         if name in {"denied"}:
             continue
         assert len(html) > 60, name
+
+
+@pytest.mark.parametrize(
+    "name,html",
+    render_all_with_icons(),
+    ids=[item[0] for item in render_all_with_icons()],
+)
+def test_markup_with_icons_is_balanced(name: str, html: str) -> None:
+    checker = Checker()
+    checker.feed(html)
+    assert checker.errors == [], name
+    assert checker.stack == [], name
+    assert "tg-emoji" in html, name

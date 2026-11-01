@@ -337,6 +337,7 @@ def make_config(state_dir: Path) -> SimpleNamespace:
         admin_id=7,
         state_dir=Path(state_dir),
         session_name="test",
+        emoji_default=False,
         dc_host=None,
         dc_port=None,
     )

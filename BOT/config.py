@@ -64,6 +64,7 @@ class Config:
     default_dc_port: int | None = None
     env_path: Path | None = None
     log_level: str = "INFO"
+    emoji_default: bool = False
     extra: dict[str, str] = field(default_factory=dict)
 
     @staticmethod
@@ -119,6 +120,7 @@ class Config:
             default_dc_port=_int("OBHOD_DC_PORT", values["OBHOD_DC_PORT"]) if values.get("OBHOD_DC_PORT") else None,
             env_path=path,
             log_level=level,
+            emoji_default=str(values.get("OBHOD_EMOJI", "")).strip().lower() in {"1", "on", "yes", "true"},
             extra=values,
         )
 

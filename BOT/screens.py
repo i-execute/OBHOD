@@ -37,6 +37,13 @@ class View:
     error: str = ""
     busy: str = ""
     lang: str = i18n.DEFAULT_LANGUAGE
+    emoji_default: bool = False
+
+    @property
+    def emoji_on(self) -> bool:
+        if self.state.emoji is None:
+            return bool(self.emoji_default)
+        return bool(self.state.emoji)
 
     @property
     def ssh_ready(self) -> bool:
@@ -110,15 +117,15 @@ def home(view: View) -> Any:
         rows = [(f"{item.id} {item.remark}", f"{item.port} {item.network} {item.security}") for item in xray.inbounds]
         blocks.append(table(rows, (t("HOME_TABLE_HEADER"), t("HOME_TABLE_HEADER2"))))
     buttons = [
-        row(button(t("NAV_XRAY"), "xr:home"), button(t("NAV_FREETURN"), "ft:home")),
-        row(button(t("NAV_SCANNER"), "xr:scan"), button(t("NAV_SUBS"), "xr:subs")),
-        row(button(t("NAV_CORE"), "xr:core"), button(t("CORE_NAV"), "core:show")),
-        row(button(t("NAV_FAIL2BAN"), "nav:ban"), button(t("NAV_SSHD"), "nav:sshd")),
-        row(button(t("NAV_SSH"), "nav:ssh"), button(t("NAV_SETTINGS"), "nav:settings")),
-        row(button(t("NAV_UPDATE"), "upd:show"), button(t("NAV_LANGUAGE"), "nav:lang")),
-        row(button(t("NAV_HELP"), "nav:help")),
+        row(button(t("NAV_XRAY"), "xr:home", icon="xray"), button(t("NAV_FREETURN"), "ft:home", icon="tunnel")),
+        row(button(t("NAV_SCANNER"), "xr:scan", icon="scan"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
+        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("CORE_NAV"), "core:show", icon="module")),
+        row(button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield"), button(t("NAV_SSHD"), "nav:sshd", icon="lock")),
+        row(button(t("NAV_SSH"), "nav:ssh", icon="key"), button(t("NAV_SETTINGS"), "nav:settings", icon="settings")),
+        row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("NAV_LANGUAGE"), "nav:lang", icon="language")),
+        row(button(t("NAV_HELP"), "nav:help", icon="docs")),
     ]
-    return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+    return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="home")
 
 
 def language_screen(view: View) -> Any:
@@ -127,8 +134,8 @@ def language_screen(view: View) -> Any:
     blocks.append(table([(t("LANG_CURRENT"), code(t("LANG_NAME")))], (t("UI_PARAM"), t("UI_VALUE"))))
     blocks.append(quote(muted(t("LANG_NOTE"))))
     buttons = [row(*[button(i18n.t("LANG_NAME", item), f"lang:set:{item}") for item in i18n.LANGUAGES])]
-    buttons.append(row(button(t("UI_HOME"), "nav:home")))
-    return screen(t("LANG_TITLE"), t("LANG_SUBTITLE"), blocks, buttons)
+    buttons.append(row(button(t("UI_HOME"), "nav:home", icon="home")))
+    return screen(t("LANG_TITLE"), t("LANG_SUBTITLE"), blocks, buttons, icon="language")
 
 
 def ssh_settings(view: View) -> Any:
@@ -152,10 +159,10 @@ def ssh_settings(view: View) -> Any:
     buttons = [
         input_row(t("SSH_LABEL_PORT"), "ssh_new_port", "-", view.lang),
         input_row(t("SSHD_NOTICE_KEY"), "ssh_pubkey", "-", view.lang),
-        row(button(t("SSHD_BTN_CHECK"), "sshd:status"), button(t("SSHD_PW_OFF"), "sshd:auth:no")),
-        row(button(t("UI_HOME"), "nav:home")),
+        row(button(t("SSHD_BTN_CHECK"), "sshd:status", icon="info"), button(t("SSHD_PW_OFF"), "sshd:auth:no", icon="lock")),
+        row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("SSH_TITLE"), t("SSH_SUBTITLE"), blocks, buttons)
+    return screen(t("SSH_TITLE"), t("SSH_SUBTITLE"), blocks, buttons, icon="key")
 
 
 def settings(view: View) -> Any:
@@ -182,10 +189,12 @@ def settings(view: View) -> Any:
             (t("SET_SSH_MAXRETRY"), code(str(xray.fail2ban_ssh_maxretry))),
             (t("SET_IGNOREIP"), code(xray.fail2ban_ignoreip)),
             (t("SET_SUB_REFRESH"), code(xray.sub_refresh)),
+            (t("SET_EMOJI"), code(t("SET_EMOJI_ON") if view.emoji_on else t("SET_EMOJI_OFF"))),
         ]
     )
     blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
     blocks.append(quote(muted(t("SET_NOTE_SUB_PATH"))))
+    blocks.append(quote(muted(t("SET_EMOJI_NOTE"))))
     buttons = [
         row(button(t("SET_VERSION_PINNED", version=xray.pinned()), "xr:core:ver:pin"), button(t("SET_VERSION_LATEST"), "xr:core:ver:latest")),
         input_row(t("SET_LOG_LEVEL"), "xr_log_level", "-", view.lang),
@@ -195,10 +204,13 @@ def settings(view: View) -> Any:
         input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
         input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
         input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),
-        row(button(t("NAV_LANGUAGE"), "nav:lang")),
-        row(button(t("UI_HOME"), "nav:home")),
+        row(
+            button(t("SET_EMOJI_BTN_OFF" if view.emoji_on else "SET_EMOJI_BTN_ON"), "set:emoji", icon="star"),
+        ),
+        row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language")),
+        row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("SET_TITLE"), t("SET_SUBTITLE"), blocks, buttons)
+    return screen(t("SET_TITLE"), t("SET_SUBTITLE"), blocks, buttons, icon="settings")
 
 
 def ban_screen(view: View) -> Any:
@@ -246,16 +258,16 @@ def ban_screen(view: View) -> Any:
         )
     )
     buttons = [
-        row(button(t("FB_BTN_ENABLE"), "fb:install"), button(t("FB_BTN_CHECK"), "fb:status")),
+        row(button(t("FB_BTN_ENABLE"), "fb:install", icon="shield"), button(t("FB_BTN_CHECK"), "fb:status", icon="info")),
         input_row(t("FB_BANTIME"), "xr_bantime", "-", view.lang),
         input_row(t("FB_IP_FIELD"), "xr_ban_ip", "-", view.lang),
         input_row(t("SET_SSH_BANTIME"), "xr_ssh_bantime", "-", view.lang),
         input_row(t("SET_SSH_MAXRETRY"), "xr_ssh_maxretry", "-", view.lang),
         input_row(t("SET_IGNOREIP"), "xr_ignoreip", "-", view.lang),
-        row(button(t("FB_BTN_RESET"), "fb:reset"), button(t("FB_BTN_DISABLE"), "fb:remove")),
-        row(button(t("UI_HOME"), "nav:home")),
+        row(button(t("FB_BTN_RESET"), "fb:reset", icon="restart"), button(t("FB_BTN_DISABLE"), "fb:remove", icon="delete")),
+        row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("FB_TITLE"), t("FB_SUBTITLE"), blocks, buttons)
+    return screen(t("FB_TITLE"), t("FB_SUBTITLE"), blocks, buttons, icon="shield")
 
 
 def sshd_screen(view: View) -> Any:
@@ -293,14 +305,14 @@ def sshd_screen(view: View) -> Any:
             blocks.append(f"<p>{muted(t('SSHD_PW_BLOCKED', user=item.key_user or 'root', path=item.key_path or '~/.ssh/authorized_keys'))}</p>")
         blocks.append(f"<p>{muted(t('SSHD_KEYS_ONLY'))}</p>")
     buttons = [
-        row(button(t("SSHD_BTN_CHECK"), "sshd:status")),
+        row(button(t("SSHD_BTN_CHECK"), "sshd:status", icon="info")),
         input_row(t("SSHD_NEW_PORT"), "ssh_new_port", "-", view.lang),
         input_row(t("SSHD_PUBKEY"), "ssh_pubkey", "-", view.lang),
-        row(button(t("SSHD_PW_OFF"), "sshd:auth:no"), button(t("SSHD_PW_ON"), "sshd:auth:yes")),
-        row(button(t("SSHD_ROOT_KEY"), "sshd:root:prohibit-password"), button(t("SSHD_ROOT_OFF"), "sshd:root:no")),
-        row(button(t("SSHD_REMOVE"), "sshd:remove"), button(t("UI_HOME"), "nav:home")),
+        row(button(t("SSHD_PW_OFF"), "sshd:auth:no", icon="lock"), button(t("SSHD_PW_ON"), "sshd:auth:yes")),
+        row(button(t("SSHD_ROOT_KEY"), "sshd:root:prohibit-password"), button(t("SSHD_ROOT_OFF"), "sshd:root:no", icon="lock")),
+        row(button(t("SSHD_REMOVE"), "sshd:remove", icon="delete"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("SSHD_TITLE"), t("SSHD_SUBTITLE"), blocks, buttons, footer=t("SSHD_FOOTER"))
+    return screen(t("SSHD_TITLE"), t("SSHD_SUBTITLE"), blocks, buttons, footer=t("SSHD_FOOTER"), icon="lock")
 
 
 def update_screen(view: View, info: dict[str, Any]) -> Any:
@@ -308,8 +320,8 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
     blocks = banner(view, t)
     if not info.get("git"):
         blocks.append(quote(bold(t("UPD_NO_GIT"))))
-        buttons = [row(button(t("UI_REFRESH"), "upd:show"), button(t("UI_HOME"), "nav:home"))]
-        return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+        buttons = [row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
+        return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="update")
     branch = str(info.get("branch") or "")
     behind = int(info.get("behind", 0) or 0)
     behind_text = t("UPD_BEHIND", count=code(behind), branch=branch) if behind else t("UPD_UP_TO_DATE", branch=branch)
@@ -327,10 +339,10 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     buttons = [
-        row(button(t("UPD_BTN_COMMIT"), "upd:commit"), button(t("UPD_BTN_RELEASE"), "upd:release")),
-        row(button(t("UI_REFRESH"), "upd:show"), button(t("UI_HOME"), "nav:home")),
+        row(button(t("UPD_BTN_COMMIT"), "upd:commit", icon="update"), button(t("UPD_BTN_RELEASE"), "upd:release", icon="tag")),
+        row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+    return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="update")
 
 
 def update_confirm_screen(view: View, info: dict[str, Any], preview: dict[str, Any], body: str, action: str) -> Any:
@@ -347,9 +359,9 @@ def update_confirm_screen(view: View, info: dict[str, Any], preview: dict[str, A
         if extra > 0:
             blocks.append(quote(muted(t("UPD_PREVIEW_MORE", count=extra))))
     buttons = [
-        row(button(t("UI_CONFIRM"), action), button(t("UI_CANCEL"), "upd:show")),
+        row(button(t("UI_CONFIRM"), action), button(t("UI_CANCEL"), "upd:show", icon="update")),
     ]
-    return screen(t("UPD_CONFIRM_TITLE"), t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+    return screen(t("UPD_CONFIRM_TITLE"), t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="warn")
 
 
 def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any]) -> Any:
@@ -371,9 +383,9 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
     if ok and result.get("restarted"):
         blocks.append(quote(muted(t("UPD_RESTART"))))
     buttons = [
-        row(button(t("UI_REFRESH"), "upd:show"), button(t("UI_HOME"), "nav:home")),
+        row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("UPD_DONE_TITLE") if ok else t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+    return screen(t("UPD_DONE_TITLE") if ok else t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="ok")
 
 
 def body_text(value: object) -> str:
@@ -401,20 +413,20 @@ def help_screen(view: View) -> Any:
     blocks.append(heading(t("INL_HINT_TITLE"), 3))
     blocks.append(bullet_list([t("INL_HINT_1"), t("INL_HINT_2"), t("INL_HINT_3"), t("INL_HINT_4")]))
     blocks.append(f"<p>{muted(t('INL_STATUS_ON'))} {muted(t('INL_STATUS_OWNER'))}</p>")
-    buttons = [row(button(t("UI_HOME"), "nav:home"), button(t("NAV_XRAY"), "xr:home"))]
-    return screen(t("HELP_TITLE"), t("HELP_SUBTITLE"), blocks, buttons)
+    buttons = [row(button(t("UI_HOME"), "nav:home", icon="home"), button(t("NAV_XRAY"), "xr:home", icon="xray"))]
+    return screen(t("HELP_TITLE"), t("HELP_SUBTITLE"), blocks, buttons, icon="docs")
 
 
 def denied(lang: str = i18n.DEFAULT_LANGUAGE) -> Any:
     t = i18n.translator(lang)
-    return screen(t("DENIED_TITLE"), "", [quote(bold(t("DENIED_BODY")))], [])
+    return screen(t("DENIED_TITLE"), "", [quote(bold(t("DENIED_BODY")))], [], icon="stop")
 
 
 def error_screen(view: View, title: str, message: str) -> Any:
     t = view.tr()
     blocks = [quote(bold(message))]
-    buttons = [row(button(t("UI_HOME"), "nav:home"), button(t("NAV_XRAY"), "xr:home"))]
-    return screen(title, t("UI_ACTION_FAILED"), blocks, buttons)
+    buttons = [row(button(t("UI_HOME"), "nav:home", icon="home"), button(t("NAV_XRAY"), "xr:home", icon="xray"))]
+    return screen(title, t("UI_ACTION_FAILED"), blocks, buttons, icon="fail")
 
 
 def busy_screen(title: str, lang: str = i18n.DEFAULT_LANGUAGE, steps: list[str] | None = None) -> Any:
@@ -422,7 +434,7 @@ def busy_screen(title: str, lang: str = i18n.DEFAULT_LANGUAGE, steps: list[str] 
     blocks = [quote(muted(title))]
     if steps:
         blocks.append(bullet_list([muted(item) for item in steps]))
-    return screen(t("BUSY_TITLE"), t("BUSY_SUBTITLE"), blocks, [])
+    return screen(t("BUSY_TITLE"), t("BUSY_SUBTITLE"), blocks, [], icon="clock")
 
 
 def prompt(ident: str, lang: str = i18n.DEFAULT_LANGUAGE, error: str = "") -> Any:
@@ -441,15 +453,15 @@ def prompt(ident: str, lang: str = i18n.DEFAULT_LANGUAGE, error: str = "") -> An
     )
     if item.example:
         blocks.append(f"<p>{t('PROMPT_EXAMPLE', example=code(item.example))}</p>")
-    buttons = [row(inline_button(t("PROMPT_INPUT"), inline.prefill(ident)), button(t("UI_CANCEL"), "nav:home"))]
-    return screen(t("PROMPT_TITLE"), item.label(lang), blocks, buttons)
+    buttons = [row(inline_button(t("PROMPT_INPUT"), inline.prefill(ident)), button(t("UI_CANCEL"), "nav:home", icon="home"))]
+    return screen(t("PROMPT_TITLE"), item.label(lang), blocks, buttons, icon="file")
 
 
 def confirm(title: str, body: str, action: str, lang: str = i18n.DEFAULT_LANGUAGE, back: str = "nav:home") -> Any:
     t = i18n.translator(lang)
     blocks = [quote(bold(body))]
     buttons = [row(button(t("UI_CONFIRM"), action), button(t("UI_CANCEL"), back))]
-    return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons)
+    return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, icon="warn")
 
 
 def logs_screen(view: View, lines: list[str], tail: int) -> Any:
@@ -459,9 +471,9 @@ def logs_screen(view: View, lines: list[str], tail: int) -> Any:
     blocks.append(pre("\n".join(lines) or t("UI_EMPTY")))
     buttons = [
         row(button("50", "xr:logs:50"), button("200", "xr:logs:200"), button("500", "xr:logs:500")),
-        row(button(t("UI_REFRESH"), f"xr:logs:{tail}"), button(t("UI_HOME"), "nav:home")),
+        row(button(t("UI_REFRESH"), f"xr:logs:{tail}"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("LOGS_TITLE"), t("LOGS_SUBTITLE"), blocks, buttons)
+    return screen(t("LOGS_TITLE"), t("LOGS_SUBTITLE"), blocks, buttons, icon="logs")
 
 
 def guard_rows(view: View) -> str:
@@ -475,5 +487,5 @@ def subscription_hint(path: str, url: str, lang: str = i18n.DEFAULT_LANGUAGE) ->
     blocks = [f"<p>{t('SUB_LABEL_PATH', path=code(path))}</p>"]
     blocks.append(copy_html and pre(url) or long_html)
     blocks.append(quote(muted(t("SUB_NOTE"))))
-    buttons = [copy_html, row(button(t("UI_HOME"), "nav:home"))]
-    return screen(t("SUB_TITLE"), t("SUB_SUBTITLE"), blocks, buttons)
+    buttons = [copy_html, row(button(t("UI_HOME"), "nav:home", icon="home"))]
+    return screen(t("SUB_TITLE"), t("SUB_SUBTITLE"), blocks, buttons, icon="link")

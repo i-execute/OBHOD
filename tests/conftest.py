@@ -20,3 +20,14 @@ def loopback_address(monkeypatch: pytest.MonkeyPatch) -> None:
     except ImportError:
         return
     monkeypatch.setattr(BOT.app, "public_address", lambda: "")
+
+
+@pytest.fixture(autouse=True)
+def clean_icon_switch() -> None:
+    try:
+        from BOT import ui
+    except ImportError:
+        return
+    ui.use_icons(False)
+    yield
+    ui.use_icons(False)

@@ -30,6 +30,7 @@ class State:
     sub_port: int = SUB_PORT
     last_probe: dict[str, Any] = field(default_factory=dict)
     language: str = i18n.DEFAULT_LANGUAGE
+    emoji: bool | None = None
     xray: XrayState = field(default_factory=XrayState)
     freeturn: FtState = field(default_factory=FtState)
     core: str = "xray"
@@ -43,6 +44,7 @@ class State:
             "sub_port": int(self.sub_port),
             "last_probe": dict(self.last_probe),
             "language": i18n.normalize(self.language),
+            "emoji": self.emoji,
             "xray": self.xray.to_dict(),
             "freeturn": self.freeturn.to_dict(),
             "core": self.core if self.core in CORES else "xray",
@@ -59,6 +61,7 @@ class State:
             sub_port=int(data.get("sub_port", SUB_PORT) or SUB_PORT),
             last_probe=dict(data.get("last_probe") or {}),
             language=i18n.normalize(data.get("language", i18n.DEFAULT_LANGUAGE)),
+            emoji=bool(data["emoji"]) if isinstance(data.get("emoji"), bool) else None,
             xray=XrayState.from_dict(data.get("xray")),
             freeturn=FtState.from_dict(data.get("freeturn")),
             core=str(data.get("core", "xray") or "xray"),

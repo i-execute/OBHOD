@@ -91,14 +91,14 @@ def home(view: FtView) -> Any:
     else:
         blocks.append(quote(muted(t("FT_CLIENTS_EMPTY"))))
     buttons = [
-        row(button(t("FT_BTN_CHECK"), "ft:check"), button(t("FT_BTN_PLAN"), "ft:plan")),
-        row(button(t("FT_BTN_APPLY"), "ft:apply"), button(t("FT_BTN_CLIENTS"), "ft:clients")),
-        row(button(t("FT_BTN_STOP"), "ft:stop"), button(t("FT_BTN_RESTART"), "ft:restart")),
-        row(button(t("FT_BTN_LOGS"), "ft:logs"), button(t("FT_BTN_SHARE"), "ft:share")),
-        row(button(t("FT_BTN_FW"), "ft:fw")),
-        row(button(t("CORE_NAV"), "core:show"), button(t("UI_HOME"), "nav:home")),
+        row(button(t("FT_BTN_CHECK"), "ft:check", icon="scan"), button(t("FT_BTN_PLAN"), "ft:plan", icon="tools")),
+        row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")),
+        row(button(t("FT_BTN_STOP"), "ft:stop", icon="stop"), button(t("FT_BTN_RESTART"), "ft:restart", icon="restart")),
+        row(button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"), button(t("FT_BTN_SHARE"), "ft:share", icon="gift")),
+        row(button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
+        row(button(t("CORE_NAV"), "core:show", icon="module"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"))
+    return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"), icon="tunnel")
 
 
 def mode_label(t: i18n.Translator, mode: str) -> str:
@@ -127,10 +127,10 @@ def fw_screen(view: FtView) -> Any:
         blocks.append(quote(muted(t("FT_FW_NOTE"))))
     buttons = [
         row(button(t("FT_FW_BTN_VK"), "ft:fw:vk"), button(t("FT_FW_BTN_OPEN"), "ft:fw:open")),
-        row(button(t("FT_FW_BTN_CLOSE"), "ft:fw:closed"), button(t("UI_REFRESH"), "ft:fw")),
-        row(button(t("FT_BTN_HOME"), "ft:home"), button(t("UI_HOME"), "nav:home")),
+        row(button(t("FT_FW_BTN_CLOSE"), "ft:fw:closed"), button(t("UI_REFRESH"), "ft:fw", icon="shield")),
+        row(button(t("FT_BTN_HOME"), "ft:home", icon="tunnel"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("FT_FW_TITLE"), t("FT_FW_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"))
+    return screen(t("FT_FW_TITLE"), t("FT_FW_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"), icon="shield")
 
 
 def plan_screen(view: FtView) -> Any:
@@ -167,7 +167,7 @@ def plan_screen(view: FtView) -> Any:
     buttons = [
         row(button(t("FT_FIELD_METHOD"), "ft:cyc:method"), button(t("FT_FIELD_BACKEND"), "ft:cyc:backend")),
         row(button(t("FT_FIELD_MODE"), "ft:cyc:mode"), button(t("FT_FIELD_OBF"), "ft:cyc:obf_profile")),
-        row(button(t("FT_FIELD_VERSION"), "ft:cyc:version"), button(t("FT_BTN_APPLY"), "ft:apply")),
+        row(button(t("FT_FIELD_VERSION"), "ft:cyc:version"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
         input_row(t("FT_PORT_INPUT"), "ft_port", "-", view.lang),
         input_row(t("FT_WG_PORT_INPUT"), "ft_wg_port", "-", view.lang),
         input_row(t("FT_WG_NET_INPUT"), "ft_wg_net", "-", view.lang),
@@ -175,7 +175,7 @@ def plan_screen(view: FtView) -> Any:
         input_row(t("FT_KEY_INPUT"), "ft_key", "-", view.lang),
         back_row(view.lang),
     ]
-    return screen(t("FT_CONFIG_TITLE"), t("FT_CONFIG_SUBTITLE"), blocks, buttons)
+    return screen(t("FT_CONFIG_TITLE"), t("FT_CONFIG_SUBTITLE"), blocks, buttons, icon="settings")
 
 
 def clients_screen(view: FtView) -> Any:
@@ -205,11 +205,11 @@ def clients_screen(view: FtView) -> Any:
                 (t("FT_SHARE_TITLE"), t("UI_VALUE")),
             )
         )
-    buttons = [input_row(t("FT_BTN_CLIENT_ADD"), "ft_client", "-", view.lang), row(button(t("FT_BTN_REFRESH"), "ft:clients"))]
+    buttons = [input_row(t("FT_BTN_CLIENT_ADD"), "ft_client", "-", view.lang), row(button(t("FT_BTN_REFRESH"), "ft:clients", icon="users"))]
     for item in view.clients[:MAX_CLIENT_BUTTONS]:
         buttons.append(row(button(item.name, "ft:cl:%s" % item.name)))
     buttons.append(back_row(view.lang))
-    return screen(t("FT_CLIENTS_TITLE"), t("FT_CLIENTS_SUBTITLE"), blocks, buttons)
+    return screen(t("FT_CLIENTS_TITLE"), t("FT_CLIENTS_SUBTITLE"), blocks, buttons, icon="users")
 
 
 def client_screen(view: FtView, name: str) -> Any:
@@ -237,8 +237,8 @@ def client_screen(view: FtView, name: str) -> Any:
         blocks.append(f"<p>{muted(t('FT_CLIENT_CONF_NOTE'))}</p>")
     if client is None or not client.owner:
         buttons.append(row(button(t("FT_BTN_REMOVE"), "ft:rm:%s" % name)))
-    buttons.append(row(button(t("FT_BTN_CLIENTS"), "ft:clients"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home")))
-    return screen(t("FT_CLIENT_TITLE", name=name), t("FT_CLIENTS_SUBTITLE"), blocks, buttons)
+    buttons.append(row(button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home")))
+    return screen(t("FT_CLIENT_TITLE", name=name), t("FT_CLIENTS_SUBTITLE"), blocks, buttons, icon="user")
 
 
 def share_screen(view: FtView) -> Any:
@@ -246,7 +246,7 @@ def share_screen(view: FtView) -> Any:
     blocks = banner(view, t)
     if view.share is None or not view.share.peer():
         blocks.append(quote(muted(t("FT_ERR_NOT_INSTALLED"))))
-        return screen(t("FT_SHARE_TITLE"), "", blocks, [back_row(view.lang)])
+        return screen(t("FT_SHARE_TITLE"), "", blocks, [back_row(view.lang)], icon="gift")
     pairs = [
         (t("FT_SHARE_PEER"), code(view.share.peer())),
         (t("FT_SHARE_MODE"), code(view.share.mode or "-")),
@@ -265,7 +265,7 @@ def share_screen(view: FtView) -> Any:
     if view.conf:
         blocks.append(long_block(t("FT_BTN_CONF"), view.conf))
     buttons.append(back_row(view.lang))
-    return screen(t("FT_SHARE_TITLE"), t("FT_SHARE_KEY_HIDDEN"), blocks, buttons)
+    return screen(t("FT_SHARE_TITLE"), t("FT_SHARE_KEY_HIDDEN"), blocks, buttons, icon="gift")
 
 
 def logs_screen(view: FtView) -> Any:
@@ -275,8 +275,8 @@ def logs_screen(view: FtView) -> Any:
         blocks.append(pre("\n".join(view.logs[-40:])))
     else:
         blocks.append(quote(muted(t("FT_LOGS_EMPTY"))))
-    buttons = [row(button(t("FT_BTN_REFRESH"), "ft:logs"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home"))]
-    return screen(t("FT_LOGS_TITLE"), view.state.method or "", blocks, buttons)
+    buttons = [row(button(t("FT_BTN_REFRESH"), "ft:logs", icon="logs"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home"))]
+    return screen(t("FT_LOGS_TITLE"), view.state.method or "", blocks, buttons, icon="logs")
 
 
 def core_screen(view: FtView) -> Any:
@@ -288,9 +288,9 @@ def core_screen(view: FtView) -> Any:
     buttons = [
         row(button(t("CORE_BTN_XRAY"), "core:set:xray"), button(t("CORE_BTN_FREETURN"), "core:set:freeturn")),
         row(button(i18n.t("NAV_XRAY", view.lang), "xr:home"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home")),
-        row(button(t("UI_HOME"), "nav:home")),
+        row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("CORE_TITLE"), t("CORE_SUBTITLE"), blocks, buttons)
+    return screen(t("CORE_TITLE"), t("CORE_SUBTITLE"), blocks, buttons, icon="module")
 
 
 def confirm_screen(view: FtView, title: str, body: str, action: str, back: str = "ft:home") -> Any:
@@ -298,10 +298,10 @@ def confirm_screen(view: FtView, title: str, body: str, action: str, back: str =
     blocks = banner(view, t)
     blocks.append(quote(bold(body)))
     buttons = [row(button(t("UI_CONFIRM"), action), button(t("UI_CANCEL"), back))]
-    return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons)
+    return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, icon="warn")
 
 
 def error_screen(view: FtView, title: str, message: str) -> Any:
     blocks = [quote(bold(message))]
     buttons = [row(button(i18n.t("UI_HOME", view.lang), "nav:home"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home"))]
-    return screen(title, i18n.t("UI_ACTION_FAILED", view.lang), blocks, buttons)
+    return screen(title, i18n.t("UI_ACTION_FAILED", view.lang), blocks, buttons, icon="fail")
