@@ -330,3 +330,50 @@ def test_a_run_without_any_terminal_stops_before_it_hangs(tmp_path: Path) -> Non
     )
     assert result.returncode == 1
     assert "no terminal to read the credentials" in result.stderr
+
+def test_a_second_install_replaces_everything_without_breaking(tmp_path: Path) -> None:
+    payload, env, env_conf = dev_payload(tmp_path)
+    first = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert first.returncode == 0, first.stderr
+    prefix = Path(env["HOME"]) / ".obhod" / "app"
+    assert (prefix / "BOT" / "__init__.py").read_text() == "SENTINEL = 1\n"
+
+    (prefix / "BOT" / "stale.py").write_text("OLD = 1\n")
+    (prefix / "Storage" / "remote" / "old_agent.py").write_text("OLD = 1\n")
+    (payload / "BOT" / "__init__.py").write_text("SENTINEL = 2\n")
+    (payload / "BOT" / "fresh.py").write_text("NEW = 1\n")
+
+    second = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert second.returncode == 0, second.stderr
+    assert "previous install" in second.stdout
+    assert "installed over the previous install" in second.stdout
+    assert (prefix / "BOT" / "__init__.py").read_text() == "SENTINEL = 2\n"
+    assert (prefix / "BOT" / "fresh.py").is_file()
+    assert not (prefix / "BOT" / "stale.py").exists()
+    assert not (prefix / "Storage" / "remote" / "old_agent.py").exists()
+    assert (prefix / "Storage" / "remote" / "xray_agent.py").is_file()
+    body = env_conf.read_text()
+    assert "BOT_TOKEN=123456:ABC" in body
+    assert "ADMIN_ID=1000" in body
+    state_dir = Path(env["HOME"]) / ".obhod" / "state"
+    assert state_dir.is_dir()
+
+    third = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert third.returncode == 0, third.stderr
+    assert "installed over the previous install" in third.stdout
+
+def test_a_broken_virtual_environment_is_rebuilt(tmp_path: Path) -> None:
+    script = INSTALLER.read_text(encoding="utf-8")
+    assert "the virtual environment is broken, recreating it" in script
+    assert 'rm -rf "$PREFIX/venv"' in script
+
+def test_the_plain_output_has_no_escape_codes(tmp_path: Path) -> None:
+    payload, env, env_conf = dev_payload(tmp_path)
+    result = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert result.returncode == 0, result.stderr
+    assert "\033[" not in result.stdout
+    assert "OBHOD" in result.stdout
+    assert "[1/6]" in result.stdout
+    assert "[6/6]" in result.stdout
+    assert "done" in result.stdout
+    assert "telegram control bot" in result.stdout

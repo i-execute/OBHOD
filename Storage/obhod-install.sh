@@ -37,6 +37,115 @@ done
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+ui_init() {
+  COLOR=0
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${OBHOD_NO_UI:-0}" != "1" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    COLOR=1
+  fi
+  if [ "$COLOR" = "1" ]; then
+    C_RESET=$'\033[0m'
+    C_DIM=$'\033[2m'
+    C_BOLD=$'\033[1m'
+    C_ACC=$'\033[38;5;44m'
+    C_OK=$'\033[38;5;42m'
+    C_WARN=$'\033[38;5;214m'
+    C_BAD=$'\033[38;5;203m'
+    C_HEAD=$'\033[38;5;141m'
+  else
+    C_RESET=""
+    C_DIM=""
+    C_BOLD=""
+    C_ACC=""
+    C_OK=""
+    C_WARN=""
+    C_BAD=""
+    C_HEAD=""
+  fi
+  STEP_TOTAL=0
+  STEP_NOW=0
+}
+
+hr() {
+  printf '%s%s%s\n' "$C_DIM" "+----------------------------------------------------------+" "$C_RESET"
+}
+
+banner() {
+  local mode="system install"
+  if [ "$DEV" = "1" ]; then
+    mode="dev install, no root, no systemd"
+  fi
+  printf '\n%s+----------------------------------------------------------+%s\n' "$C_HEAD" "$C_RESET"
+  printf '%s|%s  %sOBHOD%s  %s-  telegram control bot over xray-core%s\n' "$C_HEAD" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '%s|%s  %s%s%s\n' "$C_HEAD" "$C_RESET" "$C_DIM" "$mode" "$C_RESET"
+  printf '%s+----------------------------------------------------------+%s\n\n' "$C_HEAD" "$C_RESET"
+}
+
+kv() {
+  printf '  %s%-8s%s %s\n' "$C_DIM" "$1" "$C_RESET" "$2"
+}
+
+step() {
+  STEP_NOW=$((STEP_NOW + 1))
+  local total=""
+  if [ "$STEP_TOTAL" -gt 0 ]; then
+    total="$STEP_NOW/$STEP_TOTAL"
+  else
+    total="*"
+  fi
+  printf '\n%s[%s]%s %s%s%s\n' "$C_ACC" "$total" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+}
+
+note_line() {
+  printf '      %s..%s %s\n' "$C_DIM" "$C_RESET" "$*"
+}
+
+ok_line() {
+  printf '      %sok%s %s\n' "$C_OK" "$C_RESET" "$*"
+}
+
+warn_line() {
+  printf '      %s!!%s %s\n' "$C_WARN" "$C_RESET" "$*"
+}
+
+fail_line() {
+  printf '      %sxx%s %s\n' "$C_BAD" "$C_RESET" "$*" >&2
+}
+
+summary_box() {
+  local service_state="no unit in dev mode"
+  if [ -n "$SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
+    service_state="$(systemctl is-active obhod.service 2>/dev/null || true)"
+    [ -n "$service_state" ] || service_state="unknown"
+  fi
+  printf '\n%s+----------------------------------------------------------+%s\n' "$C_OK" "$C_RESET"
+  printf '%s|%s  %sdone%s\n' "$C_OK" "$C_RESET" "$C_BOLD" "$C_RESET"
+  printf '%s|%s\n' "$C_OK" "$C_RESET"
+  printf '%s|%s  %s%-9s%s %s\n' "$C_OK" "$C_RESET" "$C_DIM" "payload" "$C_RESET" "$PREFIX"
+  printf '%s|%s  %s%-9s%s %s\n' "$C_OK" "$C_RESET" "$C_DIM" "config" "$C_RESET" "$ENV_FILE"
+  printf '%s|%s  %s%-9s%s %s\n' "$C_OK" "$C_RESET" "$C_DIM" "state" "$C_RESET" "$STATE_DIR"
+  printf '%s|%s  %s%-9s%s %s\n' "$C_OK" "$C_RESET" "$C_DIM" "service" "$C_RESET" "$service_state"
+  printf '%s|%s\n' "$C_OK" "$C_RESET"
+  if [ "$DEV" = "1" ]; then
+    printf '%s|%s  %srun it:%s OBHOD_ENV=%s %s/venv/bin/python -m BOT\n' "$C_OK" "$C_RESET" "$C_DIM" "$C_RESET" "$ENV_FILE" "$PREFIX"
+  else
+    printf '%s|%s  %slogs:%s journalctl -u obhod -f\n' "$C_OK" "$C_RESET" "$C_DIM" "$C_RESET"
+    printf '%s|%s  %sopen:%s /help in the bot from the admin account\n' "$C_OK" "$C_RESET" "$C_DIM" "$C_RESET"
+  fi
+  printf '%s+----------------------------------------------------------+%s\n' "$C_OK" "$C_RESET"
+}
+
+count_files() {
+  find "$1" -type f 2>/dev/null | wc -l | tr -d ' '
+}
+
+plural_files() {
+  if [ "$1" = "1" ]; then
+    printf '%s file' "$1"
+  else
+    printf '%s files' "$1"
+  fi
+}
+
 if [ "$DEV" = "1" ]; then
   PREFIX="${HOME}/.obhod/app"
   CONF_DIR="${HOME}/.obhod/etc"
@@ -157,7 +266,12 @@ check_python() {
 
 install_payload() {
   mkdir -p "$PREFIX"
-  rm -rf "$PREFIX/BOT" "$PREFIX/Storage"
+  local stale
+  for stale in "$PREFIX/BOT" "$PREFIX/Storage" "$PREFIX/requirements.txt" "$PREFIX/.obhod-src"; do
+    if [ -e "$stale" ]; then
+      rm -rf "$stale"
+    fi
+  done
   cp -a "$PAYLOAD_DIR/BOT" "$PREFIX/BOT"
   mkdir -p "$PREFIX/Storage/remote"
   cp -a "$PAYLOAD_DIR/Storage/remote/." "$PREFIX/Storage/remote/"
@@ -171,14 +285,18 @@ install_payload() {
 
 install_venv() {
   if [ "$SKIP_DEPS" = "1" ]; then
-    say "skipping the virtual environment because --skip-deps was given"
+    note_line "skipping the virtual environment because --skip-deps was given"
     return 0
   fi
-  say "preparing the virtual environment in $PREFIX/venv"
+  note_line "preparing the virtual environment in $PREFIX/venv"
+  if [ -d "$PREFIX/venv" ] && [ ! -x "$PREFIX/venv/bin/python" ]; then
+    note_line "the virtual environment is broken, recreating it"
+    rm -rf "$PREFIX/venv"
+  fi
   if [ ! -x "$PREFIX/venv/bin/python" ]; then
     "$PYTHON_BIN" -m venv "$PREFIX/venv"
   fi
-  say "installing the python dependencies, the download can take a couple of minutes"
+  note_line "installing the python dependencies, the download can take a couple of minutes"
   "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --progress-bar off --upgrade pip wheel
   "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --progress-bar off -r "$PREFIX/requirements.txt"
 }
@@ -186,8 +304,7 @@ install_venv() {
 write_service() {
   [ -n "$SERVICE" ] || return 0
   if ! command -v systemctl >/dev/null 2>&1; then
-    say "systemd not found: install finished, start the bot manually with"
-    say "  $PREFIX/venv/bin/python -m BOT"
+    warn_line "systemd not found, start the bot manually with $PREFIX/venv/bin/python -m BOT"
     return 0
   fi
   [ -f "$UNIT_SRC" ] || die "unit template not found at $UNIT_SRC"
@@ -200,13 +317,46 @@ write_service() {
   systemctl daemon-reload
   systemctl enable obhod.service >/dev/null 2>&1 || true
   systemctl restart obhod.service
-  say "service obhod.service started"
+  ok_line "unit $SERVICE, service restarted"
+}
+
+install_exists() {
+  if [ -d "$PREFIX/BOT" ]; then
+    return 0
+  fi
+  if [ -f "$ENV_FILE" ]; then
+    return 0
+  fi
+  return 1
+}
+
+stop_before_rebuild() {
+  if [ -n "$SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet obhod.service 2>/dev/null; then
+      systemctl stop obhod.service >/dev/null 2>&1 || true
+      note_line "the running unit was stopped"
+    fi
+  fi
+  local stopped
+  stopped="$(kill_leftovers)"
+  if [ -n "$stopped" ]; then
+    note_line "$stopped"
+  fi
 }
 
 cmd_install() {
   if [ "$DEV" = "0" ]; then
     require_root
   fi
+  ui_init
+  STEP_TOTAL=6
+  banner
+  kv host "$(hostname 2>/dev/null || echo localhost)"
+  kv prefix "$PREFIX"
+  kv config "$ENV_FILE"
+  kv state "$STATE_DIR"
+
+  step "checking the environment"
   check_python
   mkdir -p "$STATE_DIR"
   chmod 700 "$STATE_DIR"
@@ -214,41 +364,79 @@ cmd_install() {
     mkdir -p "${LOG_DIR:-/var/log/obhod}"
     chmod 700 "${LOG_DIR:-/var/log/obhod}"
   fi
+  ok_line "$("$PYTHON_BIN" -c 'import sys; print("python %d.%d.%d" % sys.version_info[:3])')"
+  if [ "$DEV" = "0" ]; then
+    if ! command -v systemctl >/dev/null 2>&1; then
+      warn_line "systemd is missing, the bot is copied but not started"
+    fi
+  fi
+
+  step "reading the telegram credentials"
   local token api_id api_hash admin_id
   token="$(env_get BOT_TOKEN)"
   api_id="$(env_get API_ID)"
   api_hash="$(env_get API_HASH)"
   admin_id="$(env_get ADMIN_ID)"
-  say "free turn control bot installer"
-  say "prefix:  $PREFIX"
-  say "config:  $ENV_FILE"
-  say "state:   $STATE_DIR"
   token="$(read_value 'telegram bot token: ' "$token")"
   api_id="$(read_value 'telegram api_id: ' "$api_id")"
   api_hash="$(read_value 'telegram api_hash: ' "$api_hash")"
   admin_id="$(read_value 'admin telegram id: ' "$admin_id")"
-  [ -n "$token" ] || die "bot token is required"
+  if [ -z "$token" ]; then
+    fail_line "the bot token is required"
+    die "bot token is required"
+  fi
   case "$token" in
     *:*) ;;
-    *) die "bot token must look like 123456:ABC-DEF" ;;
+    *)
+      fail_line "the token must look like 123456:ABC-DEF"
+      die "bot token must look like 123456:ABC-DEF"
+      ;;
   esac
   [ -n "$api_id" ] || die "api_id is required"
   [ -n "$api_hash" ] || die "api_hash is required"
   [ -n "$admin_id" ] || die "admin id is required"
   case "$api_hash" in
-    *[!0-9a-fA-F]*) die "api_hash must be 32 hex characters" ;;
+    *[!0-9a-fA-F]*)
+      fail_line "api_hash must be 32 hex characters"
+      die "api_hash must be 32 hex characters"
+      ;;
   esac
-  [ "${#api_hash}" = "32" ] || die "api_hash must be 32 hex characters"
+  [ "${#api_hash}" = "32" ] || { fail_line "api_hash must be 32 hex characters"; die "api_hash must be 32 hex characters"; }
+  ok_line "token ${token%%:*}:***, admin $admin_id"
+
+  step "checking for a previous install"
+  REBUILD=0
+  if install_exists; then
+    REBUILD=1
+    note_line "a previous install was found, the old copy is removed and rewritten"
+    stop_before_rebuild
+    ok_line "the old install is stopped and will be replaced"
+  else
+    ok_line "there is nothing to replace, this is a clean install"
+  fi
+
+  step "copying the payload"
   install_payload
+  FILES_COPIED="$(count_files "$PREFIX/BOT")"
+  ok_line "$(plural_files "$FILES_COPIED") in $PREFIX/BOT"
+
+  step "preparing the python runtime"
   if [ -f "$PREFIX/requirements.txt" ]; then
     install_venv
+  else
+    warn_line "requirements.txt is missing, the runtime is not prepared"
   fi
+
+  step "writing the config and the unit"
   write_env "$token" "$api_id" "$api_hash" "$admin_id"
+  ok_line "config $ENV_FILE, mode 600"
   write_service
-  say "installed"
-  if [ "$DEV" = "1" ]; then
-    say "run in foreground with:"
-    say "  OBHOD_ENV=$ENV_FILE $PREFIX/venv/bin/python -m BOT"
+
+  summary_box
+  if [ "$REBUILD" = "1" ]; then
+    say "installed over the previous install"
+  else
+    say "installed"
   fi
 }
 
@@ -268,19 +456,24 @@ cmd_uninstall() {
 }
 
 kill_leftovers() {
-  local pid
+  local pid count=0
   if command -v pgrep >/dev/null 2>&1; then
     for pid in $(pgrep -f "$PREFIX/venv/bin/python" 2>/dev/null || true); do
       [ "$pid" = "$$" ] && continue
       kill -TERM "$pid" 2>/dev/null || true
+      count=$((count + 1))
     done
     sleep 1
     for pid in $(pgrep -f "$PREFIX/BOT" 2>/dev/null || true); do
       [ "$pid" = "$$" ] && continue
       kill -KILL "$pid" 2>/dev/null || true
+      count=$((count + 1))
     done
-    say "leftover processes stopped"
   fi
+  if [ "$count" -gt 0 ]; then
+    printf '%s leftover processes stopped' "$count"
+  fi
+  return 0
 }
 
 purge_install() {
@@ -292,7 +485,11 @@ purge_install() {
     systemctl reset-failed obhod.service >/dev/null 2>&1 || true
     say "unit removed"
   fi
-  kill_leftovers
+  local stopped
+  stopped="$(kill_leftovers)"
+  if [ -n "$stopped" ]; then
+    say "$stopped"
+  fi
   rm -rf "$PREFIX"
   say "removed $PREFIX"
   if [ "$PURGE_ALL" = "1" ]; then
