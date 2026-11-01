@@ -44,8 +44,8 @@ def clean_cache() -> None:
 
 
 def test_only_a_semantic_tag_is_accepted() -> None:
-    assert releases.tag_of(b'{"tag_name": "v4.1.1"}') == "v4.1.1"
-    assert releases.tag_of(b'{"tag_name": "4.1.1"}') == ""
+    assert releases.tag_of(b'{"tag_name": "v4.1.2"}') == "v4.1.2"
+    assert releases.tag_of(b'{"tag_name": "4.1.2"}') == ""
     assert releases.tag_of(b'{"tag_name": "latest"}') == ""
     assert releases.tag_of(b'{"tag_name": "v4.1"}') == ""
     assert releases.tag_of(b"{}") == ""
@@ -90,14 +90,14 @@ def test_a_successful_answer_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def answer(request: object, timeout: float = 0) -> Answer:
         calls.append(1)
-        return Answer(b'{"tag_name": "v4.1.1"}')
+        return Answer(b'{"tag_name": "v4.1.2"}')
 
     monkeypatch.setattr(releases.urllib.request, "urlopen", answer)
-    assert releases.latest_tag("free-turn-proxy") == ("v4.1.1", "")
-    assert releases.latest_tag("free-turn-proxy") == ("v4.1.1", "")
+    assert releases.latest_tag("free-turn-proxy") == ("v4.1.2", "")
+    assert releases.latest_tag("free-turn-proxy") == ("v4.1.2", "")
     assert len(calls) == 1
     releases.clear()
-    assert releases.latest_tag("free-turn-proxy") == ("v4.1.1", "")
+    assert releases.latest_tag("free-turn-proxy") == ("v4.1.2", "")
     assert len(calls) == 2
 
 
@@ -116,18 +116,18 @@ def test_a_failure_is_cached_for_a_shorter_time(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_the_fallback_is_used_when_the_api_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(releases.urllib.request, "urlopen", lambda request, timeout=0: Answer(b'{"tag_name": "v4.1.1"}'))
-    assert releases.resolve("free-turn-proxy", "v4.1.1", {"v4.1.1": "b"}) == ("v4.1.1", "api")
+    monkeypatch.setattr(releases.urllib.request, "urlopen", lambda request, timeout=0: Answer(b'{"tag_name": "v4.1.2"}'))
+    assert releases.resolve("free-turn-proxy", "v4.1.2", {"v4.1.2": "b"}) == ("v4.1.2", "api")
     releases.clear()
     monkeypatch.setattr(releases.urllib.request, "urlopen", lambda request, timeout=0: Answer(b'{"tag_name": "v4.2.0"}'))
-    assert releases.resolve("free-turn-proxy", "v4.1.1", {"v4.1.1": "b"}) == ("v4.1.1", "not_pinned")
+    assert releases.resolve("free-turn-proxy", "v4.1.2", {"v4.1.2": "b"}) == ("v4.1.2", "not_pinned")
     releases.clear()
 
     def explode(_request: object, timeout: float = 0) -> Answer:
         raise http_error(403, {"X-RateLimit-Remaining": "0"})
 
     monkeypatch.setattr(releases.urllib.request, "urlopen", explode)
-    assert releases.resolve("free-turn-proxy", "v4.1.1", {"v4.1.1": "b"}) == ("v4.1.1", "fallback")
+    assert releases.resolve("free-turn-proxy", "v4.1.2", {"v4.1.2": "b"}) == ("v4.1.2", "fallback")
 
 
 def test_the_lookup_never_carries_a_credential() -> None:

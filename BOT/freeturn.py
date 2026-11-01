@@ -16,12 +16,12 @@ from .shell import LocalShell, ShellError, ShellOutput, agent_argv
 
 PROTO = 3
 SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
-FALLBACK_VERSION = "v4.1.1"
+FALLBACK_VERSION = "v4.1.2"
 DEFAULT_VERSION = FALLBACK_VERSION
 RELEASE_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/{version}/{asset}"
 SCRIPT_URL = RELEASE_URL
 PINNED_SCRIPT_SHA256 = {
-    "v4.1.1": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
+    "v4.1.2": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
 }
 VERSION_CHOICES = ("latest", FALLBACK_VERSION)
 CHECKSUMS_ASSET = "checksums.txt"

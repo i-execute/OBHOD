@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import pty
+import select
+import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -216,7 +220,7 @@ def test_reinstall_purge_all_forgets_credentials(tmp_path: Path) -> None:
     assert state_dir.is_dir()
     result = dev_run(payload, ["reinstall", "--dev", "--purge-all", "--skip-deps"], env)
     assert result.returncode == 1
-    assert "bot token is required" in result.stderr
+    assert "no terminal to read the credentials" in result.stderr
     assert not env_conf.exists()
     assert list(state_dir.iterdir()) == []
     assert not (Path(env["HOME"]) / ".obhod" / "app").exists()
@@ -252,3 +256,124 @@ def test_reinstall_stops_leftover_processes(tmp_path: Path) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+def test_credentials_are_read_from_the_terminal_not_from_a_pipe(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    script = INSTALLER.read_text(encoding="utf-8")
+    assert "read -r value </dev/tty" in script
+    assert "tty_present()" in script
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["HOME"] = str(home)
+        os.execvp(
+            "bash",
+            ["bash", "-c", "bash %s install --dev --skip-deps < /dev/null" % shlex.quote(str(INSTALLER))],
+        )
+    answers = ["123456:ABC-DEF", "42", HASH, "1000"]
+    seen = ""
+    deadline = time.time() + 60
+    try:
+        while time.time() < deadline and answers:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 4096).decode("utf-8", "replace")
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+            if chunk.rstrip().endswith(":"):
+                os.write(fd, (answers.pop(0) + "\n").encode())
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if not ready:
+                done, _status = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    break
+                continue
+            try:
+                chunk = os.read(fd, 4096).decode("utf-8", "replace")
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+    assert not answers, seen
+    assert "telegram bot token" in seen
+    assert "installed" in seen
+
+
+def test_a_run_without_any_terminal_stops_before_it_hangs(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    result = subprocess.run(
+        ["bash", str(INSTALLER), "install", "--dev", "--skip-deps"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(home)},
+        start_new_session=True,
+        timeout=60,
+    )
+    assert result.returncode == 1
+    assert "no terminal to read the credentials" in result.stderr
+
+def test_a_second_install_replaces_everything_without_breaking(tmp_path: Path) -> None:
+    payload, env, env_conf = dev_payload(tmp_path)
+    first = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert first.returncode == 0, first.stderr
+    prefix = Path(env["HOME"]) / ".obhod" / "app"
+    assert (prefix / "BOT" / "__init__.py").read_text() == "SENTINEL = 1\n"
+
+    (prefix / "BOT" / "stale.py").write_text("OLD = 1\n")
+    (prefix / "Storage" / "remote" / "old_agent.py").write_text("OLD = 1\n")
+    (payload / "BOT" / "__init__.py").write_text("SENTINEL = 2\n")
+    (payload / "BOT" / "fresh.py").write_text("NEW = 1\n")
+
+    second = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert second.returncode == 0, second.stderr
+    assert "previous install" in second.stdout
+    assert "installed over the previous install" in second.stdout
+    assert (prefix / "BOT" / "__init__.py").read_text() == "SENTINEL = 2\n"
+    assert (prefix / "BOT" / "fresh.py").is_file()
+    assert not (prefix / "BOT" / "stale.py").exists()
+    assert not (prefix / "Storage" / "remote" / "old_agent.py").exists()
+    assert (prefix / "Storage" / "remote" / "xray_agent.py").is_file()
+    body = env_conf.read_text()
+    assert "BOT_TOKEN=123456:ABC" in body
+    assert "ADMIN_ID=1000" in body
+    state_dir = Path(env["HOME"]) / ".obhod" / "state"
+    assert state_dir.is_dir()
+
+    third = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert third.returncode == 0, third.stderr
+    assert "installed over the previous install" in third.stdout
+
+def test_a_broken_virtual_environment_is_rebuilt(tmp_path: Path) -> None:
+    script = INSTALLER.read_text(encoding="utf-8")
+    assert "the virtual environment is broken, recreating it" in script
+    assert 'rm -rf "$PREFIX/venv"' in script
+
+def test_the_plain_output_has_no_escape_codes(tmp_path: Path) -> None:
+    payload, env, env_conf = dev_payload(tmp_path)
+    result = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert result.returncode == 0, result.stderr
+    assert "\033[" not in result.stdout
+    assert "OBHOD" in result.stdout
+    assert "[1/6]" in result.stdout
+    assert "[6/6]" in result.stdout
+    assert "done" in result.stdout
+    assert "telegram control bot" in result.stdout
