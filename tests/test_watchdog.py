@@ -165,8 +165,8 @@ def test_a_second_freeturn_pin_is_reported(tmp_path: Path) -> None:
     target = clone(tmp_path)
     agent = target / "Storage" / "remote" / "freeturn_agent.py"
     body = agent.read_text(encoding="utf-8").replace(
-        'FALLBACK_VERSION = "v4.1.1"\nSCRIPT_SHA256 = {\n',
-        'FALLBACK_VERSION = "v4.1.1"\nSCRIPT_SHA256 = {\n    "v4.1.0": "b" * 64,\n',
+        'FALLBACK_VERSION = "v4.1.2"\nSCRIPT_SHA256 = {\n',
+        'FALLBACK_VERSION = "v4.1.2"\nSCRIPT_SHA256 = {\n    "v4.1.0": "b" * 64,\n',
         1,
     )
     agent.write_text(body, encoding="utf-8")

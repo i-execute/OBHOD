@@ -128,12 +128,12 @@ def test_a_good_tag_is_cached_and_an_empty_one_is_not_trusted(monkeypatch: pytes
 
 
 def test_the_new_freeturn_version_is_the_hardcoded_fallback() -> None:
-    assert freeturn.FALLBACK_VERSION == "v4.1.1"
+    assert freeturn.FALLBACK_VERSION == "v4.1.2"
     assert freeturn.DEFAULT_VERSION == freeturn.FALLBACK_VERSION
     assert freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION] == (
         "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100"
     )
-    assert freeturn.script_url(freeturn.FALLBACK_VERSION).endswith("/v4.1.1/install.sh")
+    assert freeturn.script_url(freeturn.FALLBACK_VERSION).endswith("/v4.1.2/install.sh")
 
 
 def test_the_not_pinned_error_is_translated_everywhere() -> None:
@@ -161,21 +161,21 @@ def test_every_architecture_maps_to_an_asset_the_release_ships() -> None:
     assert "server-linux-amd64" in freeturn.ASSET_BY_ARCH.values()
     for arch in ("x86_64", "aarch64", "armv7l"):
         assert freeturn.core_url(freeturn.FALLBACK_VERSION, arch).startswith(
-            "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/"
+            "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/"
         )
 
 
 def test_the_pin_points_at_the_published_release() -> None:
     module = load(TURN_AGENT, "freeturn_agent_published")
     assert module.SCRIPT_REPO == "hackdiaz-dev/free-turn-proxy"
-    assert module.FALLBACK_VERSION == "v4.1.1"
+    assert module.FALLBACK_VERSION == "v4.1.2"
     assert module.script_url(module.FALLBACK_VERSION) == (
-        "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/install.sh"
+        "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/install.sh"
     )
-    assert module.SCRIPT_SHA256["v4.1.1"] == freeturn.PINNED_SCRIPT_SHA256["v4.1.1"] == (
+    assert module.SCRIPT_SHA256["v4.1.2"] == freeturn.PINNED_SCRIPT_SHA256["v4.1.2"] == (
         "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100"
     )
-    assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.1", "")) == ("v4.1.1", "api")
+    assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.2", "")) == ("v4.1.2", "api")
 
 
 def test_exactly_one_xray_version_is_kept_as_the_fallback() -> None:
@@ -213,7 +213,7 @@ def test_exactly_one_freeturn_version_is_kept_as_the_fallback() -> None:
     module = load(TURN_AGENT, "freeturn_agent_single_pin")
     assert len(freeturn.PINNED_SCRIPT_SHA256) == 1
     assert len(module.SCRIPT_SHA256) == 1
-    assert freeturn.FALLBACK_VERSION == module.FALLBACK_VERSION == "v4.1.1"
+    assert freeturn.FALLBACK_VERSION == module.FALLBACK_VERSION == "v4.1.2"
     assert freeturn.VERSION_CHOICES == ("latest", freeturn.FALLBACK_VERSION)
 
 
@@ -246,14 +246,14 @@ def test_the_checksums_file_is_parsed_strictly() -> None:
 
 
 def test_the_checksums_are_read_from_github_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert freeturn.checksums_url("v4.1.1") == (
-        "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/checksums.txt"
+    assert freeturn.checksums_url("v4.1.2") == (
+        "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/checksums.txt"
     )
-    assert freeturn.allowed_checksums_url(freeturn.checksums_url("v4.1.1")) is True
+    assert freeturn.allowed_checksums_url(freeturn.checksums_url("v4.1.2")) is True
     assert freeturn.allowed_checksums_url("https://example.com/checksums.txt") is False
     assert freeturn.allowed_checksums_url("http://github.com/checksums.txt") is False
     module = load(TURN_AGENT, "freeturn_agent_checksum_hosts")
-    assert module.allowed_url(freeturn.checksums_url("v4.1.1")) is True
+    assert module.allowed_url(freeturn.checksums_url("v4.1.2")) is True
     freeturn.CHECKSUMS_CACHE.clear()
     monkeypatch.setattr(freeturn, "fetch_release_digest", lambda tag, timeout=None: "")
     assert freeturn.release_digest("v4.2.0") == ""

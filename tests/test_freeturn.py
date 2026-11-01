@@ -137,17 +137,17 @@ def test_validators() -> None:
 
 
 def test_release_urls() -> None:
-    assert script_url("v4.1.1").endswith("/v4.1.1/install.sh")
-    assert script_url("4.1.1").endswith("/v4.1.1/install.sh")
-    assert len(script_digest("v4.1.1")) == 64
+    assert script_url("v4.1.2").endswith("/v4.1.2/install.sh")
+    assert script_url("4.1.2").endswith("/v4.1.2/install.sh")
+    assert len(script_digest("v4.1.2")) == 64
     assert script_digest("v0.0.1", digest_lookup=lambda tag: "") == ""
     assert script_digest("v4.1.0", digest_lookup=lambda tag: "") == ""
     assert script_digest("v4.2.0", digest_lookup=lambda tag: "c" * 64) == "c" * 64
     assert asset_of_arch("x86_64") == "server-linux-amd64"
     assert asset_of_arch("aarch64") == "server-linux-arm64"
     assert asset_of_arch("mips") == ""
-    assert core_url("v4.1.1", "aarch64").endswith("/v4.1.1/server-linux-arm64")
-    assert core_url("v4.1.1", "mips") == ""
+    assert core_url("v4.1.2", "aarch64").endswith("/v4.1.2/server-linux-arm64")
+    assert core_url("v4.1.2", "mips") == ""
 
 
 def test_parse_response_reads_the_last_json_line() -> None:
@@ -195,7 +195,7 @@ def test_state_never_keeps_the_obfuscation_key() -> None:
         "euid": 0,
         "arch": "x86_64",
         "method": "systemd",
-        "version": "v4.1.1",
+        "version": "v4.1.2",
         "config": {"method": "systemd", "listen_port": 56123, "obf_key": key, "version": "latest"},
     }
     state = FtState.from_dict(probe)
@@ -282,7 +282,7 @@ async def test_control_sends_the_pinned_script_flags() -> None:
     argv, timeout = shell.calls[0]
     assert argv[0].endswith("python3") or "python" in argv[0]
     joined = " ".join(argv)
-    assert "--script-url=https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/install.sh" in joined
+    assert "--script-url=https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/install.sh" in joined
     assert "--script-sha256=91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100" in joined
     assert timeout == 120
 
@@ -407,7 +407,7 @@ def test_agent_rejects_a_wrong_digest(tmp_path: Path, monkeypatch: pytest.Monkey
             return self.payload[:size]
 
         def geturl(self) -> str:
-            return "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.1/install.sh"
+            return "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/install.sh"
 
     monkeypatch.setattr(module, "CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setattr(module.urllib.request, "urlopen", lambda request, timeout=0: FakeResponse(body))
@@ -583,8 +583,8 @@ def test_agent_never_shells_out_for_flags(tmp_path: Path, capsys: pytest.Capture
 
 
 def test_the_bot_resolves_latest_and_falls_back_to_the_pin(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.1.1", ""))
-    assert freeturn.resolve_version("latest") == ("v4.1.1", "api")
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.1.2", ""))
+    assert freeturn.resolve_version("latest") == ("v4.1.2", "api")
     monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.2.0", ""))
     assert freeturn.resolve_version("latest") == (freeturn.FALLBACK_VERSION, "not_pinned")
     monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("", "rate_limited"))
@@ -597,7 +597,7 @@ def test_the_bot_resolves_a_requested_version_without_the_api(monkeypatch: pytes
 
     monkeypatch.setattr(freeturn.releases, "latest_tag", explode)
     assert freeturn.resolve_version("") == (freeturn.FALLBACK_VERSION, "pinned")
-    assert freeturn.resolve_version("4.1.1") == ("v4.1.1", "pinned")
+    assert freeturn.resolve_version("4.1.2") == ("v4.1.2", "pinned")
     assert freeturn.resolve_version("local") == (freeturn.FALLBACK_VERSION, "local")
     for gone in ("v4.1.0", "v4.2.0"):
         with pytest.raises(FtError) as caught:
@@ -608,8 +608,8 @@ def test_the_bot_resolves_a_requested_version_without_the_api(monkeypatch: pytes
 def test_a_plan_version_must_be_pinned() -> None:
     FtConfig(version="latest").check()
     FtConfig(version="local").check()
-    FtConfig(version="4.1.1").check()
-    FtConfig(version="v4.1.1").check()
+    FtConfig(version="4.1.2").check()
+    FtConfig(version="v4.1.2").check()
     for gone in ("v4.1.0", "v4.2.0"):
         with pytest.raises(FtError) as caught:
             FtConfig(version=gone).check()
@@ -642,14 +642,14 @@ def test_the_plan_follows_the_api_when_it_answers(monkeypatch: pytest.MonkeyPatc
 
 def test_the_local_version_keeps_its_flag_and_a_pinned_script(monkeypatch: pytest.MonkeyPatch) -> None:
     control = FtControl(shell=FakeShell())
-    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.1.1", ""))
+    monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.1.2", ""))
     items = control.plan_argv(["apply", "--version=local"])
     assert "--version=local" in items
     assert "releases/download/%s/install.sh" % freeturn.FALLBACK_VERSION in " ".join(items)
 
 
 def test_the_version_choices_are_all_pinned() -> None:
-    assert freeturn.VERSION_CHOICES == ("latest", "v4.1.1")
+    assert freeturn.VERSION_CHOICES == ("latest", "v4.1.2")
     assert freeturn.FALLBACK_VERSION in freeturn.VERSION_CHOICES
     assert freeturn.PINNED_SCRIPT_SHA256 == {freeturn.FALLBACK_VERSION: freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION]}
     for item in freeturn.VERSION_CHOICES:
@@ -665,9 +665,9 @@ def test_the_agent_resolves_the_version_the_same_way() -> None:
     assert module.DEFAULT_URL.endswith("/%s/install.sh" % module.FALLBACK_VERSION)
     assert module.DEFAULT_SHA256 == module.SCRIPT_SHA256[module.FALLBACK_VERSION]
     assert module.resolve_version("")[0] == module.FALLBACK_VERSION
-    assert module.resolve_version("v4.1.1") == ("v4.1.1", "pinned")
+    assert module.resolve_version("v4.1.2") == ("v4.1.2", "pinned")
     assert module.resolve_version("local") == (module.FALLBACK_VERSION, "local")
-    assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.1", "")) == ("v4.1.1", "api")
+    assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.2", "")) == ("v4.1.2", "api")
     assert module.resolve_version("latest", lookup=lambda repo: ("v4.2.0", ""))[0] == module.FALLBACK_VERSION
     assert module.resolve_version("latest", lookup=lambda repo: ("", "rate_limited"))[0] == module.FALLBACK_VERSION
     for gone in ("v4.1.0", "v4.2.0"):
@@ -697,9 +697,9 @@ def test_the_agent_downloads_the_script_of_the_resolved_version(monkeypatch: pyt
 
     monkeypatch.setattr(module, "read_cache", lambda digest: "")
     monkeypatch.setattr(module, "download", fake_download)
-    module.script_source({"version": "v4.1.1"})
-    assert seen["url"].endswith("/v4.1.1/install.sh")
-    assert seen["digest"] == module.SCRIPT_SHA256["v4.1.1"]
+    module.script_source({"version": "v4.1.2"})
+    assert seen["url"].endswith("/v4.1.2/install.sh")
+    assert seen["digest"] == module.SCRIPT_SHA256["v4.1.2"]
     module.script_source({})
     assert seen["url"].endswith("/%s/install.sh" % module.FALLBACK_VERSION)
     assert seen["digest"] == module.SCRIPT_SHA256[module.FALLBACK_VERSION]
@@ -733,7 +733,7 @@ def test_the_agent_api_lookup_is_cached(monkeypatch: pytest.MonkeyPatch) -> None
             return None
 
         def read(self, _limit: int = 0) -> bytes:
-            return b'{"tag_name": "v4.1.1"}'
+            return b'{"tag_name": "v4.1.2"}'
 
     def answer(request: object, timeout: float = 0) -> Answer:
         calls.append(1)
@@ -741,8 +741,8 @@ def test_the_agent_api_lookup_is_cached(monkeypatch: pytest.MonkeyPatch) -> None
 
     module.API_CACHE.clear()
     monkeypatch.setattr(module.urllib.request, "urlopen", answer)
-    assert module.api_tag() == ("v4.1.1", "")
-    assert module.api_tag() == ("v4.1.1", "")
+    assert module.api_tag() == ("v4.1.2", "")
+    assert module.api_tag() == ("v4.1.2", "")
     assert len(calls) == 1
 
 
@@ -771,7 +771,7 @@ def test_the_agent_api_lookup_gets_a_real_timeout(monkeypatch: pytest.MonkeyPatc
             return None
 
         def read(self, _limit: int = 0) -> bytes:
-            return b'{"tag_name": "v4.1.1"}'
+            return b'{"tag_name": "v4.1.2"}'
 
     def answer(request: object, timeout: object = 0) -> Answer:
         seen["timeout"] = timeout
@@ -779,20 +779,20 @@ def test_the_agent_api_lookup_gets_a_real_timeout(monkeypatch: pytest.MonkeyPatc
         return Answer()
 
     monkeypatch.setattr(module.urllib.request, "urlopen", answer)
-    assert module.api_tag(module.SCRIPT_REPO) == ("v4.1.1", "")
+    assert module.api_tag(module.SCRIPT_REPO) == ("v4.1.2", "")
     assert isinstance(seen["timeout"], (int, float))
     assert seen["url"].endswith("/repos/%s/releases/latest" % module.SCRIPT_REPO)
-    assert module.resolve_version("latest") == ("v4.1.1", "api")
+    assert module.resolve_version("latest") == ("v4.1.2", "api")
 
 
 def test_only_one_freeturn_version_is_pinned() -> None:
-    assert list(freeturn.PINNED_SCRIPT_SHA256) == ["v4.1.1"]
-    assert freeturn.FALLBACK_VERSION == "v4.1.1"
-    assert freeturn.DEFAULT_VERSION == "v4.1.1"
-    assert freeturn.VERSION_CHOICES == ("latest", "v4.1.1")
+    assert list(freeturn.PINNED_SCRIPT_SHA256) == ["v4.1.2"]
+    assert freeturn.FALLBACK_VERSION == "v4.1.2"
+    assert freeturn.DEFAULT_VERSION == "v4.1.2"
+    assert freeturn.VERSION_CHOICES == ("latest", "v4.1.2")
     module = load_agent()
-    assert list(module.SCRIPT_SHA256) == ["v4.1.1"]
-    assert module.FALLBACK_VERSION == "v4.1.1"
+    assert list(module.SCRIPT_SHA256) == ["v4.1.2"]
+    assert module.FALLBACK_VERSION == "v4.1.2"
 
 
 def test_the_dropped_version_is_refused_everywhere() -> None:
