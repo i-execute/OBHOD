@@ -114,15 +114,15 @@ def test_a_good_tag_is_cached_and_an_empty_one_is_not_trusted(monkeypatch: pytes
             return None
 
         def read(self, _limit: int = 0) -> bytes:
-            return b'{"tag_name": "v26.10.29"}'
+            return b'{"tag_name": "v26.10.31"}'
 
     def answer(request: object, timeout: float = 0) -> Answer:
         calls.append(1)
         return Answer()
 
     monkeypatch.setattr(module, "open_url", answer)
-    assert module.latest_tag() == "v26.10.29"
-    assert module.latest_tag() == "v26.10.29"
+    assert module.latest_tag() == "v26.10.31"
+    assert module.latest_tag() == "v26.10.31"
     assert len(calls) == 1
     assert module.API_REASON == ""
 
@@ -182,13 +182,13 @@ def test_exactly_one_xray_version_is_kept_as_the_fallback() -> None:
     from BOT import xray
 
     module = load(XRAY_AGENT, "xray_agent_single_pin")
-    assert xray.XRAY_VERSION == xrayrpc.DEFAULT_VERSION == module.PINNED == "v26.10.29"
+    assert xray.XRAY_VERSION == xrayrpc.DEFAULT_VERSION == module.PINNED == "v26.10.31"
     assert xray.VERSION_CHOICES == (xray.XRAY_VERSION, "latest")
     assert xray.XrayState().install_version() == "latest"
-    assert xray.XrayState().pinned() == "v26.10.29"
+    assert xray.XrayState().pinned() == "v26.10.31"
     state = xray.XrayState()
-    state.version = "v26.10.29"
-    assert state.install_version() == "v26.10.29"
+    state.version = "v26.10.31"
+    assert state.install_version() == "v26.10.31"
     state.version = "v0.0.1"
     assert state.install_version() == "latest"
 
@@ -196,13 +196,13 @@ def test_exactly_one_xray_version_is_kept_as_the_fallback() -> None:
 def test_the_xray_pins_are_the_published_release_digests() -> None:
     module = load(XRAY_AGENT, "xray_agent_release_digests")
     published = {
-        "64": "8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2",
-        "arm64-v8a": "afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58",
-        "arm32-v7a": "263fa7325c63b3a7f7316405f561e7c790b44c1461992ea648007f0374e9bdf4",
-        "arm32-v6": "7c2f4ececc528eb4115a990f326a070a7e9a1712b8be6969ef5dc8f59543895d",
-        "32": "a02065c652dd8f25806242edc9656a21495a0afc10b3c2f22dda14cd71b70726",
-        "s390x": "cd0ddcde6e0bcf42a62dfd4e18857309b5efe23a931402c9cbb04e921bcbe7fe",
-        "riscv64": "ca16e1a932d8a7e58cc06686d08c3787b71c054ed78b5760e4eb8bfd916540a2",
+        "64": "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214",
+        "arm64-v8a": "1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d",
+        "arm32-v7a": "2387f55239ee7799fd67d5382e79f589c1da07a97d993e86b058f2290b8e456b",
+        "arm32-v6": "28c27bbd262bcc751e2e07115f47ce50d79611289e19e8b499b3065497b0e1ec",
+        "32": "4064a12c7712f28f0a85082be3564c088f7861f2220ddb5e4de409c91837511d",
+        "s390x": "c83452b49eb7c9064ca9afd68d5e0afaa820d0eae25e763306e68665bdc800c4",
+        "riscv64": "1159825b0d448fc7f56ca6f12e4872de2bf80a6639964819e0827fa0ad1283e8",
     }
     assert module.DIGESTS == published
     assert xrayrpc.PINNED_SHA256 == published

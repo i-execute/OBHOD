@@ -15,7 +15,7 @@ import urllib.request
 import zipfile
 
 PROTO = 3
-PINNED = "v26.10.29"
+PINNED = "v26.10.31"
 ASSETS = {
     "x86_64": "64",
     "amd64": "64",
@@ -30,13 +30,13 @@ ASSETS = {
     "riscv64": "riscv64",
 }
 DIGESTS = {
-    "64": "8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2",
-    "arm64-v8a": "afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58",
-    "arm32-v7a": "263fa7325c63b3a7f7316405f561e7c790b44c1461992ea648007f0374e9bdf4",
-    "arm32-v6": "7c2f4ececc528eb4115a990f326a070a7e9a1712b8be6969ef5dc8f59543895d",
-    "32": "a02065c652dd8f25806242edc9656a21495a0afc10b3c2f22dda14cd71b70726",
-    "s390x": "cd0ddcde6e0bcf42a62dfd4e18857309b5efe23a931402c9cbb04e921bcbe7fe",
-    "riscv64": "ca16e1a932d8a7e58cc06686d08c3787b71c054ed78b5760e4eb8bfd916540a2",
+    "64": "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214",
+    "arm64-v8a": "1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d",
+    "arm32-v7a": "2387f55239ee7799fd67d5382e79f589c1da07a97d993e86b058f2290b8e456b",
+    "arm32-v6": "28c27bbd262bcc751e2e07115f47ce50d79611289e19e8b499b3065497b0e1ec",
+    "32": "4064a12c7712f28f0a85082be3564c088f7861f2220ddb5e4de409c91837511d",
+    "s390x": "c83452b49eb7c9064ca9afd68d5e0afaa820d0eae25e763306e68665bdc800c4",
+    "riscv64": "1159825b0d448fc7f56ca6f12e4872de2bf80a6639964819e0827fa0ad1283e8",
 }
 API_URL = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 API_TTL = 600
@@ -441,7 +441,7 @@ def fetch_digest(version, asset, url):
 
 def install_core(version, url, sha256, force):
     if not SAFE_VERSION.match(str(version or "")):
-        raise ScriptError("bad_arg", "the version must look like v26.10.29", "download")
+        raise ScriptError("bad_arg", "the version must look like v26.10.31", "download")
     asset = asset_for(machine())
     if not asset:
         raise ScriptError("unsupported_arch", "architecture %s is not supported" % machine(), "download")
@@ -679,7 +679,19 @@ def pinned_with_fallback(version, url, sha256, force, tag="", fallback_url="", f
         if exc.code != "download_failed" or not requested_latest:
             raise
         note("the download of " + resolved + " failed, falling back to " + PINNED)
-        data = install_core(PINNED, str(fallback_url or ""), str(fallback_sha256 or ""), True)
+        try:
+            data = install_core(PINNED, str(fallback_url or ""), str(fallback_sha256 or ""), True)
+        except ScriptError as pinned_exc:
+            if pinned_exc.code != "download_failed":
+                raise
+            spare = latest_tag(use_cache=False)
+            if not spare or spare == PINNED:
+                raise
+            note("the pinned release is gone from github, using the live one: " + spare)
+            data = install_core(spare, str(fallback_url or ""), str(fallback_sha256 or ""), True)
+            data["fallback"] = True
+            data["fallback_version"] = spare
+            return data
         data["fallback"] = True
         data["fallback_version"] = PINNED
         return data
@@ -713,6 +725,8 @@ def cmd_install(flags, rest):
 
 def cmd_apply(flags, rest):
     payload = payload_of(flags, "config_b64")
+    if not payload:
+        raise ScriptError("config_missing", "no configuration was supplied", "config")
     version = version_of(flags)
     install = {}
     if not os.path.isfile(CORE):
