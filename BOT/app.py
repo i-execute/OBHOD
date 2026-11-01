@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import logging
 import socket
@@ -28,6 +29,16 @@ log = logging.getLogger("obhod.app")
 DRAFT_ID = 1
 CLAIM_WINDOW = 900.0
 INLINE_DUPLICATE_WINDOW = 8.0
+BUSY_QUIET = 5.0
+BUSY_TTL = 900.0
+RENDER_QUIET = 5.0
+RENDER_CACHE = 64
+DENY_LIMIT = 1
+DENY_WINDOW = 60.0
+NAVIGATE_LIMIT = 40
+HOME_QUIET = 3.0
+RATE_QUIET = 10.0
+UPDATE_QUIET = 10.0
 
 
 def public_address() -> str:
@@ -77,6 +88,9 @@ class Bot:
         self.ban: BanState | None = None
         self.sshd: SshState | None = None
         self.busy = False
+        self.busy_until = 0.0
+        self.render_seen: dict[tuple[int, int], tuple[str, float]] = {}
+        self.quiet_marks: dict[str, float] = {}
         self.started_at = time.monotonic()
         self.limiter = Limiter()
         self.audit = Audit(sink=SecurityLog())
@@ -85,6 +99,41 @@ class Bot:
         self.expensive_limit = EXPENSIVE_LIMIT
         self.inline_limit = INLINE_LIMIT
         self.inline_seen: dict[tuple[str, str, str], float] = {}
+
+    def is_busy(self) -> bool:
+        if not self.busy:
+            return False
+        return self.busy_until == 0.0 or time.monotonic() < self.busy_until
+
+    def busy_begin(self) -> bool:
+        if self.is_busy():
+            return False
+        self.busy = True
+        self.busy_until = time.monotonic() + BUSY_TTL
+        return True
+
+    def busy_end(self) -> None:
+        self.busy = False
+        self.busy_until = 0.0
+
+    def quiet(self, name: str, span: float) -> bool:
+        now = time.monotonic()
+        last = self.quiet_marks.get(name, 0.0)
+        if last and now - last < span:
+            return False
+        self.quiet_marks[name] = now
+        if len(self.quiet_marks) > RENDER_CACHE * 4:
+            keep = sorted(self.quiet_marks.items(), key=lambda pair: pair[1])[-RENDER_CACHE:]
+            self.quiet_marks = dict(keep)
+        return True
+
+    def render_digest(self, rich: object) -> str:
+        dump = getattr(rich, "to_html", None)
+        try:
+            body = dump() if callable(dump) else str(rich)
+        except Exception:
+            body = ""
+        return hashlib.sha256(str(body).encode("utf-8", "replace")).hexdigest()
 
     @property
     def admin_id(self) -> int:
@@ -188,13 +237,25 @@ class Bot:
     async def render(self, chat_id: int, msg_id: int, rich: object) -> None:
         if self.app is None:
             return
+        key = (int(chat_id or 0), int(msg_id or 0))
+        digest = self.render_digest(rich)
+        now = time.monotonic()
+        last = self.render_seen.get(key)
+        if last and last[0] == digest and now - last[1] < RENDER_QUIET:
+            return
+        self.render_seen[key] = (digest, now)
+        if len(self.render_seen) > RENDER_CACHE:
+            extra = len(self.render_seen) - RENDER_CACHE
+            for item in sorted(self.render_seen.items(), key=lambda pair: pair[1][1])[:extra]:
+                self.render_seen.pop(item[0], None)
         if msg_id:
             try:
                 await self.app.edit_rich(chat_id, msg_id, rich, via="mt")
                 return
             except Exception as exc:
                 log.warning("edit failed: %s", exc)
-        await self.send(chat_id, rich)
+        if not msg_id or self.quiet("send:%d" % key[0], RENDER_QUIET):
+            await self.send(chat_id, rich)
 
     async def toast(self, evt: object, text: str, alert: bool = False) -> None:
         try:
@@ -228,7 +289,8 @@ class Bot:
             return True
         chat_id = int(getattr(evt, "chat_id", 0) or 0)
         log.warning("blocked non-admin: who=%s, chat_id=%s", who, chat_id)
-        await self.send(chat_id, screens.denied(self.language))
+        if self.allowed(str(chat_id or who), "deny", DENY_LIMIT, DENY_WINDOW):
+            await self.send(chat_id, screens.denied(self.language))
         return False
 
     def input_values(self) -> dict[str, str]:
@@ -325,21 +387,25 @@ class Bot:
     async def on_message(self, evt: object) -> None:
         if not await self.guard_admin(evt):
             return
-        if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "message", self.message_limit, 60.0):
-            await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
+        who = int(getattr(evt, "from_id", 0) or 0)
+        if not self.allowed(who, "message", self.message_limit, 60.0):
+            if self.quiet("rate:%d" % who, RATE_QUIET):
+                await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
             return
         text = str(getattr(evt, "text", "") or "")
         if text.startswith(inline.marker_text()):
             await self.on_marker(evt, text)
             return
-        if self.busy:
-            await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
+        if self.is_busy():
+            if self.quiet("busy", BUSY_QUIET):
+                await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
             return
         chat_id = int(getattr(evt, "chat_id", 0) or 0)
         if text.strip().startswith("/"):
             await self.on_command(evt)
             return
-        await self.send(chat_id, screens.home(self.view(notice=self.tr()("HOME_NOTICE_PICK"))))
+        if self.quiet("home:%d" % chat_id, HOME_QUIET):
+            await self.send(chat_id, screens.home(self.view(notice=self.tr()("HOME_NOTICE_PICK"))))
 
     async def on_command(self, evt: object) -> None:
         if not await self.guard_admin(evt):
@@ -375,7 +441,7 @@ class Bot:
         await self.drop_marker(chat_id, msg_id)
         if not token:
             return
-        if self.busy:
+        if self.is_busy():
             await self.send(chat_id, screens.error_screen(self.view(), self.tr()("ERR_INPUT_TITLE"), self.tr()("TOAST_BUSY")))
             return
         try:
@@ -432,13 +498,20 @@ class Bot:
         if not await self.guard_admin(evt):
             return
         if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "callback", self.callback_limit, 60.0):
-            await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
+            if self.quiet("rate:%d" % int(getattr(evt, "from_id", 0) or 0), RATE_QUIET):
+                await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
             return
         data = str(getattr(evt, "data", "") or "")
         chat_id = int(getattr(evt, "chat_id", 0) or 0)
         msg_id = int(getattr(evt, "msg_id", 0) or 0)
-        if self.busy and not data.startswith("nav:"):
-            await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
+        who = int(getattr(evt, "from_id", 0) or 0)
+        if self.is_busy() and not data.startswith("nav:"):
+            if self.quiet("busy", BUSY_QUIET):
+                await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
+            return
+        if data.startswith(("nav:", "lang:")) and not self.allowed(who, "nav", NAVIGATE_LIMIT, 60.0):
+            if self.quiet("nav", BUSY_QUIET):
+                await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
             return
         if not data.startswith("nav:") and not data.startswith("lang:"):
             if not self.audit.first_time(int(getattr(evt, "from_id", 0) or 0), data, time.monotonic()):
@@ -446,7 +519,15 @@ class Bot:
                 return
             if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "expensive", self.expensive_limit, 300.0):
                 self.audit.note(int(getattr(evt, "from_id", 0) or 0), data, "throttled")
-                await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
+                if self.quiet("rate:%d" % int(getattr(evt, "from_id", 0) or 0), RATE_QUIET):
+                    await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
+                return
+        busy = False
+        if not data.startswith(("nav:", "lang:")):
+            busy = self.busy_begin()
+            if not busy:
+                if self.quiet("busy", BUSY_QUIET):
+                    await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
                 return
         try:
             await self.route(chat_id, msg_id, data)
@@ -456,6 +537,9 @@ class Bot:
         except Exception as exc:
             log.exception("callback failed: %s", data)
             await self.render(chat_id, msg_id, screens.error_screen(self.view(), self.tr()("ERR_CRASH_TITLE"), f"{type(exc).__name__}: {exc}"))
+        finally:
+            if busy:
+                self.busy_end()
 
     async def route(self, chat_id: int, msg_id: int, data: str) -> None:
         parts = data.split(":")
@@ -579,6 +663,8 @@ class Bot:
         await self.render(chat_id, msg_id, screens.update_screen(self.view(), self.update_info))
 
     async def refresh_update(self) -> None:
+        if self.update_info and not self.quiet("upd:check", UPDATE_QUIET):
+            return
         self.update_error = ""
         try:
             found = await self.updater.check_all()

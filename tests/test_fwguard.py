@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import subprocess
@@ -433,6 +434,128 @@ def run_firewalld(tmp_path: Path, *args: str) -> dict[str, Any]:
     payload = [line for line in done.stdout.splitlines() if line.strip().startswith("{")]
     assert payload, done.stdout + done.stderr
     return json.loads(payload[-1])
+
+
+UFW_STUB = """#!/usr/bin/env python3
+import json, os, re, sys
+path = os.environ["UFW_STATE"]
+data = json.load(open(path)) if os.path.exists(path) else {"rules": []}
+args = list(sys.argv[1:])
+with open(os.environ["UFW_LOG"], "a") as fh:
+    fh.write(" ".join(args) + chr(10))
+def save(): json.dump(data, open(path, "w"))
+def add(spec, action, source):
+    name, _, proto = spec.partition("/")
+    data["rules"].append({"port": name, "proto": proto or "any", "action": action, "from": source})
+def show(numbered):
+    print("Status: active")
+    print("")
+    print("     To                         Action      From")
+    print("     --                         ------      ----")
+    for index, rule in enumerate(data["rules"], start=1):
+        head = "[%2d] " % index if numbered else ""
+        print(head + ("%s/%s" % (rule["port"], rule["proto"])).ljust(27) + rule["action"].ljust(12) + rule["from"])
+if args[:1] == ["status"]:
+    show("numbered" in args); sys.exit(0)
+if args[:2] == ["--force", "delete"]:
+    target = args[2]
+    if target.isdigit():
+        index = int(target) - 1
+        if 0 <= index < len(data["rules"]):
+            data["rules"].pop(index); save(); print("Rule deleted"); sys.exit(0)
+        sys.exit(1)
+    spec = args[3] if len(args) > 3 else ""
+    for index, rule in enumerate(data["rules"]):
+        if rule["action"] == target.upper() and "%s/%s" % (rule["port"], rule["proto"]) == spec:
+            data["rules"].pop(index); save(); print("Rule deleted"); sys.exit(0)
+    sys.exit(1)
+if args[:1] in (["allow"], ["deny"]):
+    add(args[1], args[0].upper(), "Anywhere"); save(); print("Rules updated"); sys.exit(0)
+if args[:1] == ["insert"]:
+    body = args[2:]
+    source = body[body.index("from") + 1]
+    port = body[body.index("port") + 1]
+    proto = body[body.index("proto") + 1] if "proto" in body else "any"
+    data["rules"].insert(int(args[1]) - 1, {"port": port, "proto": proto, "action": "ALLOW", "from": source})
+    save(); print("Rule inserted"); sys.exit(0)
+sys.exit(1)
+"""
+
+
+def ufw_env(tmp_path: Path) -> dict[str, str]:
+    bindir = tmp_path / "ufwbin"
+    bindir.mkdir(exist_ok=True)
+    binary = bindir / "ufw"
+    binary.write_text(UFW_STUB, encoding="utf-8")
+    os.chmod(binary, 0o755)
+    return {
+        "PATH": "%s:/usr/local/bin:/usr/bin:/bin" % bindir,
+        "UFW_STATE": str(tmp_path / "ufw.json"),
+        "UFW_LOG": str(tmp_path / "ufw.log"),
+        "LANG": "C.UTF-8",
+    }
+
+
+def run_ufw(tmp_path: Path, *args: str) -> dict[str, Any]:
+    done = subprocess.run(
+        [sys.executable, str(AGENT), *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=ufw_env(tmp_path),
+    )
+    payload = [line for line in done.stdout.splitlines() if line.strip().startswith("{")]
+    assert payload, done.stdout + done.stderr
+    return json.loads(payload[-1])
+
+
+def ufw_verdict(tmp_path: Path, port: int, source: str, proto: str = "udp") -> str:
+    state = json.loads(Path(tmp_path / "ufw.json").read_text(encoding="utf-8"))
+    for rule in state["rules"]:
+        if rule["port"] != str(port):
+            continue
+        if rule["proto"] not in (proto, "any"):
+            continue
+        if rule["from"] == "Anywhere" or ipaddress.ip_address(source) in ipaddress.ip_network(rule["from"], strict=False):
+            return rule["action"]
+    return "DEFAULT"
+
+
+def ufw_rules(tmp_path: Path) -> list[dict[str, Any]]:
+    return json.loads(Path(tmp_path / "ufw.json").read_text(encoding="utf-8"))["rules"]
+
+
+def test_ufw_opens_the_port_after_the_limited_mode(tmp_path: Path) -> None:
+    port = 56272
+    assert run_ufw(tmp_path, "fw-guard", "--mode=vk", "--port=%d" % port, "--cidrs=87.240.128.0/18")["result"] == "ok"
+    assert ufw_verdict(tmp_path, port, "87.240.128.9") == "ALLOW"
+    assert ufw_verdict(tmp_path, port, "8.8.8.8") == "DENY"
+    opened = run_ufw(tmp_path, "fw-guard", "--mode=open", "--port=%d" % port)
+    assert opened["data"]["mode"] == "open"
+    assert ufw_verdict(tmp_path, port, "8.8.8.8") == "ALLOW"
+
+
+def test_ufw_leaves_nothing_behind_when_closed(tmp_path: Path) -> None:
+    port = 56272
+    run_ufw(tmp_path, "fw-guard", "--mode=vk", "--port=%d" % port, "--cidrs=87.240.128.0/18")
+    closed = run_ufw(tmp_path, "fw-guard", "--mode=closed", "--port=%d" % port)
+    assert closed["data"]["mode"] == "closed"
+    assert ufw_rules(tmp_path) == []
+    assert ufw_verdict(tmp_path, port, "87.240.128.9") == "DEFAULT"
+
+
+def test_ufw_guards_the_whole_pair_of_protocols(tmp_path: Path) -> None:
+    port = 56272
+    run_ufw(tmp_path, "fw-guard", "--mode=vk", "--port=%d" % port, "--cidrs=87.240.128.0/18", "--proto=both")
+    assert ufw_verdict(tmp_path, port, "8.8.8.8", "udp") == "DENY"
+    assert ufw_verdict(tmp_path, port, "8.8.8.8", "tcp") == "DENY"
+    assert ufw_verdict(tmp_path, port, "87.240.128.9", "tcp") == "ALLOW"
+
+
+def test_ufw_status_is_not_fooled_by_a_shorter_port(tmp_path: Path) -> None:
+    run_ufw(tmp_path, "fw-guard", "--mode=open", "--port=56000")
+    found = run_ufw(tmp_path, "fw-guard", "--mode=status", "--port=5600")
+    assert found["data"]["mode"] == "closed"
 
 
 def test_firewalld_keeps_the_runtime_and_the_permanent_config_in_step(tmp_path: Path) -> None:

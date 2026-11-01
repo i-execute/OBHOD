@@ -16,6 +16,8 @@ from .shell import LocalShell, ShellError, ShellOutput, agent_argv
 
 PROTO = 3
 SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
+PORT_FLOOR = 1024
+PORT_CEIL = 65535
 FALLBACK_VERSION = "v4.1.2"
 DEFAULT_VERSION = FALLBACK_VERSION
 RELEASE_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/{version}/{asset}"
@@ -419,9 +421,13 @@ class FtConfig:
 
     def free_port(self, used: list[int]) -> "FtConfig":
         taken = {int(item) for item in used}
-        while int(self.listen_port) in taken:
-            self.listen_port = int(self.listen_port) + 1
-        return self
+        port = min(max(int(self.listen_port), PORT_FLOOR), PORT_CEIL)
+        for _ in range(PORT_CEIL - PORT_FLOOR + 1):
+            if port not in taken:
+                self.listen_port = port
+                return self
+            port = PORT_FLOOR if port >= PORT_CEIL else port + 1
+        raise FtError("there is no free port left for the tunnel", "bad_arg")
 
     def to_dict(self) -> dict[str, Any]:
         return {

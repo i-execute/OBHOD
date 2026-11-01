@@ -536,6 +536,12 @@ def firewalld_add(port, cidr="", drop=False, proto="udp"):
 
 
 def firewalld_clear(port):
+    for proto in ("udp", "tcp"):
+        for argv in (
+            ["firewall-cmd", "--remove-port=%d/%s" % (port, proto)],
+            ["firewall-cmd", "--permanent", "--remove-port=%d/%s" % (port, proto)],
+        ):
+            run_tool(argv)
     for permanent in (False, True):
         for rule in firewalld_rules(port, permanent=permanent):
             argv = ["firewall-cmd"]
@@ -543,29 +549,22 @@ def firewalld_clear(port):
                 argv.append("--permanent")
             argv.append("--remove-rich-rule=%s" % rule)
             run_tool(argv)
-        for proto in ("udp", "tcp"):
-            for argv in (
-                ["firewall-cmd", "--remove-port=%d/%s" % (port, proto)],
-                ["firewall-cmd", "--permanent", "--remove-port=%d/%s" % (port, proto)],
-            ):
-                if permanent or "--permanent" not in argv:
-                    run_tool(argv)
+
+
+def mentions_port(text, port):
+    return re.search(r"(?<![0-9])%d(?![0-9])" % int(port), str(text or "")) is not None
 
 
 def ufw_clear(port):
-    for proto in ("udp", "tcp"):
-        run_tool(["ufw", "--force", "delete", "allow", "%d/%s" % (port, proto)])
     listing = tool_text(["ufw", "status", "numbered"])
-    drops = []
+    doomed = set()
     for line in listing.splitlines():
-        body = line.strip()
-        found = re.match(r"^\[\s*(\d+)\]\s+(.+)$", body)
+        found = re.match(r"^\[\s*(\d+)\]\s+(.+)$", line.strip())
         if not found:
             continue
-        rule = found.group(2)
-        if str(port) in rule and ("udp" in rule.lower() or "tcp" in rule.lower()) and "ALLOW" in rule.upper():
-            drops.append(int(found.group(1)))
-    for number in sorted(drops, reverse=True):
+        if mentions_port(found.group(2), port):
+            doomed.add(int(found.group(1)))
+    for number in sorted(doomed, reverse=True):
         run_tool(["ufw", "--force", "delete", str(number)])
 
 
@@ -634,12 +633,12 @@ def guard_status(backend, port, protos):
             mode = "closed"
     elif backend == "ufw":
         listing = tool_text(["ufw", "status", "numbered"])
-        allowed = [line for line in listing.splitlines() if "ALLOW" in line.upper() and ("%d" % port) in line]
-        denied = [line for line in listing.splitlines() if "DENY" in line.upper() and ("%d" % port) in line]
+        ours = [line for line in listing.splitlines() if mentions_port(line, port)]
+        allowed = [line for line in ours if "ALLOW" in line.upper()]
         rules = len(allowed)
         if allowed and any("Anywhere" in line for line in allowed):
             mode = "open"
-        elif allowed or denied:
+        elif allowed:
             mode = "vk"
         else:
             mode = "closed"
