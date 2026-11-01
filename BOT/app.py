@@ -545,6 +545,11 @@ class Bot:
             return
         if action in {"commit", "release"} and stage != "go":
             await self.refresh_update()
+            preview: dict[str, object] = {}
+            try:
+                preview = await self.updater.preview(action)
+            except UpdateError as exc:
+                self.update_error = exc.message
             branch = str(self.update_info.get("branch") or "")
             if action == "commit":
                 commit = str(self.update_info.get("remote") or t("UI_NOT_SET"))
@@ -565,7 +570,7 @@ class Bot:
             await self.render(
                 chat_id,
                 msg_id,
-                screens.confirm(t("UPD_CONFIRM_TITLE"), body, target, self.language, back="upd:show"),
+                screens.update_confirm_screen(self.view(), self.update_info, preview, body, target),
             )
             return
         if action in {"commit", "release"} and stage == "go":

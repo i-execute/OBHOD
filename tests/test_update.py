@@ -286,6 +286,9 @@ class FakeUpdater:
 
         return UpdateInfo.from_dict(self.info)
 
+    async def preview(self, mode: str) -> dict[str, Any]:
+        return {"base": "1111aaa", "target": "2222bbb", "subject": "fix the update", "commits": 4, "files": ["M BOT/app.py"], "total": 1}
+
     async def apply(self, mode: str) -> Any:
         from BOT.update import UpdateResult
 

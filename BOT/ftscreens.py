@@ -101,6 +101,14 @@ def home(view: FtView) -> Any:
     return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"))
 
 
+def mode_label(t: i18n.Translator, mode: str) -> str:
+    name = str(mode or "unknown").strip().upper()
+    key = "FT_FW_MODE_%s" % name
+    if i18n.has_key(key, t.language):
+        return t(key)
+    return str(mode or "unknown")[:24]
+
+
 def fw_screen(view: FtView) -> Any:
     t = view.tr()
     blocks = banner(view, t)
@@ -109,9 +117,9 @@ def fw_screen(view: FtView) -> Any:
         blocks.append(quote(muted(t("FT_FW_UNKNOWN"))))
     else:
         pairs = [
-            (t("FT_FW_PORT"), code(data.get("port", 0))),
+            (t("FT_FW_PORT"), code("%s/%s" % (data.get("port", 0), data.get("proto", "udp")))),
             (t("FT_FW_BACKEND"), code(data.get("backend") or t("UI_NONE"))),
-            (t("FT_FW_MODE"), code(t("FT_FW_MODE_%s" % str(data.get("mode", "unknown")).upper()))),
+            (t("FT_FW_MODE"), code(mode_label(t, str(data.get("mode", "unknown"))))),
             (t("FT_FW_RULES"), code(data.get("rules", 0))),
             (t("FT_FW_CIDRS"), code(data.get("cidrs", 0))),
         ]

@@ -333,6 +333,25 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
     return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
 
 
+def update_confirm_screen(view: View, info: dict[str, Any], preview: dict[str, Any], body: str, action: str) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    blocks.append(quote(bold(body)))
+    commits = int(preview.get("commits", 0) or 0)
+    if commits:
+        blocks.append(f"<p>{t('UPD_PREVIEW_COUNT', count=code(commits), files=code(preview.get('total', 0)))}</p>")
+        files = [code(str(item)) for item in preview.get("files") or []]
+        if files:
+            blocks.append(bullet_list(files))
+        extra = int(preview.get("total", 0) or 0) - len(files)
+        if extra > 0:
+            blocks.append(quote(muted(t("UPD_PREVIEW_MORE", count=extra))))
+    buttons = [
+        row(button(t("UI_CONFIRM"), action), button(t("UI_CANCEL"), "upd:show")),
+    ]
+    return screen(t("UPD_CONFIRM_TITLE"), t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+
+
 def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any]) -> Any:
     t = view.tr()
     blocks = banner(view, t)

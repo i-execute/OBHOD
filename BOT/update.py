@@ -28,6 +28,7 @@ DEPS_TIMEOUT = 900.0
 UNIT_TIMEOUT = 30.0
 RESTART_DELAY = 3
 TAIL = 400
+PREVIEW_FILES = 8
 
 
 class UpdateError(Exception):
@@ -234,6 +235,29 @@ class Updater:
         info = await self.check_commit()
         info.release, info.release_error = await self._release()
         return info
+
+    async def preview(self, mode: str) -> dict[str, Any]:
+        info = await self.read()
+        fetched = await self._git("fetch", "--prune", "--tags", REMOTE)
+        if int(fetched.code or 0) != 0:
+            raise UpdateError("the fetch failed: %s" % clean_output(fetched.text))
+        info.release, info.release_error = await self._release()
+        target, subject = await self._resolve(mode, info)
+        count = await self._git_text("rev-list", "--count", "%s..%s" % (info.commit, target))
+        changed = await self._git_text("diff", "--name-status", "%s..%s" % (info.commit, target))
+        files = []
+        for line in changed.splitlines()[:PREVIEW_FILES]:
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                files.append("%s %s" % (parts[0].strip(), parts[1].strip()))
+        return {
+            "base": info.commit,
+            "target": target[:7],
+            "subject": subject,
+            "commits": int(count or 0),
+            "files": files,
+            "total": len([line for line in changed.splitlines() if line.strip()]),
+        }
 
     async def _resolve(self, mode: str, info: UpdateInfo) -> tuple[str, str]:
         if mode == "commit":

@@ -24,6 +24,7 @@ from .freeturn import (
     valid_name,
 )
 from .models import ModelError
+from .ui import code
 
 
 class FtPanel:
@@ -148,7 +149,7 @@ class FtPanel:
             await self.uninstall(chat_id, msg_id)
             return
         if head == "fw":
-            await self.firewall(chat_id, msg_id, arg1)
+            await self.firewall(chat_id, msg_id, arg1, arg2)
             return
         if head == "port":
             await self.apply_input(chat_id, "ft_port", arg1, arg2)
@@ -179,6 +180,10 @@ class FtPanel:
             return
         raise ModelError("unknown plan field: %s" % field[:24])
 
+    def guard_proto(self) -> str:
+        mode = str(self.state.config.mode or self.draft.mode or "udp").strip().lower()
+        return "tcp" if mode == "tcp" else "udp"
+
     def guard_port(self) -> int:
         try:
             port = int(self.state.config.listen_port or self.draft.listen_port or 0)
@@ -186,24 +191,38 @@ class FtPanel:
             port = 0
         return port if 1 <= port <= 65535 else 0
 
-    async def firewall(self, chat_id: int, msg_id: int, action: str) -> None:
+    async def firewall(self, chat_id: int, msg_id: int, action: str, confirmed: str = "") -> None:
         t = self.tr()
         port = self.guard_port()
+        proto = self.guard_proto()
         if not port:
             await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=t("FT_FW_NO_RANGES", reason="no port"))))
             return
         if action in {"", "status"}:
             try:
-                found = await self.control.firewall("status", port)
+                found = await self.control.firewall("status", port, proto=proto)
             except FtError as exc:
                 self.note("fw", "failed", exc.code)
                 await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=self.describe(exc))))
                 return
-            self.guard = {"port": found.port, "backend": found.backend, "mode": found.mode, "rules": found.rules, "cidrs": found.cidrs}
+            self.guard = {"port": found.port, "proto": found.proto, "backend": found.backend, "mode": found.mode, "rules": found.rules, "cidrs": found.cidrs}
             await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view()))
             return
         if action not in {"vk", "open", "closed"}:
             await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view()))
+            return
+        if action in {"vk", "closed"} and not confirmed:
+            await self.render(
+                chat_id,
+                msg_id,
+                ftscreens.confirm_screen(
+                    self.view(),
+                    t("FT_FW_CONFIRM_TITLE"),
+                    t("FT_FW_CONFIRM_BODY", mode=t("FT_FW_MODE_%s" % action.upper()), port=code(port)),
+                    "ft:fw:%s:yes" % action,
+                    "ft:fw",
+                ),
+            )
             return
         await self.busy(chat_id, msg_id, t("FT_FW_BUSY"))
         cidrs = ""
@@ -219,12 +238,12 @@ class FtPanel:
                 return
             cidrs = fwguard.join_cidrs(found)
         try:
-            result = await self.control.firewall(action, port, cidrs)
+            result = await self.control.firewall(action, port, cidrs, proto=proto)
         except FtError as exc:
             self.note("fw", "failed", exc.code)
             await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=self.describe(exc))))
             return
-        self.guard = {"port": result.port, "backend": result.backend, "mode": result.mode, "rules": result.rules, "cidrs": result.cidrs}
+        self.guard = {"port": result.port, "proto": result.proto, "backend": result.backend, "mode": result.mode, "rules": result.rules, "cidrs": result.cidrs}
         self.note("fw", "ok", "%s %s" % (result.mode, result.backend))
         if action == "vk":
             notice = t("FT_FW_NOTICE_VK", count=result.cidrs or len(cidrs.split(",")))

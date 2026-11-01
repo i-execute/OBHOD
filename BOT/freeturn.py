@@ -303,6 +303,7 @@ def unb64url(text: str) -> bytes:
 @dataclass
 class FtGuard:
     port: int = 0
+    proto: str = "udp"
     backend: str = ""
     mode: str = "unknown"
     rules: int = 0
@@ -313,6 +314,7 @@ class FtGuard:
         data = dict(raw or {})
         return FtGuard(
             port=int(data.get("port", 0) or 0),
+            proto=str(data.get("proto", "udp") or "udp"),
             backend=str(data.get("backend", "") or ""),
             mode=str(data.get("mode", "unknown") or "unknown"),
             rules=int(data.get("rules", 0) or 0),
@@ -611,8 +613,8 @@ class FtControl:
             raise FtError(exc.message, "transport") from None
         return parse_response(out.text)
 
-    async def firewall(self, mode: str, port: int, cidrs: str = "", timeout: float = 240.0) -> FtGuard:
-        argv = ["fw-guard", "--mode=%s" % mode, "--port=%d" % int(port)]
+    async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 240.0) -> FtGuard:
+        argv = ["fw-guard", "--mode=%s" % mode, "--port=%d" % int(port), "--proto=%s" % str(proto or "udp")]
         if cidrs:
             argv.append("--cidrs=%s" % cidrs)
         try:

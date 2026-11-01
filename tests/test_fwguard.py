@@ -261,6 +261,33 @@ def test_the_firewall_screen_survives_an_empty_state() -> None:
     assert "ft:fw:vk" in html
 
 
+def test_a_destructive_mode_asks_first(tmp_path: Path) -> None:
+    from tests.fakes import make_bot
+
+    applied: list[tuple] = []
+
+    class GuardControl:
+        async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 0) -> FtGuard:
+            applied.append((mode, port, cidrs))
+            return FtGuard(port=port, backend="ufw", mode=mode)
+
+    bot = make_bot(tmp_path)
+    bot.freeturn.control = GuardControl()
+    bot.freeturn.state.config.listen_port = 56272
+    asyncio.run(bot.freeturn.route(1, 0, "ft:fw:closed"))
+    assert applied == []
+    assert "ft:fw:closed:yes" in bot.rendered[-1].to_html()
+    asyncio.run(bot.freeturn.route(1, 0, "ft:fw:closed:yes"))
+    assert applied == [("closed", 56272, "")]
+    asyncio.run(bot.freeturn.route(1, 0, "ft:fw:open"))
+    assert applied[-1] == ("open", 56272, "")
+
+
+def test_an_unknown_mode_never_crashes_the_screen() -> None:
+    html = ftscreens.fw_screen(view_with({"port": 56272, "proto": "tcp", "backend": "iptables", "mode": "weird", "rules": 1, "cidrs": 0})).to_html()
+    assert "weird" in html
+
+
 def test_the_freeturn_home_links_the_firewall() -> None:
     html = ftscreens.home(view_with()).to_html()
     assert "ft:fw" in html
@@ -272,7 +299,7 @@ def test_the_panel_applies_the_range_list(tmp_path: Path, monkeypatch: pytest.Mo
     applied: list[tuple] = []
 
     class GuardControl:
-        async def firewall(self, mode: str, port: int, cidrs: str = "", timeout: float = 0) -> FtGuard:
+        async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 0) -> FtGuard:
             applied.append((mode, port, cidrs))
             return FtGuard(port=port, backend="firewalld", mode="vk" if mode == "vk" else mode, rules=96, cidrs=2)
 
@@ -281,6 +308,9 @@ def test_the_panel_applies_the_range_list(tmp_path: Path, monkeypatch: pytest.Mo
     bot.freeturn.control = GuardControl()
     bot.freeturn.state.config.listen_port = 56272
     asyncio.run(bot.freeturn.route(1, 0, "ft:fw:vk"))
+    assert applied == []
+    assert "ft:fw:vk:yes" in bot.rendered[-1].to_html()
+    asyncio.run(bot.freeturn.route(1, 0, "ft:fw:vk:yes"))
     assert applied == [("vk", 56272, "87.240.128.0/18,93.186.224.0/21")]
     assert bot.freeturn.guard["mode"] == "vk"
     assert "ft:fw:vk" in bot.rendered[-1].to_html()
@@ -292,7 +322,7 @@ def test_the_panel_refuses_to_limit_without_a_list(tmp_path: Path, monkeypatch: 
     applied: list[tuple] = []
 
     class GuardControl:
-        async def firewall(self, mode: str, port: int, cidrs: str = "", timeout: float = 0) -> FtGuard:
+        async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 0) -> FtGuard:
             applied.append((mode, port, cidrs))
             return FtGuard(port=port, backend="ufw", mode="open")
 
@@ -300,7 +330,7 @@ def test_the_panel_refuses_to_limit_without_a_list(tmp_path: Path, monkeypatch: 
     bot = make_bot(tmp_path)
     bot.freeturn.control = GuardControl()
     bot.freeturn.state.config.listen_port = 56272
-    asyncio.run(bot.freeturn.route(1, 0, "ft:fw:vk"))
+    asyncio.run(bot.freeturn.route(1, 0, "ft:fw:vk:yes"))
     assert applied == []
     assert "unreachable" in bot.rendered[-1].to_html()
 
@@ -309,7 +339,7 @@ def test_the_panel_reads_the_status(tmp_path: Path) -> None:
     from tests.fakes import make_bot
 
     class GuardControl:
-        async def firewall(self, mode: str, port: int, cidrs: str = "", timeout: float = 0) -> FtGuard:
+        async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 0) -> FtGuard:
             return FtGuard(port=port, backend="iptables", mode="vk", rules=97, cidrs=95)
 
     bot = make_bot(tmp_path)
@@ -318,3 +348,166 @@ def test_the_panel_reads_the_status(tmp_path: Path) -> None:
     asyncio.run(bot.freeturn.route(1, 0, "ft:fw"))
     assert bot.freeturn.guard["backend"] == "iptables"
     assert bot.freeturn.guard["cidrs"] == 95
+
+
+def test_a_newline_in_the_range_list_is_refused(tmp_path: Path) -> None:
+    for bad in ("87.240.128.0/18\n--flush", "87.240.128.0/18\tx", "87.240.128.0/18 93.186.224.0/21"):
+        answer = run_agent(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=%s" % bad)
+        assert answer["result"] == "err", bad
+    assert not Path(tmp_path / "calls.log").exists()
+
+
+def test_too_many_ranges_are_refused(tmp_path: Path) -> None:
+    ranges = ",".join("172.%d.%d.0/24" % (16 + index // 250, index % 250) for index in range(600))
+    answer = run_agent(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=%s" % ranges)
+    assert answer["result"] == "err"
+    assert "too many" in answer["msg"]
+
+
+def test_the_agent_cannot_be_talked_into_another_chain(tmp_path: Path) -> None:
+    answer = run_agent(tmp_path, "fw-guard", "--mode=status", "--port=56272", "--chain=INPUT")
+    assert answer["result"] == "err"
+    assert answer["code"] == "bad_arg"
+
+
+FIREWALLD_STUB = '''#!/usr/bin/env python3
+import json, os, sys
+state = os.environ["FW_STATE"]
+data = json.load(open(state)) if os.path.exists(state) else {"permanent": [], "runtime": []}
+args = list(sys.argv[1:])
+with open(os.environ["FW_LOG"], "a") as fh:
+    fh.write(" ".join(args) + "\\n")
+permanent = "--permanent" in args
+key = "permanent" if permanent else "runtime"
+rest = [a for a in args if a != "--permanent"]
+def save(): json.dump(data, open(state, "w"))
+if "--state" in rest:
+    print("running"); sys.exit(0)
+if "--list-rich-rules" in rest:
+    print("\\n".join(data[key])); sys.exit(0)
+for item in rest:
+    if item.startswith("--add-rich-rule="):
+        rule = item.split("=", 1)[1]
+        if rule not in data[key]:
+            data[key].append(rule)
+        save(); sys.exit(0)
+    if item.startswith("--remove-rich-rule="):
+        rule = item.split("=", 1)[1]
+        data[key] = [r for r in data[key] if r != rule]; save(); sys.exit(0)
+    if item.startswith("--add-port="):
+        rule = "port:" + item.split("=", 1)[1]
+        if rule not in data[key]:
+            data[key].append(rule)
+        save(); sys.exit(0)
+    if item.startswith("--remove-port="):
+        rule = "port:" + item.split("=", 1)[1]
+        data[key] = [r for r in data[key] if r != rule]; save(); sys.exit(0)
+    if item.startswith("--query-port="):
+        sys.exit(0 if ("port:" + item.split("=", 1)[1]) in data[key] else 1)
+sys.exit(0)
+'''
+
+
+def firewalld_env(tmp_path: Path) -> dict[str, str]:
+    bindir = tmp_path / "fw"
+    bindir.mkdir(exist_ok=True)
+    binary = bindir / "firewall-cmd"
+    binary.write_text(FIREWALLD_STUB, encoding="utf-8")
+    os.chmod(binary, 0o755)
+    return {
+        "PATH": "%s:/usr/local/bin:/usr/bin:/bin" % bindir,
+        "FW_STATE": str(tmp_path / "fw.json"),
+        "FW_LOG": str(tmp_path / "fw.log"),
+        "LANG": "C.UTF-8",
+    }
+
+
+def run_firewalld(tmp_path: Path, *args: str) -> dict[str, Any]:
+    done = subprocess.run(
+        [sys.executable, str(AGENT), *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=firewalld_env(tmp_path),
+    )
+    payload = [line for line in done.stdout.splitlines() if line.strip().startswith("{")]
+    assert payload, done.stdout + done.stderr
+    return json.loads(payload[-1])
+
+
+def test_firewalld_keeps_the_runtime_and_the_permanent_config_in_step(tmp_path: Path) -> None:
+    answer = run_firewalld(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=87.240.128.0/18")
+    assert answer["result"] == "ok", answer
+    assert answer["data"]["backend"] == "firewalld"
+    state = json.loads(Path(tmp_path / "fw.json").read_text(encoding="utf-8"))
+    for scope in ("permanent", "runtime"):
+        rules = state[scope]
+        assert any("87.240.128.0/18" in item and "accept" in item for item in rules), (scope, rules)
+        assert any("drop" in item for item in rules), (scope, rules)
+        assert not any(item.startswith("port:") for item in rules), (scope, rules)
+    log = Path(tmp_path / "fw.log").read_text(encoding="utf-8")
+    assert "--reload" not in log
+    accepts = [item for item in state["runtime"] if "accept" in item]
+    drops = [item for item in state["runtime"] if "drop" in item]
+    assert int(accepts[0].split('priority="')[1].split('"')[0]) < int(drops[0].split('priority="')[1].split('"')[0])
+
+
+def test_firewalld_open_puts_the_port_back(tmp_path: Path) -> None:
+    run_firewalld(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=87.240.128.0/18")
+    answer = run_firewalld(tmp_path, "fw-guard", "--mode=open", "--port=56272")
+    assert answer["data"]["mode"] == "open"
+    state = json.loads(Path(tmp_path / "fw.json").read_text(encoding="utf-8"))
+    assert "port:56272/udp" in state["permanent"]
+    assert "port:56272/udp" in state["runtime"]
+    assert not [item for item in state["runtime"] if "drop" in item]
+
+
+def test_firewalld_closed_leaves_nothing(tmp_path: Path) -> None:
+    run_firewalld(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=87.240.128.0/18")
+    answer = run_firewalld(tmp_path, "fw-guard", "--mode=closed", "--port=56272")
+    assert answer["data"]["mode"] == "closed"
+    state = json.loads(Path(tmp_path / "fw.json").read_text(encoding="utf-8"))
+    assert state["runtime"] == [] and state["permanent"] == []
+
+
+def test_the_tcp_mode_guards_the_tcp_port(tmp_path: Path) -> None:
+    answer = run_agent(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=87.240.128.0/18", "--proto=tcp")
+    assert answer["result"] == "ok", answer
+    assert answer["data"]["proto"] == "tcp"
+    log = Path(tmp_path / "calls.log").read_text(encoding="utf-8")
+    assert "-I INPUT 1 -p tcp --dport 56272 -j OBHOD-FT" in log
+    assert "-I INPUT 1 -p udp --dport 56272 -j OBHOD-FT" not in log
+
+
+def test_the_both_mode_guards_both(tmp_path: Path) -> None:
+    answer = run_agent(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=87.240.128.0/18", "--proto=both")
+    assert answer["data"]["proto"] == "both"
+    log = Path(tmp_path / "calls.log").read_text(encoding="utf-8")
+    assert "-I INPUT 1 -p udp --dport 56272 -j OBHOD-FT" in log
+    assert "-I INPUT 1 -p tcp --dport 56272 -j OBHOD-FT" in log
+
+
+def test_a_bad_protocol_is_refused(tmp_path: Path) -> None:
+    for bad in ("sctp", "", "udp,tcp; rm -rf /"):
+        answer = run_agent(tmp_path, "fw-guard", "--mode=status", "--port=56272", "--proto=%s" % bad)
+        assert answer["result"] == "err", bad
+
+
+def test_the_panel_guards_the_protocol_of_the_plan(tmp_path: Path) -> None:
+    from tests.fakes import make_bot
+
+    seen: list[str] = []
+
+    class GuardControl:
+        async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 0) -> FtGuard:
+            seen.append(proto)
+            return FtGuard(port=port, proto=proto, backend="ufw", mode="open" if mode == "status" else mode)
+
+    bot = make_bot(tmp_path)
+    bot.freeturn.control = GuardControl()
+    bot.freeturn.state.config.listen_port = 56272
+    bot.freeturn.state.config.mode = "tcp"
+    asyncio.run(bot.freeturn.route(1, 0, "ft:fw"))
+    bot.freeturn.state.config.mode = "udp"
+    asyncio.run(bot.freeturn.route(1, 0, "ft:fw"))
+    assert seen == ["tcp", "udp"]

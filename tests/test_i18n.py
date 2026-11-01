@@ -169,3 +169,36 @@ def test_error_titles_exist_in_every_catalog() -> None:
     for name in ("ERR_TITLE", "ERR_INPUT_TITLE", "ERR_CRASH_TITLE"):
         for code_value in i18n.LANGUAGES:
             assert i18n.t(name, code_value).strip()
+
+
+def test_the_new_screens_speak_every_catalog() -> None:
+    from BOT import ftscreens, screens
+    from BOT.store import State
+    from BOT.xray import XrayState
+
+    view = screens.View(state=State(xray=XrayState()))
+    info = {"root": "/opt/obhod-src", "git": True, "branch": "main", "commit": "1111aaa", "subject": "work", "tag": "v1.0.0", "dirty": 0, "behind": 2, "ahead": 0, "release": "v1.1.0", "release_error": "", "unit": "obhod.service", "unit_state": "active"}
+    preview = {"commits": 2, "files": ["M BOT/app.py"], "total": 3}
+    result = {"ok": True, "target": "2222bbb", "subject": "fix", "steps": ["reset"], "message": "updated", "restarted": True}
+    def ft(lang: str):
+        item = ftscreens.FtView(state=State(xray=XrayState()).freeturn, lang=lang)
+        item.guard = {"port": 56272, "backend": "firewalld", "mode": "vk", "rules": 96, "cidrs": 95}
+        return item
+
+    builders = {
+        "update": lambda lang: screens.update_screen(screens.View(state=view.state, lang=lang), info),
+        "update_confirm": lambda lang: screens.update_confirm_screen(screens.View(state=view.state, lang=lang), info, preview, "body", "upd:commit:go"),
+        "update_result": lambda lang: screens.update_result_screen(screens.View(state=view.state, lang=lang), info, result),
+        "firewall": lambda lang: ftscreens.fw_screen(ft(lang)),
+    }
+    cyrillic = re.compile(r"[\u0400-\u04ff]")
+    cjk = re.compile(r"[\u4e00-\u9fff]")
+    for name, build in builders.items():
+        english = build("en").to_html()
+        russian = build("ru").to_html()
+        chinese = build("zh").to_html()
+        assert not cyrillic.search(english) and not cjk.search(english), name
+        assert cyrillic.search(russian), name
+        assert cjk.search(chinese), name
+        for html in (english, russian, chinese):
+            assert "{" not in html, name
