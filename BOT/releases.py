@@ -8,6 +8,7 @@ import urllib.request
 
 API = "https://api.github.com/repos/%s/releases/latest"
 TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+ANY_TAG_RE = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+$")
 AGENT = "obhod-releases/1"
 TIMEOUT = 8.0
 OK_TTL = 600.0
@@ -40,6 +41,30 @@ def rate_limited(exc: BaseException) -> bool:
     return code == 403 and remaining == "0"
 
 
+def any_tag_of(body: bytes) -> str:
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    tag = str(data.get("tag_name", "") or "").strip()
+    return tag if ANY_TAG_RE.match(tag) else ""
+
+
+def fetch_any(repo: str, timeout: float = TIMEOUT) -> tuple[str, str]:
+    request = urllib.request.Request(API % repo, headers={"User-Agent": AGENT, "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(65536)
+    except urllib.error.HTTPError as exc:
+        return "", "rate_limited" if rate_limited(exc) else "http_%d" % int(getattr(exc, "code", 0) or 0)
+    except (OSError, ValueError):
+        return "", "unreachable"
+    tag = any_tag_of(body)
+    return (tag, "") if tag else ("", "no_tag")
+
+
 def fetch(repo: str, timeout: float = TIMEOUT) -> tuple[str, str]:
     request = urllib.request.Request(API % repo, headers={"User-Agent": AGENT, "Accept": "application/vnd.github+json"})
     try:
@@ -63,6 +88,17 @@ def latest_tag(repo: str, timeout: float = TIMEOUT, use_cache: bool = True) -> t
             return hit[1], hit[2]
     tag, reason = fetch(repo, timeout)
     CACHE[repo] = (time.monotonic() + (OK_TTL if tag else FAIL_TTL), tag, reason)
+    return tag, reason
+
+
+def latest_tag_any(repo: str, timeout: float = TIMEOUT, use_cache: bool = True) -> tuple[str, str]:
+    key = "any:" + repo
+    if use_cache:
+        hit = CACHE.get(key)
+        if hit and hit[0] > time.monotonic():
+            return hit[1], hit[2]
+    tag, reason = fetch_any(repo, timeout)
+    CACHE[key] = (time.monotonic() + (OK_TTL if tag else FAIL_TTL), tag, reason)
     return tag, reason
 
 

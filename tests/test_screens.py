@@ -130,6 +130,37 @@ def test_subscription_hint_keeps_a_short_url_on_a_button() -> None:
     assert "<details>" not in html
 
 
+UPDATE_INFO = {
+    "root": "/opt/obhod-src",
+    "git": True,
+    "branch": "main",
+    "commit": "1111aaa",
+    "subject": "current work",
+    "tag": "v1.0.0",
+    "dirty": 0,
+    "behind": 0,
+    "ahead": 0,
+    "remote": "2222bbb",
+    "remote_subject": "fix the update",
+    "release": "v1.1.0",
+    "release_error": "",
+    "unit": "obhod.service",
+    "unit_state": "active",
+}
+
+UPDATE_RESULT = {
+    "ok": True,
+    "mode": "commit",
+    "source": "1111aaa",
+    "target": "2222bbb",
+    "subject": "fix the update",
+    "steps": ["reset to 2222bbb", "syntax check passed"],
+    "message": "updated",
+    "restarted": True,
+    "rollback": False,
+}
+
+
 def render_all(lang: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, object]]:
     from BOT import xscreens
     from BOT.xray import XrayState as _State
@@ -183,6 +214,8 @@ def render_all(lang: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, object]]:
         ("xray_input", xscreens.input_screen(xview, "xr_port", "1", "xr:in:1")),
         ("xray_logs", xscreens.logs_screen(xview, ["line"], 200)),
         ("language", screens.language_screen(view)),
+        ("update", screens.update_screen(view, UPDATE_INFO)),
+        ("update_result", screens.update_result_screen(view, UPDATE_INFO, UPDATE_RESULT)),
     ]
     return items
 

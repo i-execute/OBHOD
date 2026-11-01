@@ -136,3 +136,11 @@ def test_the_lookup_never_carries_a_credential() -> None:
     for token in ("Authorization", "GITHUB_TOKEN", "Bearer", "token "):
         assert token not in body
     assert "print(" not in body
+
+
+def test_a_tag_without_the_v_prefix_is_accepted_for_the_update_page() -> None:
+    assert releases.any_tag_of(b'{"tag_name": "1.0.0"}') == "1.0.0"
+    assert releases.any_tag_of(b'{"tag_name": "v1.0.0"}') == "v1.0.0"
+    assert releases.any_tag_of(b'{"tag_name": "main"}') == ""
+    assert releases.any_tag_of(b'{"tag_name": "1.0"}') == ""
+    assert releases.tag_of(b'{"tag_name": "1.0.0"}') == ""

@@ -115,7 +115,8 @@ def home(view: View) -> Any:
         row(button(t("NAV_CORE"), "xr:core"), button(t("CORE_NAV"), "core:show")),
         row(button(t("NAV_FAIL2BAN"), "nav:ban"), button(t("NAV_SSHD"), "nav:sshd")),
         row(button(t("NAV_SSH"), "nav:ssh"), button(t("NAV_SETTINGS"), "nav:settings")),
-        row(button(t("NAV_LANGUAGE"), "nav:lang"), button(t("NAV_HELP"), "nav:help")),
+        row(button(t("NAV_UPDATE"), "upd:show"), button(t("NAV_LANGUAGE"), "nav:lang")),
+        row(button(t("NAV_HELP"), "nav:help")),
     ]
     return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
 
@@ -300,6 +301,64 @@ def sshd_screen(view: View) -> Any:
         row(button(t("SSHD_REMOVE"), "sshd:remove"), button(t("UI_HOME"), "nav:home")),
     ]
     return screen(t("SSHD_TITLE"), t("SSHD_SUBTITLE"), blocks, buttons, footer=t("SSHD_FOOTER"))
+
+
+def update_screen(view: View, info: dict[str, Any]) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    if not info.get("git"):
+        blocks.append(quote(bold(t("UPD_NO_GIT"))))
+        buttons = [row(button(t("UI_REFRESH"), "upd:show"), button(t("UI_HOME"), "nav:home"))]
+        return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+    branch = str(info.get("branch") or "")
+    behind = int(info.get("behind", 0) or 0)
+    behind_text = t("UPD_BEHIND", count=code(behind), branch=branch) if behind else t("UPD_UP_TO_DATE", branch=branch)
+    release = str(info.get("release") or "")
+    release_text = release or t("UPD_NO_RELEASE", reason=str(info.get("release_error") or t("UI_NONE")))
+    pairs = [
+        (t("UPD_LABEL_SOURCE"), code(info.get("root") or t("UI_NOT_SET"))),
+        (t("UPD_LABEL_BRANCH"), code(branch or t("UI_NOT_SET"))),
+        (t("UPD_LABEL_COMMIT"), code("%s %s" % (info.get("commit") or t("UI_NOT_SET"), info.get("subject") or ""))),
+        (t("UPD_LABEL_TAG"), code(info.get("tag") or t("UI_NOT_SET"))),
+        (t("UPD_LABEL_CHANGES"), code(info.get("dirty", 0))),
+        (t("UPD_LABEL_BEHIND"), behind_text),
+        (t("UPD_LABEL_RELEASE"), code(release_text)),
+        (t("UPD_LABEL_SERVICE"), code(info.get("unit_state") or t("UI_NONE"))),
+    ]
+    blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
+    buttons = [
+        row(button(t("UPD_BTN_COMMIT"), "upd:commit"), button(t("UPD_BTN_RELEASE"), "upd:release")),
+        row(button(t("UI_REFRESH"), "upd:show"), button(t("UI_HOME"), "nav:home")),
+    ]
+    return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+
+
+def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any]) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    ok = bool(result.get("ok"))
+    commit = str(result.get("target") or "")
+    subject = str(result.get("subject") or "")
+    body = t("UPD_DONE", commit=code(commit), subject=subject) if ok else t("UPD_FAILED", error=body_text(result.get("message")))
+    blocks.append(quote(bold(body)))
+    steps = [muted(str(item)) for item in result.get("steps") or []]
+    if steps:
+        blocks.append(f"<p>{bold(t('UPD_STEPS_DONE'))}</p>")
+        blocks.append(bullet_list(steps))
+    if ok and result.get("message") == "already up to date":
+        blocks.append(quote(muted(t("UPD_ALREADY", commit=code(commit)))))
+    if result.get("rollback"):
+        blocks.append(quote(muted(t("UPD_ROLLBACK", commit=code(str(result.get("source") or ""))))))
+    if ok and result.get("restarted"):
+        blocks.append(quote(muted(t("UPD_RESTART"))))
+    buttons = [
+        row(button(t("UI_REFRESH"), "upd:show"), button(t("UI_HOME"), "nav:home")),
+    ]
+    return screen(t("UPD_DONE_TITLE") if ok else t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"))
+
+
+def body_text(value: object) -> str:
+    return code(str(value or ""))
 
 
 def help_screen(view: View) -> Any:

@@ -13,6 +13,24 @@ curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo 
 The installer refuses a non root user, installs into `/opt/obhod`, keeps the state in `/var/lib/obhod`, and the bot is
 started as `obhod.service`. Reinstalling removes the previous installation first.
 
+## Update from the bot
+
+The `Update` screen on the home keyboard works on the source checkout the bot runs from (`/opt/obhod-src` by default,
+`OBHOD_DIR` overrides it) and offers two ways to move forward:
+
+| Point | Behaviour |
+| --- | --- |
+| `Latest commit` | `git fetch --prune --tags origin`, then a hard reset to `origin/main`; the branch is read from the checkout, not from a constant |
+| `Latest release` | the tag comes from the release api (both `1.2.3` and `v1.2.3` are accepted), and the annotated tag is peeled to its commit, so the tree lands on the release, not on the tag object |
+| Force | both ways always reset hard and drop untracked files, so a dirty checkout is pulled clean; `.venv` and the state directory are kept |
+| Check before restart | the new tree is compiled with `compileall`; a tree that does not compile is rolled back to the commit the bot started from, and nothing restarts |
+| Dependencies | `pip install -r requirements.txt` runs only when that file changed between the two commits |
+| Restart | `systemd-run --on-active=3 systemctl restart obhod.service`, so the answer reaches Telegram before the process goes away |
+| Verify | a marker lands in the state directory before the restart; on the next start the bot checks that the tree matches the marker and compiles, then reports `the update to <commit> is verified, the service is <state>` once on the home screen |
+
+Every attempt is written to the audit log as `upd:commit` or `upd:release`. Nothing is pulled without a confirmation
+screen, and no tag or branch name is ever interpolated into a shell: the module calls `git` with an argv list.
+
 ## What it is
 
 Telegram bot over MTProto that manages the Xray server it runs on and hands out post quantum VLESS subscriptions.

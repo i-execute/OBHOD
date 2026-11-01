@@ -20,6 +20,7 @@ from .ratelimit import CALLBACK_LIMIT, CLAIM_LIMIT, EXPENSIVE_LIMIT, INLINE_LIMI
 from .shell import LocalShell, ShellError
 from .store import State, Store
 from .ui import button, code, muted, quote, row, screen
+from .update import UpdateError, Updater
 from .xrayrpc import XrayControl, XrayError as RpcError
 
 log = logging.getLogger("obhod.app")
@@ -58,6 +59,7 @@ class Bot:
         control: XrayControl | None = None,
         guard: GuardClient | None = None,
         shell: LocalShell | None = None,
+        updater: Updater | None = None,
     ) -> None:
         self.cfg = cfg
         self.store = Store(cfg.state_dir / "state.json")
@@ -66,6 +68,11 @@ class Bot:
         self.guard = guard or GuardClient(self.control)
         self.xray = XrayPanel(self, self.control)
         self.freeturn = FtPanel(self, FtControl(shell=shell))
+        self.updater = updater or Updater(shell=shell, state_dir=cfg.state_dir)
+        self.update_info: dict[str, object] = {}
+        self.update_result: dict[str, object] = {}
+        self.update_notice: dict[str, object] = {}
+        self.update_error = ""
         self.app: GoyGram | None = None
         self.ban: BanState | None = None
         self.sshd: SshState | None = None
@@ -107,6 +114,7 @@ class Bot:
         self.store.save(self.state)
 
     def view(self, notice: str = "", error: str = "", busy: str = "") -> screens.View:
+        notice = notice or self.update_notice_text()
         return screens.View(
             state=self.state,
             core=dict(self.xray.core),
@@ -147,8 +155,30 @@ class Bot:
         return app
 
     async def run(self) -> None:
+        await self.verify_update()
         app = await self.boot()
         await app.run()
+
+    async def verify_update(self) -> None:
+        try:
+            self.update_notice = await self.updater.verify()
+        except (UpdateError, ShellError) as exc:
+            log.warning("the update check failed: %s", getattr(exc, "message", exc))
+            self.update_notice = {}
+        except Exception as exc:
+            log.debug("the update check was skipped: %s", exc)
+            self.update_notice = {}
+
+    def update_notice_text(self) -> str:
+        data = self.update_notice
+        if not data:
+            return ""
+        self.update_notice = {}
+        t = self.tr()
+        commit = str(data.get("commit") or data.get("to") or "")[:12]
+        if data.get("healthy"):
+            return t("UPD_NOTICE_VERIFIED", commit=commit, state=str(data.get("state") or "active"))
+        return t("UPD_NOTICE_BROKEN", commit=commit)
 
     async def send(self, chat_id: int, rich: object) -> None:
         if self.app is None:
@@ -451,6 +481,9 @@ class Bot:
         if head == "ft":
             await self.freeturn.route(chat_id, msg_id, data)
             return
+        if head == "upd":
+            await self.update_action(chat_id, msg_id, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
+            return
         if head == "core":
             await self.core_action(chat_id, msg_id, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
             return
@@ -497,7 +530,80 @@ class Bot:
         if page == "core":
             await self.render(chat_id, msg_id, ftscreens.core_screen(self.freeturn.view()))
             return
+        if page == "update":
+            await self.update_action(chat_id, msg_id, "show", "")
+            return
         await self.render(chat_id, msg_id, screens.home(self.view()))
+
+    async def update_action(self, chat_id: int, msg_id: int, action: str, stage: str) -> None:
+        t = self.tr()
+        if action in {"", "show", "refresh"}:
+            steps = [t("UPD_STEP_FETCH"), t("UPD_STEP_RESET"), t("UPD_STEP_CHECK"), t("UPD_STEP_DEPS"), t("UPD_STEP_RESTART")]
+            await self.render(chat_id, msg_id, screens.busy_screen(t("UPD_BUSY"), self.language, steps))
+            await self.refresh_update()
+            await self.render(chat_id, msg_id, screens.update_screen(self.view(error=self.update_error), self.update_info))
+            return
+        if action in {"commit", "release"} and stage != "go":
+            await self.refresh_update()
+            branch = str(self.update_info.get("branch") or "")
+            if action == "commit":
+                commit = str(self.update_info.get("remote") or t("UI_NOT_SET"))
+                body = t("UPD_CONFIRM_COMMIT", branch=branch, commit=code(commit))
+                target = "upd:commit:go"
+            else:
+                tag = str(self.update_info.get("release") or "")
+                if not tag:
+                    reason = str(self.update_info.get("release_error") or t("UI_NONE"))
+                    await self.render(
+                        chat_id,
+                        msg_id,
+                        screens.update_screen(self.view(error=t("UPD_NO_RELEASE", reason=reason)), self.update_info),
+                    )
+                    return
+                body = t("UPD_CONFIRM_RELEASE", tag=code(tag))
+                target = "upd:release:go"
+            await self.render(
+                chat_id,
+                msg_id,
+                screens.confirm(t("UPD_CONFIRM_TITLE"), body, target, self.language, back="upd:show"),
+            )
+            return
+        if action in {"commit", "release"} and stage == "go":
+            await self.run_update(chat_id, msg_id, action)
+            return
+        await self.render(chat_id, msg_id, screens.update_screen(self.view(), self.update_info))
+
+    async def refresh_update(self) -> None:
+        self.update_error = ""
+        try:
+            found = await self.updater.check_all()
+            self.update_info = found.to_dict()
+        except UpdateError as exc:
+            self.update_error = exc.message
+        except (ShellError, OSError) as exc:
+            self.update_error = str(exc)
+
+    async def run_update(self, chat_id: int, msg_id: int, mode: str) -> None:
+        t = self.tr()
+        steps = [t("UPD_STEP_FETCH"), t("UPD_STEP_RESET"), t("UPD_STEP_CHECK"), t("UPD_STEP_DEPS"), t("UPD_STEP_RESTART")]
+        await self.render(chat_id, msg_id, screens.busy_screen(t("UPD_BUSY"), self.language, steps))
+        self.audit.note(self.admin_id, "upd:%s" % mode, "start")
+        try:
+            result = await self.updater.apply(mode)
+        except UpdateError as exc:
+            self.audit.note(self.admin_id, "upd:%s" % mode, "failed")
+            self.update_error = exc.message
+            await self.render(chat_id, msg_id, screens.update_screen(self.view(error=exc.message), self.update_info))
+            return
+        except (ShellError, OSError) as exc:
+            self.audit.note(self.admin_id, "upd:%s" % mode, "failed")
+            self.update_error = str(exc)
+            await self.render(chat_id, msg_id, screens.update_screen(self.view(error=self.update_error), self.update_info))
+            return
+        self.audit.note(self.admin_id, "upd:%s" % mode, "ok" if result.ok else "failed")
+        self.update_result = result.to_dict()
+        self.update_error = ""
+        await self.render(chat_id, msg_id, screens.update_result_screen(self.view(), self.update_info, self.update_result))
 
     async def ssh_action(self, chat_id: int, msg_id: int, action: str) -> None:
         await self.render(chat_id, msg_id, screens.ssh_settings(self.view()))

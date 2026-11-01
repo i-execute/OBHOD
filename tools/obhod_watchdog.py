@@ -19,6 +19,7 @@ PROTECTED = (
     "BOT/releases.py",
     "BOT/seclog.py",
     "BOT/shell.py",
+    "BOT/update.py",
     "Storage/remote/fail2ban_agent.py",
     "Storage/remote/freeturn_agent.py",
     "Storage/remote/ssh_agent.py",
