@@ -301,6 +301,26 @@ def unb64url(text: str) -> bytes:
 
 
 @dataclass
+class FtGuard:
+    port: int = 0
+    backend: str = ""
+    mode: str = "unknown"
+    rules: int = 0
+    cidrs: int = 0
+
+    @staticmethod
+    def from_dict(raw: dict[str, Any] | None) -> "FtGuard":
+        data = dict(raw or {})
+        return FtGuard(
+            port=int(data.get("port", 0) or 0),
+            backend=str(data.get("backend", "") or ""),
+            mode=str(data.get("mode", "unknown") or "unknown"),
+            rules=int(data.get("rules", 0) or 0),
+            cidrs=int(data.get("cidrs", 0) or 0),
+        )
+
+
+@dataclass
 class FtResponse:
     result: str = "err"
     code: str = ""
@@ -590,6 +610,18 @@ class FtControl:
         except ShellError as exc:
             raise FtError(exc.message, "transport") from None
         return parse_response(out.text)
+
+    async def firewall(self, mode: str, port: int, cidrs: str = "", timeout: float = 240.0) -> FtGuard:
+        argv = ["fw-guard", "--mode=%s" % mode, "--port=%d" % int(port)]
+        if cidrs:
+            argv.append("--cidrs=%s" % cidrs)
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        return FtGuard.from_dict(response.data)
 
     async def probe(self) -> FtState:
         response = await self.call(["probe"], timeout=120)

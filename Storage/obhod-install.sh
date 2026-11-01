@@ -189,7 +189,7 @@ tty_present() {
 }
 
 read_value() {
-  local prompt="$1" current="$2" value=""
+  local prompt="$1" current="$2" value="" silent="${3:-0}"
   if [ "$ASSUME_YES" = "1" ] && [ -n "$current" ]; then
     printf '%s' "$current"
     return 0
@@ -197,11 +197,24 @@ read_value() {
   if ! tty_present; then
     die "there is no terminal to read the credentials, pipe the script into bash is not enough, run bash $0 ${CMD} from a terminal or pass --env-file with the keys"
   fi
+  if [ "$silent" = "1" ]; then
+    prompt="${prompt%: }"
+    prompt="$prompt (hidden): "
+  fi
   printf '%s' "$prompt" >&2
-  if [ -t 0 ]; then
-    read -r value || true
+  if [ "$silent" = "1" ]; then
+    if [ -t 0 ]; then
+      read -rs value || true
+    else
+      read -rs value </dev/tty || true
+    fi
+    printf '\n' >&2
   else
-    read -r value </dev/tty || true
+    if [ -t 0 ]; then
+      read -r value || true
+    else
+      read -r value </dev/tty || true
+    fi
   fi
   if [ -z "$value" ]; then
     value="$current"
@@ -377,9 +390,9 @@ cmd_install() {
   api_id="$(env_get API_ID)"
   api_hash="$(env_get API_HASH)"
   admin_id="$(env_get ADMIN_ID)"
-  token="$(read_value 'telegram bot token: ' "$token")"
+  token="$(read_value 'telegram bot token: ' "$token" 1)"
   api_id="$(read_value 'telegram api_id: ' "$api_id")"
-  api_hash="$(read_value 'telegram api_hash: ' "$api_hash")"
+  api_hash="$(read_value 'telegram api_hash: ' "$api_hash" 1)"
   admin_id="$(read_value 'admin telegram id: ' "$admin_id")"
   if [ -z "$token" ]; then
     fail_line "the bot token is required"

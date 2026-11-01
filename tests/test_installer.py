@@ -377,3 +377,58 @@ def test_the_plain_output_has_no_escape_codes(tmp_path: Path) -> None:
     assert "[6/6]" in result.stdout
     assert "done" in result.stdout
     assert "telegram control bot" in result.stdout
+
+
+def test_the_token_and_the_hash_are_not_echoed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["HOME"] = str(home)
+        os.execvp(
+            "bash",
+            ["bash", "-c", "bash %s install --dev --skip-deps < /dev/null" % shlex.quote(str(INSTALLER))],
+        )
+    answers = ["123456:ABC-DEF", "42", HASH, "1000"]
+    seen = ""
+    deadline = time.time() + 60
+    try:
+        while time.time() < deadline and answers:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 4096).decode("utf-8", "replace")
+            except OSError:
+                break
+            seen += chunk
+            if chunk.rstrip().endswith(":"):
+                if "hidden" in chunk:
+                    time.sleep(0.1)
+                os.write(fd, (answers.pop(0) + "\n").encode())
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if not ready:
+                done, _status = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    break
+                continue
+            try:
+                chunk = os.read(fd, 4096).decode("utf-8", "replace")
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+    assert "hidden" in seen
+    assert HASH not in seen
+    assert "ABC-DEF" not in seen

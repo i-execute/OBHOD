@@ -4,6 +4,14 @@
 
 # OBHOD
 
+## Credentials
+
+The installer asks for the bot token and the api hash with the echo turned off (`read -r -s`), prints
+`telegram bot token (hidden):` and never shows the value it read. The success line keeps the id and masks the rest
+(`token 123456:***`). The same keys passed through `--env-file` or the environment are read once, written to
+`/etc/obhod/obhod.env` with `0600` inside a `0700` directory, and the variables are dropped from the shell before the
+installer runs, so the keys never land in the process list, in the history or in the logs.
+
 ## Install
 
 ```
@@ -108,6 +116,27 @@ Storage/
 get.sh                      curl one liner
 tests/                      test suite
 ```
+
+## Call relay firewall
+
+FreeTurn carries the traffic through the TURN relays of the vk calls, so the only packets that legitimately reach the
+UDP port of the server come from the relay networks of vk. The `Call relay firewall` screen offers three modes:
+
+| Mode | Behaviour |
+| --- | --- |
+| `open to the world` | the rule the upstream installer writes: the udp port accepts any source |
+| `vk relays only` | the world rule is removed, every announced network of AS47541 and AS47764 is accepted, and a final drop swallows everything else, so a scan gets the same silence the relay itself gives |
+| `closed` | the port accepts nothing |
+
+The ranges are read from the public routing data (`stat.ripe.net`, the announced prefixes of `AS47541 LLC VK` and
+`AS47764 VK-AS LLC VK`), collapsed to the shortest form and cached for a day, which comes to 95 prefixes today. Both
+backends are supported: `firewalld` through rich rules with an explicit priority (the accept rules sort before the
+drop), and `ufw` along with plain `iptables` (a dedicated `OBHOD-FT` chain, so the default policy and the rest of the
+`INPUT` chain stay untouched). Nothing is ever interpolated into a shell: the agent calls the tool with an argv list,
+validates the port, and refuses a range that is wider than `/8`.
+
+Note that the whitelist is a snapshot of the vk routing table. If vk ever moves the relays to a new network before the
+next rebuild, the tunnel dies silently, so the screen keeps `open` and `closed` one tap away.
 
 ## FreeTurn core
 

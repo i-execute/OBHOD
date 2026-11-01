@@ -38,6 +38,7 @@ class FtView:
     conf: str = ""
     name: str = ""
     core: str = "xray"
+    guard: dict[str, Any] = field(default_factory=dict)
     lang: str = i18n.DEFAULT_LANGUAGE
 
     def tr(self) -> i18n.Translator:
@@ -94,9 +95,34 @@ def home(view: FtView) -> Any:
         row(button(t("FT_BTN_APPLY"), "ft:apply"), button(t("FT_BTN_CLIENTS"), "ft:clients")),
         row(button(t("FT_BTN_STOP"), "ft:stop"), button(t("FT_BTN_RESTART"), "ft:restart")),
         row(button(t("FT_BTN_LOGS"), "ft:logs"), button(t("FT_BTN_SHARE"), "ft:share")),
+        row(button(t("FT_BTN_FW"), "ft:fw")),
         row(button(t("CORE_NAV"), "core:show"), button(t("UI_HOME"), "nav:home")),
     ]
     return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"))
+
+
+def fw_screen(view: FtView) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    data = dict(view.guard or {})
+    if not data:
+        blocks.append(quote(muted(t("FT_FW_UNKNOWN"))))
+    else:
+        pairs = [
+            (t("FT_FW_PORT"), code(data.get("port", 0))),
+            (t("FT_FW_BACKEND"), code(data.get("backend") or t("UI_NONE"))),
+            (t("FT_FW_MODE"), code(t("FT_FW_MODE_%s" % str(data.get("mode", "unknown")).upper()))),
+            (t("FT_FW_RULES"), code(data.get("rules", 0))),
+            (t("FT_FW_CIDRS"), code(data.get("cidrs", 0))),
+        ]
+        blocks.append(table(pairs, (t("FT_FW_TITLE"), t("UI_VALUE"))))
+        blocks.append(quote(muted(t("FT_FW_NOTE"))))
+    buttons = [
+        row(button(t("FT_FW_BTN_VK"), "ft:fw:vk"), button(t("FT_FW_BTN_OPEN"), "ft:fw:open")),
+        row(button(t("FT_FW_BTN_CLOSE"), "ft:fw:closed"), button(t("UI_REFRESH"), "ft:fw")),
+        row(button(t("FT_BTN_HOME"), "ft:home"), button(t("UI_HOME"), "nav:home")),
+    ]
+    return screen(t("FT_FW_TITLE"), t("FT_FW_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"))
 
 
 def plan_screen(view: FtView) -> Any:

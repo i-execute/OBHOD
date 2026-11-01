@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import ftscreens, i18n, xscreens
+from . import ftscreens, fwguard, i18n, xscreens
 from .freeturn import (
     BACKENDS,
     METHODS,
@@ -39,6 +39,7 @@ class FtPanel:
         self.conf = ""
         self.name = ""
         self.key_once = ""
+        self.guard: dict[str, Any] = {}
         self.error = ""
 
     def tr(self) -> i18n.Translator:
@@ -61,6 +62,7 @@ class FtPanel:
             link=self.link,
             conf=self.conf,
             name=self.name,
+            guard=dict(self.guard),
             core=str(getattr(self.bot.state, "core", "xray")),
             lang=self.tr().language,
         )
@@ -145,6 +147,9 @@ class FtPanel:
         if head == "uninstall":
             await self.uninstall(chat_id, msg_id)
             return
+        if head == "fw":
+            await self.firewall(chat_id, msg_id, arg1)
+            return
         if head == "port":
             await self.apply_input(chat_id, "ft_port", arg1, arg2)
             return
@@ -173,6 +178,61 @@ class FtPanel:
             self.draft.version = _next(VERSION_CHOICES, self.draft.version)
             return
         raise ModelError("unknown plan field: %s" % field[:24])
+
+    def guard_port(self) -> int:
+        try:
+            port = int(self.state.config.listen_port or self.draft.listen_port or 0)
+        except (TypeError, ValueError):
+            port = 0
+        return port if 1 <= port <= 65535 else 0
+
+    async def firewall(self, chat_id: int, msg_id: int, action: str) -> None:
+        t = self.tr()
+        port = self.guard_port()
+        if not port:
+            await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=t("FT_FW_NO_RANGES", reason="no port"))))
+            return
+        if action in {"", "status"}:
+            try:
+                found = await self.control.firewall("status", port)
+            except FtError as exc:
+                self.note("fw", "failed", exc.code)
+                await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=self.describe(exc))))
+                return
+            self.guard = {"port": found.port, "backend": found.backend, "mode": found.mode, "rules": found.rules, "cidrs": found.cidrs}
+            await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view()))
+            return
+        if action not in {"vk", "open", "closed"}:
+            await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view()))
+            return
+        await self.busy(chat_id, msg_id, t("FT_FW_BUSY"))
+        cidrs = ""
+        if action == "vk":
+            try:
+                found, reason = fwguard.vk_cidrs()
+            except fwguard.GuardError as exc:
+                await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=t("FT_FW_NO_RANGES", reason=exc.message))))
+                return
+            if not found:
+                self.note("fw", "failed", reason or "no_prefixes")
+                await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=t("FT_FW_NO_RANGES", reason=reason or "no_prefixes"))))
+                return
+            cidrs = fwguard.join_cidrs(found)
+        try:
+            result = await self.control.firewall(action, port, cidrs)
+        except FtError as exc:
+            self.note("fw", "failed", exc.code)
+            await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=self.describe(exc))))
+            return
+        self.guard = {"port": result.port, "backend": result.backend, "mode": result.mode, "rules": result.rules, "cidrs": result.cidrs}
+        self.note("fw", "ok", "%s %s" % (result.mode, result.backend))
+        if action == "vk":
+            notice = t("FT_FW_NOTICE_VK", count=result.cidrs or len(cidrs.split(",")))
+        elif action == "open":
+            notice = t("FT_FW_NOTICE_OPEN")
+        else:
+            notice = t("FT_FW_NOTICE_CLOSED")
+        await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(notice=notice)))
 
     async def check(self, chat_id: int, msg_id: int) -> None:
         t = self.tr()

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,6 +40,7 @@ MAX_SCRIPT_BYTES = 512 * 1024
 FETCH_TIMEOUT = 120
 ALLOWED_HOSTS = ("github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com")
 COMMANDS = (
+    "fw-guard",
     "probe",
     "apply",
     "stop",
@@ -50,7 +53,17 @@ COMMANDS = (
     "uninstall",
 )
 FLAGS = frozenset({"purge", "update", "yes", "reconfigure", "uninstall"})
+GUARD_MODES = ("status", "open", "vk", "closed")
+GUARD_CHAIN = "OBHOD-FT"
+GUARD_MAX_CIDRS = 512
+GUARD_MIN_PREFIX = 8
+GUARD_TIMEOUT = 30
+GUARD_PRIORITY_ALLOW = -10
+GUARD_PRIORITY_DROP = 10
+CIDR_RE = re.compile(r"^[0-9]{1,3}(?:\.[0-9]{1,3}){3}/[0-9]{1,2}$")
+PORT_RE = re.compile(r"^[0-9]{1,5}$")
 TIMEOUTS = {
+    "fw-guard": 180,
     "probe": 120,
     "apply": 900,
     "stop": 180,
@@ -433,9 +446,233 @@ def sanitize(payload):
     return body
 
 
+def run_tool(argv, timeout=GUARD_TIMEOUT):
+    try:
+        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return int(done.returncode or 0), (done.stdout or b"").decode("utf-8", "replace").strip()
+
+
+def tool_text(argv, timeout=GUARD_TIMEOUT):
+    code, text = run_tool(argv, timeout)
+    return text if code == 0 else ""
+
+
+def guard_backend():
+    if shutil.which("firewall-cmd") and "running" in tool_text(["firewall-cmd", "--state"]).lower():
+        return "firewalld"
+    if shutil.which("ufw") and "Status: active" in tool_text(["ufw", "status"]):
+        return "ufw"
+    if shutil.which("iptables"):
+        return "iptables"
+    return ""
+
+
+def guard_port(flags):
+    raw = str(flags.get("port", "")).strip()
+    if not PORT_RE.match(raw) or not 1 <= int(raw) <= 65535:
+        raise AgentError("bad_arg", "the port must be a number between 1 and 65535", "fw_guard")
+    return int(raw)
+
+
+def guard_cidrs(flags):
+    raw = str(flags.get("cidrs", "")).strip()
+    found = []
+    for item in raw.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        if not CIDR_RE.match(text):
+            raise AgentError("bad_arg", "a source range must be an ipv4 cidr", "fw_guard")
+        try:
+            network = ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            raise AgentError("bad_arg", "a source range is not a network", "fw_guard") from None
+        if network.version != 4 or network.prefixlen < GUARD_MIN_PREFIX:
+            raise AgentError("bad_arg", "a source range is too wide, the minimum prefix is /%d" % GUARD_MIN_PREFIX, "fw_guard")
+        found.append(str(network))
+    if not found:
+        raise AgentError("bad_arg", "the vk mode needs at least one source range", "fw_guard")
+    if len(found) > GUARD_MAX_CIDRS:
+        raise AgentError("bad_arg", "too many source ranges, the limit is %d" % GUARD_MAX_CIDRS, "fw_guard")
+    return found
+
+
+def firewalld_rules(port):
+    text = tool_text(["firewall-cmd", "--permanent", "--list-rich-rules"])
+    marker = 'port="%d"' % port
+    return [line.strip() for line in text.splitlines() if marker in line and "udp" in line]
+
+
+def firewalld_rule(port, cidr="", drop=False, permanent=False):
+    argv = ["firewall-cmd"]
+    if permanent:
+        argv.append("--permanent")
+    if drop:
+        rule = 'rule priority="%d" family="ipv4" port port="%d" protocol="udp" drop' % (GUARD_PRIORITY_DROP, port)
+        argv.append("--add-rich-rule=%s" % rule)
+        return run_tool(argv)
+    rule = 'rule priority="%d" family="ipv4" source address="%s" port port="%d" protocol="udp" accept' % (
+        GUARD_PRIORITY_ALLOW,
+        cidr,
+        port,
+    )
+    argv.append("--add-rich-rule=%s" % rule)
+    return run_tool(argv)
+
+
+def firewalld_clear(port):
+    for rule in firewalld_rules(port):
+        run_tool(["firewall-cmd", "--permanent", "--remove-rich-rule=%s" % rule])
+    run_tool(["firewall-cmd", "--permanent", "--remove-port=%d/udp" % port])
+    run_tool(["firewall-cmd", "--remove-port=%d/udp" % port])
+    run_tool(["firewall-cmd", "--reload"])
+
+
+def ufw_clear(port):
+    marker = "%d/udp" % port
+    run_tool(["ufw", "--force", "delete", "allow", marker])
+    listing = tool_text(["ufw", "status", "numbered"])
+    drops = []
+    for line in listing.splitlines():
+        body = line.strip()
+        found = re.match(r"^\[\s*(\d+)\]\s+(.+)$", body)
+        if not found:
+            continue
+        rule = found.group(2)
+        if marker in rule and "ALLOW" in rule.upper():
+            drops.append(int(found.group(1)))
+    for number in sorted(drops, reverse=True):
+        run_tool(["ufw", "--force", "delete", str(number)])
+
+
+def ufw_apply(port, mode, cidrs):
+    ufw_clear(port)
+    if mode == "open":
+        return run_tool(["ufw", "allow", "%d/udp" % port])
+    if mode == "closed":
+        return 0, "closed"
+    for cidr in cidrs:
+        run_tool(["ufw", "insert", "1", "allow", "from", cidr, "to", "any", "port", str(port), "proto", "udp"])
+    return run_tool(["ufw", "deny", "%d/udp" % port])
+
+
+def iptables_chain_present():
+    return "OBHOD-FT" in tool_text(["iptables", "-S"])
+
+
+def iptables_clear(port):
+    if not shutil.which("iptables"):
+        return
+    while run_tool(["iptables", "-C", "INPUT", "-p", "udp", "--dport", str(port), "-j", GUARD_CHAIN])[0] == 0:
+        run_tool(["iptables", "-D", "INPUT", "-p", "udp", "--dport", str(port), "-j", GUARD_CHAIN])
+    while run_tool(["iptables", "-C", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT"])[0] == 0:
+        run_tool(["iptables", "-D", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT"])
+    if iptables_chain_present():
+        run_tool(["iptables", "-F", GUARD_CHAIN])
+        run_tool(["iptables", "-X", GUARD_CHAIN])
+
+
+def iptables_apply(port, mode, cidrs):
+    iptables_clear(port)
+    if mode == "closed":
+        return 0, "closed"
+    if mode == "open":
+        if run_tool(["iptables", "-C", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT"])[0] != 0:
+            run_tool(["iptables", "-I", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT"])
+        return 0, "open"
+    run_tool(["iptables", "-N", GUARD_CHAIN])
+    run_tool(["iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", str(port), "-j", GUARD_CHAIN])
+    run_tool(["iptables", "-A", GUARD_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
+    for cidr in cidrs:
+        run_tool(["iptables", "-A", GUARD_CHAIN, "-s", cidr, "-j", "ACCEPT"])
+    run_tool(["iptables", "-A", GUARD_CHAIN, "-j", "DROP"])
+    return 0, "vk"
+
+
+def guard_status(backend, port):
+    mode = "unknown"
+    rules = 0
+    if backend == "firewalld":
+        found = firewalld_rules(port)
+        rules = len(found)
+        if any("drop" in item for item in found):
+            mode = "vk"
+        elif run_tool(["firewall-cmd", "--query-port=%d/udp" % port])[0] == 0:
+            mode = "open"
+        else:
+            mode = "closed"
+    elif backend == "ufw":
+        listing = tool_text(["ufw", "status", "numbered"])
+        marker = "%d/udp" % port
+        allowed = [line for line in listing.splitlines() if "ALLOW" in line.upper() and ("%d" % port) in line]
+        denied = [line for line in listing.splitlines() if "DENY" in line.upper() and marker in line]
+        rules = len(allowed)
+        if allowed and any("Anywhere" in line for line in allowed):
+            mode = "open"
+        elif allowed or denied:
+            mode = "vk"
+        else:
+            mode = "closed"
+    elif backend == "iptables":
+        if iptables_chain_present():
+            listing = tool_text(["iptables", "-S", GUARD_CHAIN])
+            mode = "vk"
+            rules = len([line for line in listing.splitlines() if "ACCEPT" in line]) - 1
+        elif run_tool(["iptables", "-C", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT"])[0] == 0:
+            mode = "open"
+        else:
+            mode = "closed"
+    return mode, max(rules, 0)
+
+
+def guard_main(flags):
+    port = guard_port(flags)
+    mode = str(flags.get("mode", "status")).strip().lower()
+    if mode not in GUARD_MODES:
+        raise AgentError("bad_arg", "the firewall mode %s is not known" % mode[:16], "fw_guard")
+    backend = guard_backend()
+    if not backend:
+        raise AgentError("fw_unsupported", "there is no firewalld, ufw or iptables on this host", "fw_guard")
+    if mode == "status":
+        found_mode, rules = guard_status(backend, port)
+        emit("ok", {"port": port, "backend": backend, "mode": found_mode, "rules": rules, "cidrs": 0}, stage="fw_guard")
+        return 0
+    cidrs = guard_cidrs(flags) if mode == "vk" else []
+    if backend == "firewalld":
+        firewalld_clear(port)
+        if mode == "open":
+            run_tool(["firewall-cmd", "--permanent", "--add-port=%d/udp" % port])
+            run_tool(["firewall-cmd", "--add-port=%d/udp" % port])
+        for cidr in cidrs:
+            firewalld_rule(port, cidr, permanent=True)
+        if mode == "vk":
+            firewalld_rule(port, drop=True, permanent=True)
+        run_tool(["firewall-cmd", "--reload"])
+    elif backend == "ufw":
+        ufw_apply(port, mode, cidrs)
+    else:
+        iptables_apply(port, mode, cidrs)
+    found_mode, rules = guard_status(backend, port)
+    emit(
+        "ok",
+        {"port": port, "backend": backend, "mode": found_mode, "rules": rules, "cidrs": len(cidrs)},
+        stage="fw_guard",
+        logs=["%s applied" % mode],
+    )
+    return 0
+
+
 def main(argv):
     command, flags = parse_argv(argv)
     stage = command.replace("-", "_")
+    if command == "fw-guard":
+        try:
+            return guard_main(flags)
+        except AgentError as exc:
+            emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
+            return 1
     try:
         script = script_source(flags)
         plan = command_argv(command, flags)
