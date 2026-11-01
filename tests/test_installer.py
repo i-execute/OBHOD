@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import pty
+import select
+import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -216,7 +220,7 @@ def test_reinstall_purge_all_forgets_credentials(tmp_path: Path) -> None:
     assert state_dir.is_dir()
     result = dev_run(payload, ["reinstall", "--dev", "--purge-all", "--skip-deps"], env)
     assert result.returncode == 1
-    assert "bot token is required" in result.stderr
+    assert "no terminal to read the credentials" in result.stderr
     assert not env_conf.exists()
     assert list(state_dir.iterdir()) == []
     assert not (Path(env["HOME"]) / ".obhod" / "app").exists()
@@ -252,3 +256,77 @@ def test_reinstall_stops_leftover_processes(tmp_path: Path) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+def test_credentials_are_read_from_the_terminal_not_from_a_pipe(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    script = INSTALLER.read_text(encoding="utf-8")
+    assert "read -r value </dev/tty" in script
+    assert "tty_present()" in script
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["HOME"] = str(home)
+        os.execvp(
+            "bash",
+            ["bash", "-c", "bash %s install --dev --skip-deps < /dev/null" % shlex.quote(str(INSTALLER))],
+        )
+    answers = ["123456:ABC-DEF", "42", HASH, "1000"]
+    seen = ""
+    deadline = time.time() + 60
+    try:
+        while time.time() < deadline and answers:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 4096).decode("utf-8", "replace")
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+            if chunk.rstrip().endswith(":"):
+                os.write(fd, (answers.pop(0) + "\n").encode())
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if not ready:
+                done, _status = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    break
+                continue
+            try:
+                chunk = os.read(fd, 4096).decode("utf-8", "replace")
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+    assert not answers, seen
+    assert "telegram bot token" in seen
+    assert "installed" in seen
+
+
+def test_a_run_without_any_terminal_stops_before_it_hangs(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    result = subprocess.run(
+        ["bash", str(INSTALLER), "install", "--dev", "--skip-deps"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(home)},
+        start_new_session=True,
+        timeout=60,
+    )
+    assert result.returncode == 1
+    assert "no terminal to read the credentials" in result.stderr

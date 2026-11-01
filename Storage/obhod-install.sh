@@ -69,14 +69,31 @@ gen_secret() {
   fi
 }
 
+tty_present() {
+  if [ -t 0 ]; then
+    return 0
+  fi
+  if [ -r /dev/tty ] && ( exec 3</dev/tty ) 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 read_value() {
   local prompt="$1" current="$2" value=""
   if [ "$ASSUME_YES" = "1" ] && [ -n "$current" ]; then
     printf '%s' "$current"
     return 0
   fi
+  if ! tty_present; then
+    die "there is no terminal to read the credentials, pipe the script into bash is not enough, run bash $0 ${CMD} from a terminal or pass --env-file with the keys"
+  fi
   printf '%s' "$prompt" >&2
-  read -r value || true
+  if [ -t 0 ]; then
+    read -r value || true
+  else
+    read -r value </dev/tty || true
+  fi
   if [ -z "$value" ]; then
     value="$current"
   fi
@@ -157,11 +174,13 @@ install_venv() {
     say "skipping the virtual environment because --skip-deps was given"
     return 0
   fi
+  say "preparing the virtual environment in $PREFIX/venv"
   if [ ! -x "$PREFIX/venv/bin/python" ]; then
     "$PYTHON_BIN" -m venv "$PREFIX/venv"
   fi
-  "$PREFIX/venv/bin/python" -m pip install --quiet --upgrade pip wheel
-  "$PREFIX/venv/bin/python" -m pip install --quiet -r "$PREFIX/requirements.txt"
+  say "installing the python dependencies, the download can take a couple of minutes"
+  "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --progress-bar off --upgrade pip wheel
+  "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --progress-bar off -r "$PREFIX/requirements.txt"
 }
 
 write_service() {
