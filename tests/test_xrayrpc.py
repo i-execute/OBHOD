@@ -578,3 +578,12 @@ def test_cleanup_removes_sandbox(sandbox: dict[str, str]) -> None:
     target = Path(sandbox["root"])
     shutil.rmtree(target, ignore_errors=True)
     assert not target.exists()
+
+def test_a_core_below_the_mptcp_floor_is_refused(sandbox: dict[str, str]) -> None:
+    body = call("install-core", "--version=v26.10.29", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    assert body["result"] == "err"
+    assert body["code"] == "core_too_old"
+    assert "CVE-2026-98432" in body["msg"]
+    assert "v26.10.31" in body["msg"]
+    older = call("install-core", "--version=v26.10.21", "--url=file://" + sandbox["archive"], "--sha256=" + sandbox["digest"])
+    assert older["code"] == "core_too_old"

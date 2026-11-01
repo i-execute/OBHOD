@@ -16,6 +16,9 @@ import zipfile
 
 PROTO = 3
 PINNED = "v26.10.31"
+MIN_CORE = (26, 10, 31)
+MIN_CORE_TAG = "v26.10.31"
+MIN_CORE_ADVISORY = "CVE-2026-98432"
 ASSETS = {
     "x86_64": "64",
     "amd64": "64",
@@ -439,9 +442,28 @@ def fetch_digest(version, asset, url):
     return ""
 
 
+def core_numbers(tag):
+    numbers = re.findall(r"[0-9]+", str(tag or ""))
+    return tuple(int(number) for number in numbers[:3])
+
+
+def core_too_old(tag):
+    numbers = core_numbers(tag)
+    if len(numbers) < 3:
+        return False
+    return numbers < MIN_CORE
+
+
 def install_core(version, url, sha256, force):
     if not SAFE_VERSION.match(str(version or "")):
         raise ScriptError("bad_arg", "the version must look like v26.10.31", "download")
+    if core_too_old(version):
+        raise ScriptError(
+            "core_too_old",
+            "%s is below %s, it keeps the MPTCP listeners open and allows a remote root through %s"
+            % (version, MIN_CORE_TAG, MIN_CORE_ADVISORY),
+            "download",
+        )
     asset = asset_for(machine())
     if not asset:
         raise ScriptError("unsupported_arch", "architecture %s is not supported" % machine(), "download")
