@@ -7,6 +7,7 @@ import string
 import pytest
 
 from BOT.xray import (
+    API_PORT,
     API_LISTEN,
     API_SERVICES,
     API_TAG,
@@ -386,3 +387,47 @@ def test_state_candidates_helpers() -> None:
     assert state.candidates() == ["a:443"]
     state.dns_servers = ["1.1.1.1", "9.9.9.9"]
     assert state.dns_csv() == "1.1.1.1, 9.9.9.9"
+
+
+def test_the_system_config_has_every_3xui_section() -> None:
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    config = config_json([inbound])
+    assert set(config) == {"log", "inbounds", "outbounds", "routing", "policy", "stats", "api", "metrics"}
+    assert set(config["log"]) == {"loglevel", "access", "error", "dnsLog", "maskAddress"}
+    assert set(config["policy"]) == {"levels", "system"}
+    assert config["inbounds"][0] == {
+        "listen": API_LISTEN,
+        "port": API_PORT,
+        "protocol": "tunnel",
+        "settings": {"rewriteAddress": API_LISTEN},
+        "tag": API_TAG,
+    }
+    assert [item["tag"] for item in config["outbounds"]] == ["direct", "blocked"]
+
+
+def test_every_created_inbound_lands_in_the_config() -> None:
+    raw = new_inbound("vless", 443, "raw", "reality")
+    raw.remark = "reality-443"
+    raw.make_client("owner")
+    raw.make_client("phone")
+    grpc = new_inbound("vless", 8443, "grpc", "tls")
+    grpc.remark = "grpc-8443"
+    grpc.make_client("laptop")
+    xhttp = new_inbound("vless", 2053, "xhttp", "reality")
+    xhttp.remark = "xhttp-2053"
+    xhttp.make_client("tablet")
+    config = config_json([raw, grpc, xhttp], dns_servers=["1.1.1.1", "8.8.8.8"])
+    inbounds = config["inbounds"]
+    assert len(inbounds) == 4
+    assert [item["port"] for item in inbounds] == [API_PORT, 443, 8443, 2053]
+    ports = {item["port"]: item for item in inbounds[1:]}
+    assert [client["email"] for client in ports[443]["settings"]["clients"]] == ["owner", "phone"]
+    assert ports[8443]["settings"]["clients"][0]["email"] == "laptop"
+    assert ports[2053]["settings"]["clients"][0]["email"] == "tablet"
+    assert ports[443]["streamSettings"]["security"] == "reality"
+    assert ports[8443]["streamSettings"]["security"] == "tls"
+    assert ports[2053]["streamSettings"]["network"] == "xhttp"
+    assert set(config) == {"log", "inbounds", "outbounds", "routing", "policy", "stats", "api", "metrics", "dns"}
+    assert config["dns"]["servers"] == ["1.1.1.1", "8.8.8.8"]
+    assert json.loads(config_text([raw, grpc, xhttp]))["inbounds"] == inbounds[:1] + [item for item in inbounds[1:4]]

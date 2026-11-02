@@ -11,10 +11,10 @@ from .ui import (
     button,
     code,
     input_row,
-    fitted,
     details,
-
+    copy_row,
     heading,
+    long_block,
     inline_button,
     muted,
     pre,
@@ -296,13 +296,10 @@ def links_screen(view: XrayView, inbound: XrayInbound, address: str, links: list
         blocks.append(quote(bold(t("XR_LINKS_EMPTY"))))
     copyable = []
     for name, link in links[:MAX_LINKS]:
-        blocks.append(heading(name, 4))
-        button_html, block_html = fitted(t("XR_LINKS_COPY", name=name), link, view.lang)
+        button_html = copy_row(t("XR_LINKS_COPY", name=name), link)
         if button_html:
-            copyable.append(row(button_html))
-            blocks.append(pre(link))
-        elif block_html:
-            blocks.append(block_html)
+            copyable.append(button_html)
+        blocks.append(long_block(name, link))
     buttons = [
         *copyable,
         row(button(t("UI_REFRESH"), f"xr:link:{inbound.id}", icon="refresh"), button(t("XR_BTN_INBOUND"), f"xr:in:{inbound.id}", icon="xray")),
@@ -321,23 +318,19 @@ def client_screen(view: XrayView, inbound: XrayInbound, email: str, link: str, s
     pairs = [
         ("user", t("XR_CLIENT_NAME"), code(client.email)),
         ("user", t("XR_CLIENT_ENABLED"), code(i18n.t("UI_YES" if client.enable else "UI_NO", view.lang))),
-        ("user", t("XR_CLIENT_ID"), code(client.ident)),
         ("user", t("XR_CLIENT_FLOW"), code(client.flow or t("UI_NONE"))),
         ("user", t("XR_CLIENT_LIMIT"), code(client.limit_ip)),
         ("chart", t("XR_CLIENT_TRAFFIC"), code(client.total_gb)),
     ]
-    if sub_path:
-        pairs.append(("link", t("XR_CLIENT_SUB_PATH"), code(sub_path)))
     blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
-    link_button, link_block = fitted(t("XR_CLIENT_COPY"), link, view.lang)
-    if link_block:
-        blocks.append(link_block)
-    sub_button, sub_block = fitted(t("XR_CLIENT_SUB"), sub_url, view.lang)
-    if sub_block:
-        blocks.append(sub_block)
+    blocks.append(long_block(t("XR_CLIENT_ID"), client.ident))
+    if link:
+        blocks.append(long_block(t("XR_CLIENT_COPY"), link))
+    blocks.append(quote(muted(t("XR_CLIENT_LINK_NOTE"))))
+    link_button = copy_row(t("XR_CLIENT_COPY"), link)
     buttons = [
-        link_button,
-        row(button(t("XR_CLIENT_SUB"), f"xr:sub:{inbound.id}:{client.email}", icon="link"), button(t("XR_CLIENT_NEW_PATH"), f"xr:subrot:{inbound.id}:{client.email}", icon="refresh")),
+        *([link_button] if link_button else []),
+        row(button(t("NAV_SUBS"), "xr:subs", icon="link")),
         row(button(t("XR_CLIENT_FLOW_BTN"), f"xr:clflow:{inbound.id}:{client.email}", icon="route"), button(t("XR_CLIENT_LIMIT_BTN"), f"xr:cllimit:{inbound.id}:{client.email}", icon="speed")),
         row(button(t("UI_DELETE_CLIENT"), f"xr:cldel:{inbound.id}:{client.email}", icon="delete"), button(t("XR_BTN_INBOUND"), f"xr:in:{inbound.id}", icon="xray")),
         back_row("xr:home"),
@@ -389,36 +382,24 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     pairs = [
         ("link", t("XR_SUBS_ENABLED"), code(i18n.t("UI_YES" if state.sub_enabled else "UI_NO", view.lang))),
         ("link", t("XR_SUBS_PORT"), code(state.sub_port)),
-        ("link", t("XR_SUBS_ADDRESS"), code(state.sub_address or t("UI_NOT_SET"))),
-        ("link", t("XR_SUBS_FORMAT"), code(state.sub_path_pattern())),
+        ("link", t("XR_SUBS_ADDRESS"), code(state.address(view.address) or t("UI_NOT_SET"))),
         ("clock", t("SET_SUB_REFRESH"), code(state.sub_refresh)),
-        ("link", t("SET_SUB_SUPPORT"), code(state.support_url() or t("UI_NOT_SET"))),
-        ("bell", t("SET_SUB_ANNOUNCE"), code(state.announce() or t("UI_NOT_SET"))),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
-    if not rows_data:
-        blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
     if not state.address(view.address):
         blocks.append(quote(bold(t("XR_SUBS_NO_ADDRESS"))))
-    blocks.append(quote(muted(t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN))))
-    blocks.append(f"<p>{bold(t('XR_SUBS_RAW'))} {muted(t('XR_SUBS_RAW_NOTE'))}</p>")
     bundle = view.bundle
     if bundle is not None and bundle.links:
         host = state.address(view.address)
         quota = bundle.quota()
-        pairs = [
-            ("link", t("XR_SUBS_ONE"), code(bundle.safe_url(host, state.sub_port) or t("UI_NOT_SET"))),
-            ("file", t("XR_SUBS_JSON"), code(bundle.safe_json_url(host, state.sub_port) or t("UI_NOT_SET"))),
-            ("box", t("XR_SUBS_TABLE_CLIENT"), code("%d" % len(bundle.links))),
-            ("chart", t("XR_SUBS_TRAFFIC"), code(traffic_line(t, quota))),
-        ]
-        blocks.append(table(pairs, (t("XR_SUBS_ONE"), t("UI_VALUE"))))
-        blocks.append(f"<p>{muted(t('XR_SUBS_ALL_NOTE'))}</p>")
-        blocks.append(f"<p>{bold(t('XR_SUBS_LINKS_TITLE'))}</p>")
-        shown = bundle.links[:LINK_PREVIEW]
-        blocks.append(pre("\n".join(shown), "vless"))
-        if len(bundle.links) > len(shown):
-            blocks.append(quote(muted(t("XR_SUBS_LINKS_MORE", count=len(bundle.links) - len(shown)))))
+        blocks.append(quote(muted(t("XR_SUBS_ONE_NOTE", count=len(bundle.links), traffic=traffic_line(t, quota)))))
+        blocks.append(long_block(t("XR_SUBS_ONE"), bundle.safe_url(host, state.sub_port)))
+        blocks.append(long_block(t("XR_SUBS_JSON"), bundle.safe_json_url(host, state.sub_port)))
+        blocks.append(long_block(t("XR_SUBS_LINKS_TITLE"), "\n".join(bundle.links)))
+        blocks.append(quote(muted(t("XR_SUBS_RAW_NOTE"))))
+    else:
+        blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
+    blocks.append(quote(muted(t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN))))
     buttons = [
         row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_STATUS"), "xr:subs:status", icon="info")),
         row(button(t("XR_SUBS_STOP"), "xr:subs:stop", icon="stop"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")),
@@ -531,7 +512,6 @@ SECURITY_LABELS = {
     "reality": "XR_SEC_KIND_REALITY",
     "reality-x25519mlkem768": "XR_SEC_KIND_REALITY_PQ",
     "reality-p256mlkem768": "XR_SEC_KIND_REALITY_P256",
-    "reality-x25519kyber768draft00": "XR_SEC_KIND_REALITY_KYBER",
     "reality-mldsa65": "XR_SEC_KIND_REALITY_MLDSA",
     "reality-mldsa65-x25519mlkem768": "XR_SEC_KIND_REALITY_MLDSA_PQ",
     "tls": "XR_SEC_KIND_TLS",
@@ -542,7 +522,6 @@ SECURITY_ICONS = {
     "reality": "lock",
     "reality-x25519mlkem768": "shield",
     "reality-p256mlkem768": "shield",
-    "reality-x25519kyber768draft00": "shield",
     "reality-mldsa65": "star",
     "reality-mldsa65-x25519mlkem768": "star",
     "tls": "world",

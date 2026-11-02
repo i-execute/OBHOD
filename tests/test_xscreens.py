@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from BOT import i18n, screens, xscreens
+from BOT import i18n, screens, subs, xscreens
 from BOT.store import State
 from BOT.scan import ScanResult, security_fits
 from BOT.ui import MAX_BUTTONS, count_buttons
@@ -99,11 +99,14 @@ def test_inbound_screen_offers_a_list_for_fixed_choices() -> None:
 
 def test_client_screen_fields() -> None:
     inbound = new_inbound("vless", 443, "raw", "reality")
-    inbound.make_client("owner")
+    client = inbound.make_client("owner")
     html = xscreens.client_screen(view(), inbound, "owner", "vless://x", "http://h:2096/a/b", "/a/b").to_html()
     assert "owner" in html
-    assert "/a/b" in html
     assert "xtls-rprx-vision" in html
+    assert "/a/b" not in html
+    assert "<summary>" + i18n.t("XR_CLIENT_ID") + "</summary><pre>" + client.ident in html
+    assert "<summary>" + i18n.t("XR_CLIENT_COPY") + "</summary><pre>vless://x</pre>" in html
+    assert "xr:subs" in html
 
 
 def test_client_screen_missing_client() -> None:
@@ -122,10 +125,24 @@ def test_mldsa_screen() -> None:
 def test_subs_screen_shows_path_format() -> None:
     item = view()
     html = xscreens.subs_screen(item, []).to_html()
-    assert "&lt;64&gt;/&lt;64&gt;" in html
-    assert "3x-ui" in i18n.t("SET_NOTE_SUB_PATH")
     assert i18n.t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN) in html
     assert "xr:subs:apply" in html
+    assert i18n.t("XR_SUBS_EMPTY") in html
+
+
+def test_subs_screen_keeps_one_link_in_a_collapsed_block() -> None:
+    state = XrayState()
+    state.sub_address = "203.0.113.10"
+    state.sub_enabled = True
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    state.add(inbound)
+    bundle = subs.aggregate(state, [], "203.0.113.10", 2096)
+    html = xscreens.subs_screen(xscreens.XrayView(state=state, lang="en", bundle=bundle, address="203.0.113.10"), []).to_html()
+    assert html.count("<details>") == 3
+    assert bundle.safe_url("203.0.113.10", 2096) in html
+    assert "<td><code>http" not in html
+    assert i18n.t("XR_SUBS_ONE_NOTE", count=len(bundle.links), traffic="0 B") in html
 
 
 def test_core_screen_with_and_without_state() -> None:

@@ -617,9 +617,14 @@ def test_the_subs_screen_keeps_one_link_and_folds_the_rest() -> None:
     assert len(bot.xray.sub_rows()) == 1
     assert html.count("xr:subs:apply") == 1
     assert html.count("http://203.0.113.10:2096/") == 2
-    assert '<pre><code class="language-vless">' in html
+    assert html.count("<details><summary>") == 3
+    assert "<pre>http://203.0.113.10:2096/" in html
+    head = html.split("<details>")[0]
+    assert head.count("vless://") == 0
     bundle = bot.xray.sub_bundle("203.0.113.10")
-    assert html.count("vless://") == min(len(bundle.links), 10)
+    tail = html.split("<details><summary>")[-1]
+    assert tail.count("vless://") == len(bundle.links)
+    assert len(bundle.links) >= 1
     assert i18n.t("XR_SUBS_LINKS_MORE", "en", count=max(len(bundle.links) - 10, 0)) in html or len(bundle.links) <= 10
     assert "/json" in html
 

@@ -31,7 +31,6 @@ GROUP_X25519_KYBER768_DRAFT = 0x6399
 PQ_GROUPS = {
     GROUP_X25519_MLKEM768: "X25519MLKEM768",
     GROUP_P256_MLKEM768: "P256MLKEM768",
-    GROUP_X25519_KYBER768_DRAFT: "X25519Kyber768Draft00",
 }
 MLKEM768_EK_SIZE = 1184
 X25519_KEY_SIZE = 32
@@ -44,7 +43,6 @@ GROUP_NO = "no"
 GROUP_LABELS = {
     "X25519MLKEM768": "x25519mlkem768",
     "P256MLKEM768": "p256mlkem768",
-    "X25519Kyber768Draft00": "x25519kyber768draft00",
 }
 
 MLKEM768_EK_B64 = (
@@ -805,7 +803,6 @@ REALITY_KINDS = {
     "reality": "",
     "reality-x25519mlkem768": "x25519mlkem768",
     "reality-p256mlkem768": "p256mlkem768",
-    "reality-x25519kyber768draft00": "x25519kyber768draft00",
     "reality-mldsa65": "",
     "reality-mldsa65-x25519mlkem768": "x25519mlkem768",
 }
@@ -820,7 +817,6 @@ STRONGEST_FIRST = (
     "reality-mldsa65",
     "reality-x25519mlkem768",
     "reality-p256mlkem768",
-    "reality-x25519kyber768draft00",
     "reality",
     "tls-x25519mlkem768",
     "tls-p256mlkem768",
@@ -1114,7 +1110,7 @@ async def pq_probe(host: str, port: int = 443, timeout: float = SCAN_TIMEOUT, sn
         group, retry = parse_server_hello(buffer[5:need])
         if not group:
             return False, "", False
-        return group in PQ_GROUPS, group_name(group), group == GROUP_X25519_KYBER768_DRAFT
+        return group in PQ_GROUPS, group_name(group), False
     except (asyncio.TimeoutError, OSError, ssl.SSLError, ScanError):
         return False, "", False
     finally:
@@ -1126,11 +1122,10 @@ async def pq_probe(host: str, port: int = 443, timeout: float = SCAN_TIMEOUT, sn
 
 
 async def probe_groups(host: str, port: int = 443, sni: str = "", timeout: float = SCAN_TIMEOUT) -> dict[str, str]:
-    names = [PQ_GROUPS[group] for group in (GROUP_X25519_MLKEM768, GROUP_P256_MLKEM768, GROUP_X25519_KYBER768_DRAFT)]
+    names = [PQ_GROUPS[group] for group in (GROUP_X25519_MLKEM768, GROUP_P256_MLKEM768)]
     answers = await asyncio.gather(
         pq_group_probe(host, port, GROUP_X25519_MLKEM768, timeout, sni),
         pq_group_probe(host, port, GROUP_P256_MLKEM768, timeout, sni),
-        pq_group_probe(host, port, GROUP_X25519_KYBER768_DRAFT, timeout, sni),
     )
     out = {}
     for name, answer in zip(names, answers):

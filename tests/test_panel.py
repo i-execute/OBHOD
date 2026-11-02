@@ -9,7 +9,7 @@ from BOT import i18n, xscreens
 from BOT.panel import PanelError, XrayPanel, host_port, parse_port, state_report
 from BOT.ui import code
 from BOT.scan import ScanResult
-from BOT.xray import SUB_SEGMENT_LEN, XrayState, new_inbound
+from BOT.xray import SUB_SEGMENT_LEN, XrayState, config_json, new_inbound
 from BOT.xrayrpc import XrayError as RpcError
 from tests.fakes import FakeControl, FakeGuard, make_bot, make_inbound
 
@@ -647,8 +647,8 @@ def test_scan_candidates_are_normalized(tmp_path: Path) -> None:
 
 
 def test_scan_switch_to_every_post_quantum_kind(tmp_path: Path) -> None:
-    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "yes", "X25519Kyber768Draft00": "yes"}
-    for position, (kind, mode) in enumerate((("reality-x25519mlkem768", "x25519mlkem768"), ("reality-p256mlkem768", "p256mlkem768"), ("reality-x25519kyber768draft00", "x25519kyber768draft00"))):
+    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "yes"}
+    for position, (kind, mode) in enumerate((("reality-x25519mlkem768", "x25519mlkem768"), ("reality-p256mlkem768", "p256mlkem768"))):
         item, bot = panel(tmp_path / str(position))
         inbound = new_inbound("vless", 443, "raw", "reality")
         inbound.reality_private = "k" * 43
@@ -684,3 +684,32 @@ def test_check_target_without_an_inbound(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     run(item.check_target(1, 0, ""))
     assert i18n.t("XR_CHECK_MISSING", "en") in bot.rendered[-1].to_html()
+
+
+def test_a_subnet_scan_fills_the_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    bot.state.xray.add(inbound)
+    seen: list[str] = []
+
+    async def fake_scan(targets: list[str], sni: str = "", xver: int = 0, candidates: object = None, concurrency: int = 16) -> list[ScanResult]:
+        from BOT.scan import enumerate_cidr
+
+        hosts = [item for token in targets if "/" in token for item in enumerate_cidr(token, 8)]
+        seen.extend(hosts)
+        return [
+            ScanResult(target="%s:443" % host, host=host, port=443, feasible=True, tls13=True, h2=True, x25519=True, pq_hybrid=True, pq_group="X25519MLKEM768", groups={"X25519MLKEM768": "yes"}, cert_valid=True, days_left=30, cert_chain_bytes=4096, ml_dsa_ready=True)
+            for host in hosts
+        ]
+
+    monkeypatch.setattr("BOT.panel.scan_targets", fake_scan)
+    assert item.set_field("xr_scan_targets", "", "104.16.132.0/29") == i18n.t("NOTICE_TARGETS_COUNT", count=1)
+    assert bot.state.xray.scan_targets == ["104.16.132.0/29"]
+    run(item.scan_action(1, 0, "run", ""))
+    assert seen == ["104.16.132.0", "104.16.132.1", "104.16.132.2", "104.16.132.3", "104.16.132.4", "104.16.132.5", "104.16.132.6", "104.16.132.7"]
+    assert len(item.results) == 8
+    run(item.scan_action(1, 0, "use", "5"))
+    assert inbound.dest == "104.16.132.5:443"
+    config = config_json(bot.state.xray.inbounds)
+    assert inbound.to_json() in config["inbounds"]

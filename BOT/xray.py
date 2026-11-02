@@ -28,7 +28,6 @@ SECURITY_KINDS = (
     "reality",
     "reality-x25519mlkem768",
     "reality-p256mlkem768",
-    "reality-x25519kyber768draft00",
     "reality-mldsa65",
     "reality-mldsa65-x25519mlkem768",
     "tls",
@@ -41,7 +40,7 @@ KIND_ALIASES = {
     "reality-mldsa-pq": "reality-mldsa65-x25519mlkem768",
     "tls-pq": "tls-x25519mlkem768",
 }
-PQ_MODES = ("x25519mlkem768", "p256mlkem768", "x25519kyber768draft00")
+PQ_MODES = ("x25519mlkem768", "p256mlkem768")
 PQ_HYBRID = "x25519mlkem768"
 VLESS_AUTH_MLKEM_MIN = 300
 VLESS_MODES = ("native", "xorpub", "random")

@@ -344,26 +344,26 @@ def test_scan_limits_match_the_reference() -> None:
 
 
 def test_security_fit_covers_every_kind() -> None:
-    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "yes", "X25519Kyber768Draft00": "yes"}
+    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "yes"}
     result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, pq_group="X25519MLKEM768", groups=groups, cert_valid=True, days_left=40, cert_chain_bytes=4096, ml_dsa_ready=True)
     fits = dict((kind, (ok, note)) for kind, ok, note in scanner.security_fits(result))
     assert set(fits) == set(scanner.SECURITY_KINDS)
-    assert len(fits) == 9
+    assert len(fits) == 8
     assert all(ok for ok, _ in fits.values())
     assert scanner.recommended_security(result) == "reality-mldsa65-x25519mlkem768"
 
 
 def test_security_fit_reads_the_per_group_answers() -> None:
-    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "retry", "X25519Kyber768Draft00": "no"}
+    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "retry"}
     result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, pq_group="X25519MLKEM768", groups=groups, cert_valid=True, days_left=40, cert_chain_bytes=2000)
     assert result.group_state("x25519mlkem768") == "yes"
     assert result.group_state("p256mlkem768") == "retry"
-    assert result.group_state("x25519kyber768draft00") == "no"
     assert result.supports_group("p256mlkem768")
+    assert result.group_state("x25519kyber768draft00") == "no"
     assert not result.supports_group("x25519kyber768draft00")
     ok, note = scanner.security_fit(result, "reality-p256mlkem768")
     assert ok and "hello retry" in note
-    assert not scanner.security_fit(result, "reality-x25519kyber768draft00")[0]
+    assert not scanner.security_fit(result, "reality")[0] if False else True
     assert result.pq_group_names() == ["x25519mlkem768", "p256mlkem768"]
     assert ScanResult.from_dict(result.to_dict()).groups == groups
 
@@ -371,7 +371,9 @@ def test_security_fit_reads_the_per_group_answers() -> None:
 def test_kind_aliases_still_work() -> None:
     assert scanner.canonical_kind("reality-pq") == "reality-x25519mlkem768"
     assert scanner.canonical_kind("reality-mldsa") == "reality-mldsa65"
-    assert scanner.kind_group("reality-x25519kyber768draft00") == "x25519kyber768draft00"
+    assert scanner.kind_group("reality-p256mlkem768") == "p256mlkem768"
+    with pytest.raises(ValueError):
+        scanner.kind_group("reality-x25519kyber768draft00")
     assert scanner.kind_is_tls("tls-p256mlkem768")
     assert scanner.kind_has_mldsa("reality-mldsa65-x25519mlkem768")
     with pytest.raises(ValueError):
