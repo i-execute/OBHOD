@@ -30,13 +30,37 @@ check_dest() {
   return 0
 }
 
+ECHO_OFF=0
+
+quiet_tty() {
+  if [ "$CREDS" = "1" ]; then
+    return 0
+  fi
+  if [ "$ECHO_OFF" = "1" ]; then
+    return 0
+  fi
+  if tty_available && stty -echo </dev/tty 2>/dev/null; then
+    ECHO_OFF=1
+    note "the terminal echo is off, a paste made before the prompt will not appear on screen"
+  fi
+  return 0
+}
+
+loud_tty() {
+  if [ "$ECHO_OFF" = "1" ]; then
+    stty echo </dev/tty 2>/dev/null || true
+    ECHO_OFF=0
+  fi
+  return 0
+}
+
 cleanup() {
   if [ -n "$WORK" ] && [ -d "$WORK" ]; then
     rm -rf "$WORK"
   fi
   return 0
 }
-trap cleanup EXIT
+trap 'loud_tty; cleanup' EXIT
 
 for item in "$@"; do
   case "$item" in
@@ -179,6 +203,7 @@ if [ "$NO_INSTALL" = "0" ] && [ "$CREDS" = "0" ] && ! tty_available; then
   die "there is no terminal for the input, pass BOT_TOKEN API_ID API_HASH ADMIN_ID through the environment"
 fi
 
+quiet_tty
 fetch_source
 [ -f "$SRC/Storage/obhod-install.sh" ] || die "there is no Storage/obhod-install.sh in the source"
 sync_source
@@ -212,6 +237,7 @@ else
   bash "$DEST/Storage/obhod-install.sh" "${INSTALL_ARGS[@]}" < /dev/null
 fi
 
+loud_tty
 say "done, check the service with systemctl status obhod"
 say "to update later run this script again with the same keys"
 say "sources on the server: $DEST"

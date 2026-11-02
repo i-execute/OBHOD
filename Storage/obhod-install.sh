@@ -37,6 +37,8 @@ done
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+trap 'loud_tty' EXIT
+
 ui_init() {
   COLOR=0
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${OBHOD_NO_UI:-0}" != "1" ] && [ "${TERM:-dumb}" != "dumb" ]; then
@@ -184,6 +186,26 @@ tty_present() {
     return 0
   fi
   return 1
+}
+
+TTY_ECHO_OFF=0
+
+quiet_tty() {
+  if [ "$TTY_ECHO_OFF" = "1" ]; then
+    return 0
+  fi
+  if tty_present && stty -echo </dev/tty 2>/dev/null; then
+    TTY_ECHO_OFF=1
+  fi
+  return 0
+}
+
+loud_tty() {
+  if [ "$TTY_ECHO_OFF" = "1" ]; then
+    stty echo </dev/tty 2>/dev/null || true
+    TTY_ECHO_OFF=0
+  fi
+  return 0
 }
 
 read_value() {
@@ -376,6 +398,27 @@ install_payload() {
   find "$PREFIX/BOT" -name '__pycache__' -type d -prune -exec rm -rf {} +
 }
 
+INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple/}"
+
+check_index() {
+  local url="${INDEX_URL%/}/goygram/"
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl -fsS -o /dev/null --max-time 15 "$url"; then
+      warn_line "$url is not reachable from this server, the install can stall here"
+      note_line "if pip hangs, the index is the reason, set PIP_INDEX_URL to a mirror and repeat"
+    else
+      note_line "package index reachable: $INDEX_URL"
+    fi
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    if ! "$PYTHON_BIN" -c 'import sys,urllib.request; urllib.request.urlopen(sys.argv[1], timeout=15)' "$url" >/dev/null 2>&1; then
+      warn_line "$url is not reachable from this server, the install can stall here"
+    fi
+  fi
+  return 0
+}
+
 install_venv() {
   if [ "$SKIP_DEPS" = "1" ]; then
     note_line "skipping the virtual environment because --skip-deps was given"
@@ -389,9 +432,22 @@ install_venv() {
   if [ ! -x "$PREFIX/venv/bin/python" ]; then
     "$PYTHON_BIN" -m venv "$PREFIX/venv"
   fi
-  note_line "installing the python dependencies, the download can take a couple of minutes"
-  "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --progress-bar off --upgrade pip wheel
-  "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --progress-bar off -r "$PREFIX/requirements.txt"
+  check_index
+  note_line "installing the python dependencies, goygram is about one megabyte, a normal link needs a minute"
+  local quiet=("--progress-bar" "off" "--quiet")
+  if [ -t 1 ]; then
+    quiet=()
+  fi
+  if ! "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 2 "${quiet[@]}" --upgrade pip wheel; then
+    fail_line "pip could not upgrade itself"
+    note_line "check that $INDEX_URL is reachable from this server, or pass PIP_INDEX_URL with a mirror"
+    die "the python tooling did not install"
+  fi
+  if ! "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 2 "${quiet[@]}" -r "$PREFIX/requirements.txt"; then
+    fail_line "the dependencies did not install"
+    note_line "check that $INDEX_URL is reachable from this server, or pass PIP_INDEX_URL with a mirror"
+    die "the python dependencies did not install"
+  fi
 }
 
 write_service() {
@@ -468,10 +524,14 @@ cmd_install() {
   api_id="$(env_get API_ID)"
   api_hash="$(env_get API_HASH)"
   admin_id="$(env_get ADMIN_ID)"
+  note_line "the terminal echo is off until all four values are in, a paste made before the prompt will not show up either"
+  quiet_tty
   token="$(read_value 'telegram bot token: ' "$token" 1)"
   api_id="$(read_value 'telegram api_id: ' "$api_id")"
   api_hash="$(read_value 'telegram api_hash: ' "$api_hash" 1)"
   admin_id="$(read_value 'admin telegram id: ' "$admin_id")"
+  loud_tty
+  note_line "token: hidden, api_id: ${api_id:-missing}, admin id: ${admin_id:-missing}"
   if [ -z "$token" ]; then
     fail_line "the bot token is required"
     die "bot token is required"

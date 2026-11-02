@@ -485,3 +485,35 @@ def test_the_unit_carries_the_product_name() -> None:
     assert "Description=OBHOD telegram control bot" in unit
     assert "FreeTurn control bot" not in unit
     assert "ExecStart=@PREFIX@/venv/bin/python -m BOT" in unit
+
+
+def test_the_paste_harvest_disables_echo_before_the_clone() -> None:
+    script = (ROOT / "get.sh").read_text(encoding="utf-8")
+    assert "quiet_tty()" in script
+    assert "loud_tty()" in script
+    assert "stty -echo" in script and "stty echo" in script
+    body = script.split("quiet_tty\nfetch_source", 1)
+    assert len(body) == 2
+    assert "trap 'loud_tty; cleanup' EXIT" in script
+    assert "a paste made before the prompt will not appear" in script
+
+
+def test_the_installer_echoes_nothing_while_the_credentials_are_typed() -> None:
+    script = INSTALLER.read_text(encoding="utf-8")
+    block = script.split("the terminal echo is off until all four values are in", 1)[1].split("loud_tty", 1)[0]
+    assert "read_value 'telegram bot token: '" in block
+    assert "read_value 'telegram api_hash: '" in block
+    assert script.count("quiet_tty") >= 2
+    assert "trap 'loud_tty' EXIT" in script
+    assert "token: hidden, api_id:" in script
+
+
+def test_pip_is_bounded_and_never_silent_by_default() -> None:
+    script = INSTALLER.read_text(encoding="utf-8")
+    assert "--timeout 20 --retries 2" in script
+    assert '"--progress-bar" "off"' in script
+    assert 'if [ -t 1 ]; then' in script
+    assert "quiet=()" in script
+    assert "check_index" in script
+    assert "PIP_INDEX_URL" in script
+    assert "is not reachable from this server" in script
