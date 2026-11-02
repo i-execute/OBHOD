@@ -105,12 +105,12 @@ def home(view: View) -> Any:
     blocks.append(f"<p>{ssh_line(view, t)}</p>")
     blocks.append(f"<p>{core_line(view, t)}</p>")
     pairs = [
-        (t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
-        (t("HOME_LABEL_CLIENTS"), code(view.clients)),
-        (t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
-        (t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),
-        (t("HOME_LABEL_PROTOCOL"), code(xray.protocol_label())),
-        (t("HOME_LABEL_ENCRYPTION"), code(xray.encryption_label())),
+        ("info", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
+        ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
+        ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
+        ("shield", t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),
+        ("settings", t("HOME_LABEL_PROTOCOL"), code(xray.protocol_label())),
+        ("settings", t("HOME_LABEL_ENCRYPTION"), code(xray.encryption_label())),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if xray.inbounds:
@@ -133,7 +133,7 @@ def language_screen(view: View) -> Any:
     blocks = banner(view, t)
     blocks.append(table([(t("LANG_CURRENT"), code(t("LANG_NAME")))], (t("UI_PARAM"), t("UI_VALUE"))))
     blocks.append(quote(muted(t("LANG_NOTE"))))
-    buttons = [row(*[button(i18n.t("LANG_NAME", item), f"lang:set:{item}") for item in i18n.LANGUAGES])]
+    buttons = [row(*[button(i18n.t("LANG_NAME", item), f"lang:set:{item}", icon="language") for item in i18n.LANGUAGES])]
     buttons.append(row(button(t("UI_HOME"), "nav:home", icon="home")))
     return screen(t("LANG_TITLE"), t("LANG_SUBTITLE"), blocks, buttons, icon="language")
 
@@ -143,15 +143,15 @@ def ssh_settings(view: View) -> Any:
     cfg = view.state.ssh
     blocks = banner(view, t)
     pairs = [
-        (t("SSH_LABEL_MODE"), code(t("SSH_LOCAL_MODE"))),
-        (t("SSH_LABEL_PORT"), code(cfg.port)),
+        ("lock", t("SSH_LABEL_MODE"), code(t("SSH_LOCAL_MODE"))),
+        ("lock", t("SSH_LABEL_PORT"), code(cfg.port)),
     ]
     if view.sshd is not None:
         pairs.extend(
             [
-                (t("SSHD_PASSWORD_LOGIN"), code(view.sshd.password_authentication)),
-                (t("SSHD_ROOT"), code(view.sshd.permit_root_login)),
-                (t("SSHD_KEYS"), code(t("SSHD_KEYS_VALUE", count=view.sshd.keys, user=view.sshd.key_user or "root"))),
+                ("logs", t("SSHD_PASSWORD_LOGIN"), code(view.sshd.password_authentication)),
+                ("lock", t("SSHD_ROOT"), code(view.sshd.permit_root_login)),
+                ("key", t("SSHD_KEYS"), code(t("SSHD_KEYS_VALUE", count=view.sshd.keys, user=view.sshd.key_user or "root"))),
             ]
         )
     blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
@@ -170,33 +170,33 @@ def settings(view: View) -> Any:
     xray = view.state.xray
     blocks = banner(view, t)
     pairs = [
-        (t("SET_CORE_VERSION"), code(xray.version)),
-        (t("SET_LOG_LEVEL"), code(xray.log_level)),
-        (t("SET_SUB_PORT"), code(view.state.sub_port)),
-        (t("SET_SUB_ADDRESS"), code(xray.sub_address or t("UI_NOT_SET"))),
-        (t("SET_TARGETS"), code(len(xray.scan_targets))),
-        (t("SET_SUB_PATH"), code(xray.sub_path_pattern())),
+        ("tag", t("SET_CORE_VERSION"), code(xray.version)),
+        ("logs", t("SET_LOG_LEVEL"), code(xray.log_level)),
+        ("link", t("SET_SUB_PORT"), code(view.state.sub_port)),
+        ("link", t("SET_SUB_ADDRESS"), code(xray.sub_address or t("UI_NOT_SET"))),
+        ("target", t("SET_TARGETS"), code(len(xray.scan_targets))),
+        ("link", t("SET_SUB_PATH"), code(xray.sub_path_pattern())),
     ]
     pairs.extend(
         [
-            (t("SET_CANDIDATES"), code(len(xray.candidates()))),
-            (t("SET_SCAN_SNI"), code(xray.scan_sni or t("UI_NONE"))),
-            (t("SET_SCAN_XVER"), code(xray.scan_xver)),
-            (t("SET_API_PORT"), code(xray.api_port)),
-            (t("SET_ACCESS_LOG"), code(xray.access_log)),
-            (t("SET_DNS"), code(xray.dns_csv() or t("UI_NONE"))),
-            (t("SET_SSH_BANTIME"), code(xray.fail2ban_ssh_bantime)),
-            (t("SET_SSH_MAXRETRY"), code(str(xray.fail2ban_ssh_maxretry))),
-            (t("SET_IGNOREIP"), code(xray.fail2ban_ignoreip)),
-            (t("SET_SUB_REFRESH"), code(xray.sub_refresh)),
-            (t("SET_EMOJI"), code(t("SET_EMOJI_ON") if view.emoji_on else t("SET_EMOJI_OFF"))),
+            ("info", t("SET_CANDIDATES"), code(len(xray.candidates()))),
+            ("scan", t("SET_SCAN_SNI"), code(xray.scan_sni or t("UI_NONE"))),
+            ("scan", t("SET_SCAN_XVER"), code(xray.scan_xver)),
+            ("world", t("SET_API_PORT"), code(xray.api_port)),
+            ("logs", t("SET_ACCESS_LOG"), code(xray.access_log)),
+            ("world", t("SET_DNS"), code(xray.dns_csv() or t("UI_NONE"))),
+            ("clock", t("SET_SSH_BANTIME"), code(xray.fail2ban_ssh_bantime)),
+            ("clock", t("SET_SSH_MAXRETRY"), code(str(xray.fail2ban_ssh_maxretry))),
+            ("world", t("SET_IGNOREIP"), code(xray.fail2ban_ignoreip)),
+            ("clock", t("SET_SUB_REFRESH"), code(xray.sub_refresh)),
+            ("star", t("SET_EMOJI"), code(t("SET_EMOJI_ON") if view.emoji_on else t("SET_EMOJI_OFF"))),
         ]
     )
     blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
     blocks.append(quote(muted(t("SET_NOTE_SUB_PATH"))))
     blocks.append(quote(muted(t("SET_EMOJI_NOTE"))))
     buttons = [
-        row(button(t("SET_VERSION_PINNED", version=xray.pinned()), "xr:core:ver:pin"), button(t("SET_VERSION_LATEST"), "xr:core:ver:latest")),
+        row(button(t("SET_VERSION_PINNED", version=xray.pinned()), "xr:core:ver:pin", icon="pin"), button(t("SET_VERSION_LATEST"), "xr:core:ver:latest", icon="update")),
         input_row(t("SET_LOG_LEVEL"), "xr_log_level", "-", view.lang),
         input_row(t("SET_SUB_PORT"), "xr_sub_port", "-", view.lang),
         input_row(t("SET_SUB_ADDRESS"), "xr_sub_address", "-", view.lang),
@@ -219,22 +219,22 @@ def ban_screen(view: View) -> Any:
     blocks = banner(view, t)
     ban = view.ban
     pairs = [
-        (t("FB_ENABLED_BOT"), code(yes_no(view.lang, xray.fail2ban_enabled))),
-        (t("FB_JAIL"), code(xray.fail2ban_jail)),
-        (t("FB_BANTIME"), code(t("FB_MINUTES", value=xray.fail2ban_bantime))),
-        (t("FB_SSH_BANTIME"), code(xray.fail2ban_ssh_bantime)),
-        (t("FB_SSH_MAXRETRY"), code(str(xray.fail2ban_ssh_maxretry))),
-        (t("FB_IGNOREIP"), code(xray.fail2ban_ignoreip)),
+        ("shield", t("FB_ENABLED_BOT"), code(yes_no(view.lang, xray.fail2ban_enabled))),
+        ("shield", t("FB_JAIL"), code(xray.fail2ban_jail)),
+        ("clock", t("FB_BANTIME"), code(t("FB_MINUTES", value=xray.fail2ban_bantime))),
+        ("clock", t("FB_SSH_BANTIME"), code(xray.fail2ban_ssh_bantime)),
+        ("clock", t("FB_SSH_MAXRETRY"), code(str(xray.fail2ban_ssh_maxretry))),
+        ("shield", t("FB_IGNOREIP"), code(xray.fail2ban_ignoreip)),
     ]
     if ban is not None:
         pairs.extend(
             [
-                (t("FB_SERVER"), code(yes_no(view.lang, ban.installed))),
-                (t("FB_JAIL_ACTIVE"), code(yes_no(view.lang, ban.active))),
-                (t("FB_JAILS"), code(", ".join(ban.jails) or t("UI_NONE"))),
-                (t("FB_SUB_JAIL"), code(ban.sub_jail)),
-                (t("FB_CHAIN"), code(ban.chain)),
-                (t("FB_RULES"), code(len(ban.chain_rules))),
+                ("shield", t("FB_SERVER"), code(yes_no(view.lang, ban.installed))),
+                ("shield", t("FB_JAIL_ACTIVE"), code(yes_no(view.lang, ban.active))),
+                ("shield", t("FB_JAILS"), code(", ".join(ban.jails) or t("UI_NONE"))),
+                ("shield", t("FB_SUB_JAIL"), code(ban.sub_jail)),
+                ("shield", t("FB_CHAIN"), code(ban.chain)),
+                ("shield", t("FB_RULES"), code(len(ban.chain_rules))),
             ]
         )
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
@@ -278,15 +278,15 @@ def sshd_screen(view: View) -> Any:
         blocks.append(quote(muted(t("SSHD_NOT_READ"))))
     else:
         pairs = [
-            (t("SSHD_PORTS"), code(", ".join(str(port) for port in item.ports))),
-            (t("SSHD_ROOT"), code(item.permit_root_login)),
-            (t("SSHD_PASSWORD_LOGIN"), code(item.password_authentication)),
-            (t("FB_JAIL"), code(t("SSHD_RISK_OFF") if item.password_authentication == "no" else t("SSHD_RISK_ON"))),
-            (t("SSHD_KEY_LOGIN"), code(item.pubkey_authentication)),
-            (t("SSHD_SERVICE"), code(item.service)),
-            (t("SSHD_BINARY"), code(yes_no(view.lang, item.sshd))),
-            (t("SSHD_CONFIG"), code(item.config)),
-            (t("SSHD_KEYS"), code(t("SSHD_KEYS_VALUE", count=item.keys, user=item.key_user or "root"))),
+            ("lock", t("SSHD_PORTS"), code(", ".join(str(port) for port in item.ports))),
+            ("lock", t("SSHD_ROOT"), code(item.permit_root_login)),
+            ("logs", t("SSHD_PASSWORD_LOGIN"), code(item.password_authentication)),
+            ("shield", t("FB_JAIL"), code(t("SSHD_RISK_OFF") if item.password_authentication == "no" else t("SSHD_RISK_ON"))),
+            ("key", t("SSHD_KEY_LOGIN"), code(item.pubkey_authentication)),
+            ("lock", t("SSHD_SERVICE"), code(item.service)),
+            ("lock", t("SSHD_BINARY"), code(yes_no(view.lang, item.sshd))),
+            ("lock", t("SSHD_CONFIG"), code(item.config)),
+            ("key", t("SSHD_KEYS"), code(t("SSHD_KEYS_VALUE", count=item.keys, user=item.key_user or "root"))),
         ]
         blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
         state = t("SSHD_CREATED") if item.dropin_exists else t("SSHD_NOT_CREATED")
@@ -328,14 +328,14 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
     release = str(info.get("release") or "")
     release_text = release or t("UPD_NO_RELEASE", reason=str(info.get("release_error") or t("UI_NONE")))
     pairs = [
-        (t("UPD_LABEL_SOURCE"), code(info.get("root") or t("UI_NOT_SET"))),
-        (t("UPD_LABEL_BRANCH"), code(branch or t("UI_NOT_SET"))),
-        (t("UPD_LABEL_COMMIT"), code("%s %s" % (info.get("commit") or t("UI_NOT_SET"), info.get("subject") or ""))),
-        (t("UPD_LABEL_TAG"), code(info.get("tag") or t("UI_NOT_SET"))),
-        (t("UPD_LABEL_CHANGES"), code(info.get("dirty", 0))),
-        (t("UPD_LABEL_BEHIND"), behind_text),
-        (t("UPD_LABEL_RELEASE"), code(release_text)),
-        (t("UPD_LABEL_SERVICE"), code(info.get("unit_state") or t("UI_NONE"))),
+        ("info", t("UPD_LABEL_SOURCE"), code(info.get("root") or t("UI_NOT_SET"))),
+        ("info", t("UPD_LABEL_BRANCH"), code(branch or t("UI_NOT_SET"))),
+        ("info", t("UPD_LABEL_COMMIT"), code("%s %s" % (info.get("commit") or t("UI_NOT_SET"), info.get("subject") or ""))),
+        ("tag", t("UPD_LABEL_TAG"), code(info.get("tag") or t("UI_NOT_SET"))),
+        ("info", t("UPD_LABEL_CHANGES"), code(info.get("dirty", 0))),
+        ("info", t("UPD_LABEL_BEHIND"), behind_text),
+        ("info", t("UPD_LABEL_RELEASE"), code(release_text)),
+        ("info", t("UPD_LABEL_SERVICE"), code(info.get("unit_state") or t("UI_NONE"))),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     buttons = [
@@ -460,7 +460,7 @@ def prompt(ident: str, lang: str = i18n.DEFAULT_LANGUAGE, error: str = "") -> An
 def confirm(title: str, body: str, action: str, lang: str = i18n.DEFAULT_LANGUAGE, back: str = "nav:home") -> Any:
     t = i18n.translator(lang)
     blocks = [quote(bold(body))]
-    buttons = [row(button(t("UI_CONFIRM"), action), button(t("UI_CANCEL"), back))]
+    buttons = [row(button(t("UI_CONFIRM"), action, icon="ok"), button(t("UI_CANCEL"), back, icon="back"))]
     return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, icon="warn")
 
 
@@ -470,7 +470,7 @@ def logs_screen(view: View, lines: list[str], tail: int) -> Any:
     blocks.append(f"<p>{t('LOGS_LAST', count=code(tail))}</p>")
     blocks.append(pre("\n".join(lines) or t("UI_EMPTY")))
     buttons = [
-        row(button("50", "xr:logs:50"), button("200", "xr:logs:200"), button("500", "xr:logs:500")),
+        row(button("50", "xr:logs:50", icon="logs"), button("200", "xr:logs:200", icon="logs"), button("500", "xr:logs:500", icon="logs")),
         row(button(t("UI_REFRESH"), f"xr:logs:{tail}"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("LOGS_TITLE"), t("LOGS_SUBTITLE"), blocks, buttons, icon="logs")

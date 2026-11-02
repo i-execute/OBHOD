@@ -135,7 +135,8 @@ def test_open_client_shows_the_link_and_config(tmp_path: Path) -> None:
     assert "freeturn://" in html
     assert "PrivateKey" in html
     assert "MTU" not in html
-    assert control.calls == [["client-conf", "phone"]]
+    assert ["client-conf", "phone"] in control.calls
+    assert ["wg-peers", "all"] in control.calls
 
 
 def test_the_config_is_a_collapsed_summary(tmp_path: Path) -> None:
@@ -148,12 +149,18 @@ def test_the_config_is_a_collapsed_summary(tmp_path: Path) -> None:
     assert "<pre>" in html[start:end]
 
 
-def test_client_removal_and_owner_protection(tmp_path: Path) -> None:
+def test_client_removal_asks_first_and_protects_the_owner(tmp_path: Path) -> None:
     bot, panel, control = panel_for(tmp_path)
     run(panel.route(1, 0, "ft:rm:phone"))
+    assert ["client-remove", "phone"] not in control.calls
+    assert i18n.t("FT_CONFIRM_REMOVE_TITLE", "en", name="phone") in last(bot)
+    run(panel.route(1, 0, "ft:rm:phone:yes"))
     assert ["client-remove", "phone"] in control.calls
     run(panel.route(1, 0, "ft:rm:owner"))
+    run(panel.route(1, 0, "ft:rm:owner:yes"))
     assert "cannot be removed" in last(bot)
+    run(panel.route(1, 0, "ft:rm:phone"))
+    assert control.calls.count(["client-remove", "phone"]) == 1
 
 
 def test_share_screen_of_the_owner(tmp_path: Path) -> None:

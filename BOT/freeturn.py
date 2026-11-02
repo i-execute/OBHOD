@@ -80,6 +80,7 @@ HOSTPORT_RE = re.compile(r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]{1,253}):(\d{1,5})$
 
 FT_ERROR_CODES = {
     "bad_arg": "wrong arguments for the install script",
+    "wg_missing": "the wireguard tools are not installed on the server",
     "needs_root": "the install script needs root on the server",
     "not_installed": "freeturn is not installed on the server",
     "unsupported_arch": "the server architecture is not supported by freeturn",
@@ -495,6 +496,8 @@ class FtClient:
     def from_dict(cls, raw: dict[str, Any] | None) -> "FtClient":
         data = raw or {}
         name = str(data.get("name", "") or "")[:NAME_MAX]
+        if name and not valid_name(name):
+            name = ""
         cid = str(data.get("client_id", "") or "").strip().lower()
         return cls(
             name=name,
@@ -630,6 +633,21 @@ class FtControl:
         response = parse_response(out.text)
         response.raise_for_status()
         return FtGuard.from_dict(response.data)
+
+    async def wg_peers(self, iface: str = "all", timeout: float = 60.0) -> tuple[list[dict[str, Any]], list[str]]:
+        name = str(iface or "all").strip().lower()
+        if name not in {"all"} and not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", name):
+            raise FtError("the interface name is not usable", "bad_arg")
+        argv = ["wg-peers", "--iface=%s" % (name or "all")]
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        rows = [item for item in response.data.get("peers") or [] if isinstance(item, dict)]
+        names = [str(item) for item in response.data.get("interfaces") or []]
+        return rows, names
 
     async def probe(self) -> FtState:
         response = await self.call(["probe"], timeout=120)

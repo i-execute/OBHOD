@@ -153,11 +153,26 @@ def rows(items: Iterable[str]) -> str:
     return "".join(items)
 
 
-def table(pairs: Iterable[tuple[str, str]], headers: tuple[str, str] | None = None) -> str:
+def row_parts(item: object) -> tuple[str, str, object]:
+    if isinstance(item, (list, tuple)):
+        values = list(item)
+        if len(values) == 2:
+            return "", str(values[0]), values[1]
+        if len(values) >= 3:
+            return str(values[0] or ""), str(values[1]), values[2]
+    return "", str(item), ""
+
+
+def table(pairs: Iterable[object], headers: tuple[str, str] | None = None) -> str:
     head = ""
     if headers:
         head = f"<tr><th>{esc(headers[0])}</th><th>{esc(headers[1])}</th></tr>"
-    body = "".join(f"<tr><td>{esc(key)}</td><td>{value}</td></tr>" for key, value in pairs)
+    cells = []
+    for item in pairs:
+        icon, key, value = row_parts(item)
+        label = ico(icon, "") + esc(key)
+        cells.append(f"<tr><td>{label}</td><td>{value}</td></tr>")
+    body = "".join(cells)
     return f'<table bordered="false" striped="false">{head}{body}</table>'
 
 

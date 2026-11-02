@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import ftscreens, fwguard, i18n, xscreens
+from . import ftscreens, fwguard, i18n, traffic, xscreens
 from .freeturn import (
     BACKENDS,
     METHODS,
@@ -42,6 +42,11 @@ class FtPanel:
         self.key_once = ""
         self.guard: dict[str, Any] = {}
         self.error = ""
+        self.traffic = traffic.Traffic()
+        self.usage: list[traffic.Usage] = []
+        self.page = 0
+        self.traffic_error = ""
+        self.pending = ""
 
     def tr(self) -> i18n.Translator:
         return i18n.translator(getattr(self.bot.state, "language", i18n.DEFAULT_LANGUAGE))
@@ -66,6 +71,11 @@ class FtPanel:
             guard=dict(self.guard),
             core=str(getattr(self.bot.state, "core", "xray")),
             lang=self.tr().language,
+            usage=list(self.usage),
+            totals=self.traffic.totals(self.usage) if self.usage else {},
+            page=self.page,
+            pages=pages_of(len(self.clients)),
+            traffic_error=self.traffic_error,
         )
 
     async def render(self, chat_id: int, msg_id: int, rich: Any) -> None:
@@ -123,12 +133,40 @@ class FtPanel:
             await self.read_logs(chat_id, msg_id)
             return
         if head == "clients":
+            self.page = _page(arg1)
             await self.read_clients(chat_id, msg_id)
             return
         if head == "cl":
-            await self.open_client(chat_id, msg_id, arg1)
+            await self.open_client(chat_id, msg_id, arg1, arg2)
+            return
+        if head == "tr":
+            self.page = _page(arg1)
+            await self.read_traffic(chat_id, msg_id)
             return
         if head == "rm":
+            if not valid_name(arg1):
+                await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.tr()("FT_ERR_BAD_NAME"))))
+                return
+            if arg2 != "yes":
+                self.pending = arg1
+                t = self.tr()
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    ftscreens.confirm_screen(
+                        self.view(),
+                        t("FT_CONFIRM_REMOVE_TITLE", name=arg1),
+                        t("FT_CONFIRM_REMOVE_BODY", name=arg1),
+                        "ft:rm:%s:yes" % arg1,
+                        "ft:cl:%s" % arg1,
+                    ),
+                )
+                return
+            if self.pending != arg1:
+                self.pending = ""
+                await self.render(chat_id, msg_id, ftscreens.clients_screen(self.view()))
+                return
+            self.pending = ""
             await self.remove_client(chat_id, msg_id, arg1)
             return
         if head == "share":
@@ -325,10 +363,47 @@ class FtPanel:
         except FtError as exc:
             await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
             return
+        self.clients = [item for item in self.clients if valid_name(item.name)]
         self.state.installed = True
         self.state.key_present = bool(self.share and self.share.key_present)
         self.save()
+        await self.refresh_traffic()
         await self.render(chat_id, msg_id, ftscreens.clients_screen(self.view()))
+
+    async def read_traffic(self, chat_id: int, msg_id: int) -> None:
+        t = self.tr()
+        if not self.clients:
+            try:
+                self.clients, self.share = await self.control.client_list()
+            except FtError as exc:
+                await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
+                return
+        await self.busy(chat_id, msg_id, t("FT_BUSY_TRAFFIC"))
+        await self.refresh_traffic()
+        await self.render(chat_id, msg_id, ftscreens.traffic_screen(self.view()))
+
+    async def refresh_traffic(self) -> None:
+        try:
+            rows, names = await self.control.wg_peers()
+        except FtError as exc:
+            self.traffic_error = self.describe(exc)
+            self.usage = []
+            return
+        self.traffic_error = ""
+        self.traffic.load(rows, names)
+        self.usage = self.traffic.usage(self.clients, self.history())
+        self.store_history()
+
+    def history(self) -> dict[str, Any]:
+        raw = getattr(self.bot.state, "traffic", {})
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def store_history(self) -> None:
+        try:
+            self.bot.state.traffic = traffic.history_from(self.usage)
+            self.bot.save()
+        except Exception:
+            pass
 
     async def add_client(self, chat_id: int, name: str) -> None:
         t = self.tr()
@@ -352,23 +427,31 @@ class FtPanel:
             self.clients.append(client)
         await self.send(chat_id, ftscreens.client_screen(self.view(notice=t("FT_NOTICE_ADDED", name=clean)), clean))
 
-    async def open_client(self, chat_id: int, msg_id: int, name: str) -> None:
+    async def open_client(self, chat_id: int, msg_id: int, name: str, action: str = "") -> None:
         t = self.tr()
         clean = (name or "").strip()
         if not valid_name(clean):
             await self.render(chat_id, msg_id, ftscreens.clients_screen(self.view()))
             return
         await self.busy(chat_id, msg_id, t("FT_BUSY_ACTION"))
-        try:
-            client, link, conf = await self.control.client_conf(clean)
-        except FtError as exc:
-            await self.render(chat_id, msg_id, ftscreens.clients_screen(self.view(error=self.describe(exc))))
-            return
-        if not any(item.name == clean for item in self.clients):
-            self.clients.append(client)
-        self.link = self._finish_link(link)
-        self.conf = normalize_conf(_conf_text(conf))
-        self.name = clean
+        if action != "t":
+            try:
+                client, link, conf = await self.control.client_conf(clean)
+            except FtError as exc:
+                await self.render(chat_id, msg_id, ftscreens.clients_screen(self.view(error=self.describe(exc))))
+                return
+            if not any(item.name == clean for item in self.clients):
+                self.clients.append(client)
+            self.link = self._finish_link(link)
+            self.conf = normalize_conf(_conf_text(conf))
+            self.name = clean
+        elif not self.clients:
+            try:
+                self.clients, self.share = await self.control.client_list()
+            except FtError as exc:
+                await self.render(chat_id, msg_id, ftscreens.clients_screen(self.view(error=self.describe(exc))))
+                return
+        await self.refresh_traffic()
         await self.render(chat_id, msg_id, ftscreens.client_screen(self.view(), clean))
 
     async def remove_client(self, chat_id: int, msg_id: int, name: str) -> None:
@@ -495,6 +578,19 @@ class FtPanel:
         self.bot.state.core = name
         self.bot.save()
         return True
+
+
+def pages_of(count: int, size: int = ftscreens.MAX_CLIENT_BUTTONS) -> int:
+    if count <= 0:
+        return 1
+    return max((int(count) + size - 1) // size, 1)
+
+
+def _page(raw: str) -> int:
+    text = str(raw or "").strip()
+    if not text.isdigit():
+        return 0
+    return max(int(text) - 1, 0)
 
 
 def _next(options: tuple[str, ...], current: str) -> str:

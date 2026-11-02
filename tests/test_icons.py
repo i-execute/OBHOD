@@ -207,3 +207,29 @@ def test_every_catalog_names_the_setting() -> None:
     for lang in i18n.LANGUAGES:
         for key in ("SET_EMOJI", "SET_EMOJI_ON", "SET_EMOJI_OFF", "SET_EMOJI_BTN_ON", "SET_EMOJI_BTN_OFF", "SET_EMOJI_NOTE", "TOAST_EMOJI_ON", "TOAST_EMOJI_OFF"):
             assert i18n.t(key, lang).strip(), (lang, key)
+
+
+def test_every_alias_used_by_a_screen_exists() -> None:
+    pattern = re.compile(r'icon="([a-z0-9_]+)"|^\s*\("([a-z0-9_]+)", t\(', re.M)
+    unknown = []
+    for name in ("screens.py", "ftscreens.py", "xscreens.py"):
+        path = Path(screens.__file__).parent / name
+        for match in pattern.finditer(path.read_text(encoding="utf-8")):
+            name = match.group(1) or match.group(2)
+            if name not in icons.ICONS:
+                unknown.append("%s: %s" % (path.name, name))
+    assert unknown == []
+
+
+def test_every_mode_screen_carries_a_heading_icon() -> None:
+    from BOT import xscreens
+
+    ui.use_icons(True)
+    try:
+        page = view().state.xray
+        xview = xscreens.XrayView(state=page, lang=i18n.DEFAULT_LANGUAGE)
+        pages = [screens.home(view()), screens.settings(view()), xscreens.home(xview)]
+        for rich in pages:
+            assert rich.build().count("<tg-emoji") >= 2
+    finally:
+        ui.use_icons(False)

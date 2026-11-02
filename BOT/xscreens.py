@@ -121,7 +121,7 @@ def core_line(view: XrayView, t: i18n.Translator) -> str:
 
 
 def back_row(target: str = "nav:home", lang: str = i18n.DEFAULT_LANGUAGE) -> str:
-    return row(button(i18n.t("UI_HOME", lang), target), button(i18n.t("NAV_XRAY", lang), "xr:home"))
+    return row(button(i18n.t("UI_HOME", lang), target), button(i18n.t("NAV_XRAY", lang), "xr:home", icon="xray"))
 
 
 def home(view: XrayView) -> Any:
@@ -130,12 +130,12 @@ def home(view: XrayView) -> Any:
     blocks = banner(view, t)
     blocks.append(f"<p>{core_line(view, t)}</p>")
     pairs = [
-        (t("XR_HOME_INBOUNDS"), code(len(state.inbounds))),
-        (t("XR_HOME_CLIENTS"), code(sum(len(item.clients) for item in state.inbounds))),
-        (t("XR_HOME_SUBS"), code(t("UI_ON") if state.sub_enabled else t("UI_OFF"))),
-        (t("XR_HOME_SUB_PORT"), code(state.sub_port)),
-        (t("XR_HOME_VERSION"), code(state.version)),
-        (t("XR_HOME_ENCRYPTION"), code(state.encryption_label())),
+        ("info", t("XR_HOME_INBOUNDS"), code(len(state.inbounds))),
+        ("users", t("XR_HOME_CLIENTS"), code(sum(len(item.clients) for item in state.inbounds))),
+        ("link", t("XR_HOME_SUBS"), code(t("UI_ON") if state.sub_enabled else t("UI_OFF"))),
+        ("link", t("XR_HOME_SUB_PORT"), code(state.sub_port)),
+        ("tag", t("XR_HOME_VERSION"), code(state.version)),
+        ("settings", t("XR_HOME_ENCRYPTION"), code(state.encryption_label())),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if state.inbounds:
@@ -149,10 +149,10 @@ def home(view: XrayView) -> Any:
     buttons = [
         row(button(t("XR_BTN_NEW"), "xr:new"), button(t("NAV_SCANNER"), "xr:scan", icon="scan")),
         row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("NAV_CORE"), "xr:core", icon="xray")),
-        row(button(t("NAV_LOGS"), "xr:logs"), button(t("XR_BTN_CHECK"), "xr:check")),
+        row(button(t("NAV_LOGS"), "xr:logs", icon="logs"), button(t("XR_BTN_CHECK"), "xr:check", icon="scan")),
     ]
     if state.inbounds:
-        buttons.insert(2, row(*[button(t("XR_BTN_OPEN", remark=item.remark), f"xr:in:{item.id}") for item in state.inbounds[:3]]))
+        buttons.insert(2, row(*[button(t("XR_BTN_OPEN", remark=item.remark), f"xr:in:{item.id}", icon="module") for item in state.inbounds[:3]]))
     buttons.append(back_row())
     return screen(t("XR_TITLE"), t("XR_SUBTITLE"), blocks, buttons, footer=t("XR_FOOTER"), icon="xray")
 
@@ -172,10 +172,10 @@ def new_menu(view: XrayView) -> Any:
         )
     )
     buttons = [
-        row(button("raw reality", "xr:new:raw:reality"), button("raw tls", "xr:new:raw:tls")),
-        row(button("grpc reality", "xr:new:grpc:reality"), button("grpc tls", "xr:new:grpc:tls")),
-        row(button("xhttp reality", "xr:new:xhttp:reality"), button("xhttp tls", "xr:new:xhttp:tls")),
-        row(button("raw none", "xr:new:raw:none"), button(t("XR_BTN_CUSTOM"), "xr:custom")),
+        row(button("raw reality", "xr:new:raw:reality", icon="add"), button("raw tls", "xr:new:raw:tls", icon="add")),
+        row(button("grpc reality", "xr:new:grpc:reality", icon="add"), button("grpc tls", "xr:new:grpc:tls", icon="add")),
+        row(button("xhttp reality", "xr:new:xhttp:reality", icon="add"), button("xhttp tls", "xr:new:xhttp:tls", icon="add")),
+        row(button("raw none", "xr:new:raw:none", icon="add"), button(t("XR_BTN_CUSTOM"), "xr:custom", icon="tools")),
         back_row(),
     ]
     return screen(t("XR_NEW_TITLE"), t("XR_NEW_SUBTITLE"), blocks, buttons, icon="add")
@@ -193,8 +193,8 @@ def custom_menu(view: XrayView) -> Any:
     names = ", ".join(code(field_label(item, view.lang)) for item in fields) or muted(t("XR_CUSTOM_NOTHING"))
     blocks.append(f"<p>{t('XR_CUSTOM_NEEDS', fields=names)}</p>")
     buttons = [
-        row(button(t("XR_CUSTOM_NETWORK"), "xr:cyc:network"), button(t("XR_CUSTOM_SECURITY"), "xr:cyc:security")),
-        row(button(t("UI_CREATE"), "xr:create")),
+        row(button(t("XR_CUSTOM_NETWORK"), "xr:cyc:network", icon="settings"), button(t("XR_CUSTOM_SECURITY"), "xr:cyc:security", icon="shield")),
+        row(button(t("UI_CREATE"), "xr:create", icon="add")),
         input_row(t("XR_CUSTOM_PORT"), "xr_port", "-", view.lang),
         back_row(),
     ]
@@ -246,8 +246,8 @@ def inbound_screen(view: XrayView, inbound: XrayInbound) -> Any:
     named = ", ".join(code(item) for item in clients[:6]) or muted(t("UI_NONE"))
     blocks.append(f"<p>{t('XR_INBOUND_CLIENTS', count=code(len(clients)), names=named)}</p>")
     buttons = [
-        row(button(t("XR_BTN_LINKS"), f"xr:link:{inbound.id}"), button(t("XR_BTN_ADD_CLIENT"), f"xr:cladd:{inbound.id}")),
-        row(*[button(t("XR_BTN_CLIENT", email=item.email), f"xr:cl:{inbound.id}:{item.email}") for item in inbound.clients[:3]]),
+        row(button(t("XR_BTN_LINKS"), f"xr:link:{inbound.id}", icon="link"), button(t("XR_BTN_ADD_CLIENT"), f"xr:cladd:{inbound.id}", icon="add")),
+        row(*[button(t("XR_BTN_CLIENT", email=item.email), f"xr:cl:{inbound.id}:{item.email}", icon="user") for item in inbound.clients[:3]]),
         row(button(t("XR_BTN_PORT"), f"xr:edit:{inbound.id}:xr_port"), button(t("XR_BTN_NAME"), f"xr:edit:{inbound.id}:xr_remark")),
         field_row(inbound, view.lang),
         row(button(t("XR_BTN_REALITY_KEYS"), f"xr:keys:{inbound.id}"), button(t("XR_BTN_MLDSA"), f"xr:mldsa:{inbound.id}")),
@@ -297,12 +297,12 @@ def client_screen(view: XrayView, inbound: XrayInbound, email: str, link: str, s
         blocks.append(quote(bold(t("XR_CLIENT_MISSING"))))
         return screen(t("XR_CLIENT_TITLE"), email, blocks, [back_row(f"xr:in:{inbound.id}")], icon="user")
     pairs = [
-        (t("XR_CLIENT_NAME"), code(client.email)),
-        (t("XR_CLIENT_ENABLED"), code(i18n.t("UI_YES" if client.enable else "UI_NO", view.lang))),
-        (t("XR_CLIENT_ID"), code(client.ident)),
-        (t("XR_CLIENT_FLOW"), code(client.flow or t("UI_NONE"))),
-        (t("XR_CLIENT_LIMIT"), code(client.limit_ip)),
-        (t("XR_CLIENT_TRAFFIC"), code(client.total_gb)),
+        ("user", t("XR_CLIENT_NAME"), code(client.email)),
+        ("user", t("XR_CLIENT_ENABLED"), code(i18n.t("UI_YES" if client.enable else "UI_NO", view.lang))),
+        ("user", t("XR_CLIENT_ID"), code(client.ident)),
+        ("user", t("XR_CLIENT_FLOW"), code(client.flow or t("UI_NONE"))),
+        ("user", t("XR_CLIENT_LIMIT"), code(client.limit_ip)),
+        ("chart", t("XR_CLIENT_TRAFFIC"), code(client.total_gb)),
     ]
     if sub_path:
         pairs.append((t("XR_CLIENT_SUB_PATH"), code(sub_path)))
@@ -327,10 +327,10 @@ def mldsa_screen(view: XrayView, inbound: XrayInbound) -> Any:
     t = view.tr()
     blocks = banner(view, t)
     pairs = [
-        (t("XR_MLDSA_SECURITY"), code(inbound.security)),
-        (t("XR_MLDSA_SEED_SET"), code(i18n.t("UI_YES" if inbound.mldsa65_seed else "UI_NO", view.lang))),
-        (t("XR_MLDSA_VERIFY"), code(inbound.mldsa65_verify[:24] + "..." if inbound.mldsa65_verify else t("UI_NONE"))),
-        (t("XR_MLDSA_CHAIN"), code(t("XR_MLDSA_CHAIN_VALUE"))),
+        ("settings", t("XR_MLDSA_SECURITY"), code(inbound.security)),
+        ("key", t("XR_MLDSA_SEED_SET"), code(i18n.t("UI_YES" if inbound.mldsa65_seed else "UI_NO", view.lang))),
+        ("info", t("XR_MLDSA_VERIFY"), code(inbound.mldsa65_verify[:24] + "..." if inbound.mldsa65_verify else t("UI_NONE"))),
+        ("shield", t("XR_MLDSA_CHAIN"), code(t("XR_MLDSA_CHAIN_VALUE"))),
     ]
     blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
     blocks.append(quote(muted(t("XR_MLDSA_NOTE"))))
@@ -348,11 +348,11 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     state = view.state
     blocks = banner(view, t)
     pairs = [
-        (t("XR_SUBS_ENABLED"), code(i18n.t("UI_YES" if state.sub_enabled else "UI_NO", view.lang))),
-        (t("XR_SUBS_PORT"), code(state.sub_port)),
-        (t("XR_SUBS_ADDRESS"), code(state.sub_address or t("UI_NOT_SET"))),
-        (t("XR_SUBS_FORMAT"), code(state.sub_path_pattern())),
-        (t("SET_SUB_REFRESH"), code(state.sub_refresh)),
+        ("link", t("XR_SUBS_ENABLED"), code(i18n.t("UI_YES" if state.sub_enabled else "UI_NO", view.lang))),
+        ("link", t("XR_SUBS_PORT"), code(state.sub_port)),
+        ("link", t("XR_SUBS_ADDRESS"), code(state.sub_address or t("UI_NOT_SET"))),
+        ("link", t("XR_SUBS_FORMAT"), code(state.sub_path_pattern())),
+        ("clock", t("SET_SUB_REFRESH"), code(state.sub_refresh)),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if rows_data:
@@ -378,17 +378,17 @@ def core_screen(view: XrayView) -> Any:
     core = view.core
     if core:
         pairs = [
-            (t("XR_CORE_INSTALLED"), code(i18n.t("UI_YES" if core.get("installed") else "UI_NO", view.lang))),
-            (t("XR_CORE_VERSION"), code(core.get("version", "") or t("UI_NONE"))),
-            (t("XR_CORE_PINNED"), code(core.get("pinned", "") or "")),
-            (t("XR_CORE_SERVICE"), code(core.get("service", "") or t("UI_NONE"))),
-            (t("XR_CORE_SYSTEMD"), code(i18n.t("UI_YES" if core.get("systemd") else "UI_NO", view.lang))),
-            (t("XR_CORE_ARCH"), code(core.get("arch", "") or "")),
-            (t("XR_CORE_BINARY"), code(core.get("core_path", "") or "")),
-            (t("XR_CORE_CONFIG"), code(core.get("config_path", "") or "")),
-            (t("XR_CORE_INBOUNDS"), code(core.get("inbounds", 0))),
-            (t("XR_CORE_PORTS"), code(", ".join(str(item) for item in core.get("ports") or []) or t("UI_NONE"))),
-            (t("XR_CORE_LISTENING"), code(", ".join(str(item) for item in core.get("listening") or []) or t("UI_NONE"))),
+            ("xray", t("XR_CORE_INSTALLED"), code(i18n.t("UI_YES" if core.get("installed") else "UI_NO", view.lang))),
+            ("tag", t("XR_CORE_VERSION"), code(core.get("version", "") or t("UI_NONE"))),
+            ("tag", t("XR_CORE_PINNED"), code(core.get("pinned", "") or "")),
+            ("xray", t("XR_CORE_SERVICE"), code(core.get("service", "") or t("UI_NONE"))),
+            ("xray", t("XR_CORE_SYSTEMD"), code(i18n.t("UI_YES" if core.get("systemd") else "UI_NO", view.lang))),
+            ("xray", t("XR_CORE_ARCH"), code(core.get("arch", "") or "")),
+            ("xray", t("XR_CORE_BINARY"), code(core.get("core_path", "") or "")),
+            ("xray", t("XR_CORE_CONFIG"), code(core.get("config_path", "") or "")),
+            ("xray", t("XR_CORE_INBOUNDS"), code(core.get("inbounds", 0))),
+            ("xray", t("XR_CORE_PORTS"), code(", ".join(str(item) for item in core.get("ports") or []) or t("UI_NONE"))),
+            ("xray", t("XR_CORE_LISTENING"), code(", ".join(str(item) for item in core.get("listening") or []) or t("UI_NONE"))),
         ]
         blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     else:
@@ -396,7 +396,7 @@ def core_screen(view: XrayView) -> Any:
     buttons = [
         row(button(t("XR_CORE_INSTALL"), "xr:core:install"), button(t("XR_CORE_APPLY"), "xr:core:apply")),
         row(button(t("XR_CORE_RESTART"), "xr:core:restart"), button(t("XR_CORE_STOP"), "xr:core:stop")),
-        row(button(t("XR_CORE_PURGE"), "xr:core:purge"), button(t("UI_REFRESH"), "xr:check")),
+        row(button(t("XR_CORE_PURGE"), "xr:core:purge"), button(t("UI_REFRESH"), "xr:check", icon="scan")),
         version_row(view.state.version, view.lang, view.state.pinned()),
         back_row("xr:home"),
     ]
@@ -406,8 +406,8 @@ def core_screen(view: XrayView) -> Any:
 def version_row(current: str = "", lang: str = i18n.DEFAULT_LANGUAGE, pinned: str = "") -> str:
     t = i18n.translator(lang)
     return row(
-        button(t("XR_VERSION_LATEST"), "xr:core:ver:latest"),
-        button(t("XR_VERSION_PINNED", version=pinned), "xr:core:ver:pin"),
+        button(t("XR_VERSION_LATEST"), "xr:core:ver:latest", icon="update"),
+        button(t("XR_VERSION_PINNED", version=pinned), "xr:core:ver:pin", icon="pin"),
     )
 
 

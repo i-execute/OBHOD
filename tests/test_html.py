@@ -115,3 +115,21 @@ def test_markup_with_icons_is_balanced(name: str, html: str) -> None:
     assert checker.errors == [], name
     assert checker.stack == [], name
     assert "tg-emoji" in html, name
+
+
+@pytest.mark.parametrize("name,html", render_all(), ids=[item[0] for item in render_all()])
+def test_button_rows_carry_only_buttons(name: str, html: str) -> None:
+    for inner in re.findall(r"<tg-button-row[^>]*>(.*?)</tg-button-row>", html, re.S):
+        stripped = re.sub(r"<tg-button [^>]*>[^<]*</tg-button>", "", inner).strip()
+        assert stripped == "" or stripped.startswith("<tg-button"), (name, stripped[:80])
+
+
+def test_table_headers_come_from_the_catalog() -> None:
+    from BOT import i18n
+
+    known = set()
+    for catalog in i18n.CATALOGS.values():
+        known |= {value for key, value in vars(catalog).items() if key.isupper()}
+    for name, html in render_all():
+        for header in re.findall(r"<th>([^<]*)</th>", html):
+            assert header in known, (name, header)

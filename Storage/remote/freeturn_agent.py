@@ -41,6 +41,7 @@ FETCH_TIMEOUT = 120
 ALLOWED_HOSTS = ("github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com")
 COMMANDS = (
     "fw-guard",
+    "wg-peers",
     "probe",
     "apply",
     "stop",
@@ -55,6 +56,11 @@ COMMANDS = (
 FLAGS = frozenset({"purge", "update", "yes", "reconfigure", "uninstall"})
 GUARD_MODES = ("status", "open", "vk", "closed")
 GUARD_PROTOS = ("udp", "tcp", "both")
+WG_MAX_PEERS = 8192
+WG_IFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$")
+WG_FIELDS = 9
+WG_CMD_TIMEOUT = 20
 GUARD_CHAIN = "OBHOD-FT"
 GUARD_MAX_CIDRS = 512
 GUARD_MIN_PREFIX = 8
@@ -65,6 +71,7 @@ CIDR_RE = re.compile(r"^[0-9]{1,3}(?:\.[0-9]{1,3}){3}/[0-9]{1,2}$")
 PORT_RE = re.compile(r"^[0-9]{1,5}$")
 TIMEOUTS = {
     "fw-guard": 180,
+    "wg-peers": 60,
     "probe": 120,
     "apply": 900,
     "stop": 180,
@@ -460,6 +467,101 @@ def tool_text(argv, timeout=GUARD_TIMEOUT):
     return text if code == 0 else ""
 
 
+def wg_command(argv, timeout=WG_CMD_TIMEOUT):
+    try:
+        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if int(done.returncode or 0) != 0:
+        return []
+    return (done.stdout or b"").decode("utf-8", "replace").splitlines()
+
+
+def wg_iface(flags):
+    raw = str(flags.get("iface", "all")).strip()
+    if raw.lower() in {"", "all"}:
+        return "all"
+    if not WG_IFACE_RE.match(raw):
+        raise AgentError("bad_arg", "the interface name is not usable", "wg_peers")
+    return raw
+
+
+def wg_number(text):
+    raw = str(text or "").strip()
+    if not raw.isdigit():
+        return 0
+    return int(raw)
+
+
+def wg_peers(flags):
+    if not shutil.which("wg"):
+        raise AgentError("wg_missing", "wireguard tools are not installed on this host", "wg_peers")
+    iface = wg_iface(flags)
+    lines = wg_command(["wg", "show", iface, "dump"])
+    peers = []
+    interfaces = []
+    for line in lines:
+        parts = line.split("\t")
+        if iface == "all":
+            if len(parts) != WG_FIELDS:
+                if len(parts) == 5:
+                    interfaces.append(parts[0][:15])
+                continue
+            name, pub, psk, endpoint, allowed, hs, rx, tx, keepalive = parts
+        else:
+            if len(parts) != WG_FIELDS - 1:
+                continue
+            name = iface
+            pub, psk, endpoint, allowed, hs, rx, tx, keepalive = parts
+            interfaces.append(iface)
+        key = str(pub or "").strip()
+        if not WG_KEY_RE.match(key):
+            continue
+        peers.append(
+            {
+                "iface": str(name)[:15],
+                "pub": key,
+                "endpoint": str(endpoint or "").strip()[:64],
+                "allowed": str(allowed or "").strip()[:64],
+                "hs": max(wg_number(hs), 0),
+                "rx": max(wg_number(rx), 0),
+                "tx": max(wg_number(tx), 0),
+                "keepalive": max(wg_number(keepalive), 0),
+                "psk": 1 if str(psk or "") not in {"", "(none)"} else 0,
+            }
+        )
+        if len(peers) >= WG_MAX_PEERS:
+            break
+    seen = []
+    for name in interfaces:
+        if name not in seen:
+            seen.append(name)
+    return peers, seen
+
+
+def wg_main(flags):
+    unknown = sorted(key for key in flags if key not in {"iface"})
+    if unknown:
+        raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "wg_peers")
+    peers, interfaces = wg_peers(flags)
+    rx = sum(item["rx"] for item in peers)
+    tx = sum(item["tx"] for item in peers)
+    emit(
+        "ok",
+        {
+            "interfaces": interfaces,
+            "peers": peers,
+            "count": len(peers),
+            "rx": rx,
+            "tx": tx,
+            "up": sum(1 for item in peers if item["hs"] > 0),
+        },
+        stage="wg_peers",
+        logs=["%d peers" % len(peers)],
+    )
+    return 0
+
+
 def guard_backend():
     if shutil.which("firewall-cmd") and "running" in tool_text(["firewall-cmd", "--state"]).lower():
         return "firewalld"
@@ -712,6 +814,12 @@ def main(argv):
     if command == "fw-guard":
         try:
             return guard_main(flags)
+        except AgentError as exc:
+            emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
+            return 1
+    if command == "wg-peers":
+        try:
+            return wg_main(flags)
         except AgentError as exc:
             emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
             return 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
 import json
 import os
@@ -634,3 +635,95 @@ def test_the_panel_guards_the_protocol_of_the_plan(tmp_path: Path) -> None:
     bot.freeturn.state.config.mode = "udp"
     asyncio.run(bot.freeturn.route(1, 0, "ft:fw"))
     assert seen == ["tcp", "udp"]
+
+
+WG_STUB = """#!/usr/bin/env python3
+import json, os, sys
+args = list(sys.argv[1:])
+with open(os.environ["WG_LOG"], "a") as fh:
+    fh.write(" ".join(args) + chr(10))
+data = json.load(open(os.environ["WG_STATE"]))
+if args[:2] == ["show", "all"] and args[2:] == ["dump"]:
+    for item in data["interfaces"]:
+        print(chr(9).join([item["name"], "priv", "pub", "51820", "off"]))
+        for peer in item["peers"]:
+            print(chr(9).join([item["name"], peer["pub"], "(none)", peer.get("endpoint", ""), peer.get("allowed", ""), str(peer.get("hs", 0)), str(peer.get("rx", 0)), str(peer.get("tx", 0)), str(peer.get("keepalive", 0))]))
+    sys.exit(0)
+sys.exit(1)
+"""
+
+
+def wg_env(tmp_path: Path, peers: list[dict], iface: str = "freeturn") -> dict[str, str]:
+    bindir = tmp_path / "wgbin"
+    bindir.mkdir(exist_ok=True)
+    binary = bindir / "wg"
+    binary.write_text(WG_STUB, encoding="utf-8")
+    os.chmod(binary, 0o755)
+    Path(tmp_path / "wg.json").write_text(json.dumps({"interfaces": [{"name": iface, "peers": peers}]}), encoding="utf-8")
+    return {
+        "PATH": "%s:/usr/local/bin:/usr/bin:/bin" % bindir,
+        "WG_STATE": str(tmp_path / "wg.json"),
+        "WG_LOG": str(tmp_path / "wg.log"),
+        "LANG": "C.UTF-8",
+    }
+
+
+def run_wg(tmp_path: Path, *args: str) -> dict[str, Any]:
+    done = subprocess.run(
+        [sys.executable, str(AGENT), *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=wg_env(tmp_path, WG_PEERS),
+    )
+    payload = [line for line in done.stdout.splitlines() if line.strip().startswith("{")]
+    assert payload, done.stdout + done.stderr
+    return json.loads(payload[-1])
+
+
+def _wg_key(seed: int) -> str:
+    return base64.b64encode(bytes([seed]) * 32).decode("ascii")
+
+
+WG_PEERS = [
+    {"pub": _wg_key(1), "endpoint": "203.0.113.5:51820", "allowed": "10.13.13.2/32", "hs": 1793556000, "rx": 4096, "tx": 2048, "keepalive": 25},
+    {"pub": _wg_key(2), "allowed": "10.13.13.3/32"},
+    {"pub": "broken"},
+]
+
+
+def test_the_agent_reads_the_wg_peers(tmp_path: Path) -> None:
+    answer = run_wg(tmp_path, "wg-peers")
+    assert answer["result"] == "ok", answer
+    assert answer["data"]["count"] == 2
+    assert answer["data"]["interfaces"] == ["freeturn"]
+    assert answer["data"]["rx"] == 4096
+    assert answer["data"]["tx"] == 2048
+    assert answer["data"]["peers"][0]["endpoint"] == "203.0.113.5:51820"
+    assert answer["data"]["peers"][1]["hs"] == 0
+
+
+def test_the_agent_refuses_a_silly_interface(tmp_path: Path) -> None:
+    for bad in ("all;rm", "../etc", "a" * 20, "wg0;reboot", "freeturn/x"):
+        answer = run_wg(tmp_path, "wg-peers", "--iface=%s" % bad)
+        assert answer["result"] == "err", bad
+        assert answer["code"] == "bad_arg"
+
+
+def test_the_agent_refuses_unknown_flags(tmp_path: Path) -> None:
+    answer = run_wg(tmp_path, "wg-peers", "--chain=INPUT")
+    assert answer["result"] == "err"
+    assert answer["code"] == "bad_arg"
+
+
+def test_the_agent_never_runs_a_shell_for_wg(tmp_path: Path) -> None:
+    source = (ROOT / "Storage" / "remote" / "freeturn_agent.py").read_text(encoding="utf-8")
+    body = source.split("def wg_command(")[1].split("\ndef ", 1)[0]
+    for chunk in ("def wg_peers(", "def wg_main("):
+        part = source.split(chunk)[1].split("\ndef ", 1)[0]
+        assert "shell=True" not in part
+        assert "os.system" not in part
+    assert "shell=True" not in body
+    assert '["wg", "show"' in source
+    assert "WG_MAX_PEERS" in source
+    assert "WG_KEY_RE" in source

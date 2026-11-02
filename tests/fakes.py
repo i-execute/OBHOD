@@ -297,7 +297,7 @@ class FakeFtControl:
         from BOT.freeturn import FtClient, FtShare
 
         self.calls.append(["client-list"])
-        clients = [FtClient(name="owner", client_id="0123456789abcdef0123456789abcdef", owner=True)]
+        clients = list(getattr(self, "clients", [])) or [FtClient(name="owner", client_id="0123456789abcdef0123456789abcdef", owner=True)]
         share = FtShare(backend="new", host="203.0.113.10", port=56123, mode="udp", obf_profile="rtpopus3", key_present=True)
         return clients, share
 
@@ -321,6 +321,10 @@ class FakeFtControl:
         if name == "owner":
             raise FtError("the owner client cannot be removed", "owner_protected")
         return FtResponse(result="ok", data={"removed": True})
+
+    async def wg_peers(self, iface: str = "all", timeout: float = 0) -> Any:
+        self.calls.append(["wg-peers", iface])
+        return list(getattr(self, "peers", [])), ["freeturn"]
 
     async def uninstall(self, target: str = "all", purge: bool = True) -> Any:
         from BOT.freeturn import FtResponse

@@ -157,7 +157,7 @@ def test_raise_messages_are_english() -> None:
     assert offenders == []
 
 
-FREE_TURN_FILES = {"freeturn.py", "freeturn_agent.py", "ftpanel.py", "ftscreens.py"}
+FREE_TURN_FILES = {"freeturn.py", "freeturn_agent.py", "ftpanel.py", "ftscreens.py", "traffic.py"}
 FREE_TURN_PREFIXES = ("FT_", "FLD_FT_", "FLH_FT_", "CORE_", "NAV_FREETURN")
 
 
@@ -165,7 +165,7 @@ def test_no_non_post_quantum_names() -> None:
     banned = ("vmess", "trojan", "shadowsocks", "httpupgrade", "wireguard", "kcp")
     offenders: list[str] = []
     for path in AUTHORED_PY:
-        if path.name in {"test_xray.py", "test_screens.py", "test_xscreens.py", "test_source.py", "test_freeturn.py", "test_ftpanel.py"}:
+        if path.name in {"test_xray.py", "test_screens.py", "test_xscreens.py", "test_source.py", "test_freeturn.py", "test_ftpanel.py", "test_traffic.py"}:
             continue
         if path.name in FREE_TURN_FILES:
             continue

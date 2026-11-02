@@ -90,8 +90,9 @@ BOT/
   screens.py    home, ssh access, settings, fail2ban, sshd, help
   xscreens.py   xray screens, relevant fields per security and network
   freeturn.py   freeturn models, plan validation, proto 3 client, link codec
-  ftpanel.py    freeturn callback router, plan cycles, clients, core switch
-  ftscreens.py  freeturn screens, plan, clients, owner link, logs
+  ftpanel.py    freeturn callback router, plan cycles, clients, traffic, core switch
+  ftscreens.py  freeturn screens, plan, clients, traffic, owner link, logs
+  traffic.py    wg peer parsing, byte and time formatting, per client usage and daily counters
   xray.py       vless model, post quantum encryption, links, config, state
   scan.py       post quantum probe, certificate parsing, ranking, candidate list
   xrayrpc.py    RPC client, script bootstrap, subscription state
@@ -155,7 +156,13 @@ FreeTurn is a second engine next to Xray, driven through the same proto 3 envelo
 | Plan fields | method `systemd\|docker`, backend `new\|external`, udp port, tunnel port and subnet, mode `udp\|tcp`, obfuscation `rtpopus3\|rtpopus2\|rtpopus\|none`, core version |
 | Secrets | the obfuscation key and client ids stay on the server, the bot keeps only the fact that a key exists |
 | Clients | `owner` is protected, guests are added by name, each guest gets a completed `freeturn://` link and a cleaned client config |
+| Traffic | the agent runs `wg show <iface> dump` with argv only, the bot maps every peer to its client by public key and shows received, sent, total, speed, last seen and today |
 | Errors | the script code set is mapped to localized text, unknown codes fall back to the message from the script |
+
+Traffic monitoring reads the counters of the engine interface, so the numbers survive a bot restart and are kept in the
+state file as a baseline per client. A counter that goes backwards means the interface was restarted, the bot notices that
+and starts the daily baseline again instead of showing a negative number. The counter dump is bounded at 8192 peers, one
+screen holds six clients, and two thousand peers still build a page in under a tenth of a second.
 
 Client apps for `freeturn://` links:
 
