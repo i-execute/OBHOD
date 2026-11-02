@@ -342,25 +342,6 @@ def _decode_time(tag: int, raw: bytes) -> str:
     return "%04d-%02d-%02dT%02d:%02d:%02dZ" % (year, month, day, hour, minute, second)
 
 
-def _key_bits(key_type: str, spki: bytes) -> int:
-    try:
-        if key_type == "RSA":
-            tag, start, end = _tlv(spki, 0)
-            parts = _children(spki, start, end)
-            if len(parts) < 2:
-                return 0
-            modulus = parts[0]
-            raw = spki[modulus[1] : modulus[2]]
-            while raw[:1] == b"\x00":
-                raw = raw[1:]
-            return len(raw) * 8
-        if key_type in {"EC", "Ed25519", "Ed448"}:
-            return 0
-    except ScanError:
-        return 0
-    return 0
-
-
 @dataclass
 class Certificate:
     subject_cn: str = ""
@@ -684,26 +665,6 @@ def tls_fit(result: ScanResult) -> tuple[bool, str]:
     if not result.pq_hybrid:
         return False, "the target does not negotiate x25519mlkem768"
     return True, "a tls 1.3 target with the hybrid post quantum group"
-
-
-def security_fit(result: ScanResult) -> list[tuple[str, bool, str]]:
-    reality_ok, reality_why = reality_fit(result)
-    ml_ok, ml_why = ml_dsa_fit(result)
-    tls_ok, tls_why = tls_fit(result)
-    return [
-        ("reality", reality_ok, reality_why),
-        ("reality-mldsa65", reality_ok and ml_ok, ml_why if reality_ok else reality_why),
-        ("tls", tls_ok, tls_why),
-        ("none", True, "vless encryption does not depend on the target"),
-    ]
-
-
-def pq_summary(result: ScanResult) -> str:
-    if not result.pq_group:
-        return "none"
-    if result.pq_draft:
-        return result.pq_group + " draft"
-    return result.pq_group
 
 
 def proxy_header(kind: int, local: tuple[str, int], remote: tuple[str, int]) -> bytes:

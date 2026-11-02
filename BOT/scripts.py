@@ -6,8 +6,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import fwguard
-
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 SCRIPT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MAX_SCRIPTS = 64
@@ -189,9 +187,3 @@ def merge(cached: list[Record], probes: dict[str, dict[str, Any]], tag: str = ""
     return report
 
 
-def aliases() -> list[str]:
-    return sorted({item.asset.rsplit("/", 1)[-1] for item in TARGETS})
-
-
-def vk_holder() -> str:
-    return fwguard.holders()

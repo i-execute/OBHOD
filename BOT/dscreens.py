@@ -161,7 +161,7 @@ def vk_screen(view: DbgView) -> Any:
     blocks.append(
         table(
             [
-                ("world", t("DBG_VK_DOMAINS"), code(len(data.get("domains") or []))),
+                ("world", t("DBG_VK_DOMAINS"), code(data.get("asns") or t("UI_NONE"))),
                 ("module", t("DBG_VK_PREFIXES"), code(len(cidrs))),
                 ("add", t("DBG_VK_ADDED"), code(len(data.get("added") or []))),
                 ("clock", t("DBG_INFO_TITLE"), code(str(data.get("reason") or "-")[:24])),

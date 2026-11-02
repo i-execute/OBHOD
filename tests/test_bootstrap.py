@@ -9,6 +9,8 @@ import pytest
 
 from BOT import bootstrap
 from BOT import i18n
+from BOT.config import ConfigError
+from BOT.config import Config
 from BOT.bootstrap import (
     CHECK_SCRIPT,
     ENV_FILE,
@@ -404,3 +406,55 @@ def test_parse_args_check_flag() -> None:
     args = parse_args(["--token", "123:ABC", "--check"])
     assert args["check"] is True
     assert plan_from(args).check is True
+
+
+def test_the_entry_point_reports_a_broken_configuration(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    from BOT import main as entry
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise ConfigError("BOT_TOKEN is required")
+
+    monkeypatch.setattr(entry.Config, "load", boom)
+    assert asyncio.run(entry.amain()) == 2
+    assert "BOT_TOKEN is required" in capsys.readouterr().err
+
+
+def test_the_entry_point_cleans_up_after_a_signal(monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import main as entry
+
+    cfg = Config(bot_token="123:abc", api_id=1, api_hash="x", admin_id=7, state_dir=Path("/tmp"), log_level="INFO")
+    monkeypatch.setattr(entry.Config, "load", lambda: cfg)
+
+    class FakeBot:
+        def __init__(self, _cfg: object) -> None:
+            self.app = None
+
+        async def run(self) -> None:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(entry, "Bot", FakeBot)
+    assert asyncio.run(entry.amain()) == 0
+
+
+def test_the_entry_point_fails_when_the_bot_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import main as entry
+
+    cfg = Config(bot_token="123:abc", api_id=1, api_hash="x", admin_id=7, state_dir=Path("/tmp"), log_level="INFO")
+    monkeypatch.setattr(entry.Config, "load", lambda: cfg)
+
+    class Broken:
+        def __init__(self, _cfg: object) -> None:
+            self.app = None
+
+        async def run(self) -> None:
+            raise RuntimeError("the loop died")
+
+    monkeypatch.setattr(entry, "Bot", Broken)
+    assert asyncio.run(entry.amain()) == 1
+
+
+def test_the_logging_setup_accepts_any_level() -> None:
+    from BOT import main as entry
+
+    entry.setup_logging("not-a-level")
+    entry.setup_logging("debug")

@@ -685,3 +685,18 @@ def test_a_broken_port_never_breaks_the_registry() -> None:
     assert safe_port("2096") == 2096
     assert safe_port(None) == 2096
     assert safe_port(-1) == 2096
+
+
+def test_the_registry_is_cached_until_the_file_changes(server, tmp_path: Path) -> None:
+    port, body, push = server
+    entry = next(iter(body["entries"].values()))
+    url = "http://127.0.0.1:%d%s" % (port, entry["path"])
+    first = fetch(url)
+    assert first[0] == 200
+    again = fetch(url)
+    assert again[1] == first[1]
+    entry["links"] = ["vless://changed"]
+    push()
+    later = fetch(url)
+    assert later[0] == 200
+    assert base64.b64decode(later[1]).decode().strip() == "vless://changed"

@@ -1041,6 +1041,12 @@ class EN:
     NOTICE_SUBS_TRAFFIC = "traffic updated from the core api"
     ERR_SUBS_TRAFFIC = "the core api did not answer, check the api in the core settings"
     XR_SUBS_LINKS_MORE = "and {count} more inside the link"
+    XR_SCAN_FIT = "target fits"
+    XR_SCAN_FIT_REALITY = "reality"
+    XR_SCAN_FIT_MLDSA = "ml-dsa-65"
+    XR_SCAN_FIT_TLS = "tls 1.3"
+    XR_SCAN_FIT_YES = "yes"
+    XR_SCAN_FIT_NO = "no"
 
 class RU:
     LANG_CODE = "ru"
@@ -2082,6 +2088,12 @@ class RU:
     NOTICE_SUBS_TRAFFIC = "трафик обновлён через api ядра"
     ERR_SUBS_TRAFFIC = "api ядра не отвечает, проверь api в настройках ядра"
     XR_SUBS_LINKS_MORE = "и ещё {count} внутри ссылки"
+    XR_SCAN_FIT = "подходит для"
+    XR_SCAN_FIT_REALITY = "reality"
+    XR_SCAN_FIT_MLDSA = "ml-dsa-65"
+    XR_SCAN_FIT_TLS = "tls 1.3"
+    XR_SCAN_FIT_YES = "да"
+    XR_SCAN_FIT_NO = "нет"
 
 class ZH:
     LANG_CODE = "zh"
@@ -3123,4 +3135,10 @@ class ZH:
     NOTICE_SUBS_TRAFFIC = "已通过内核 api 更新流量"
     ERR_SUBS_TRAFFIC = "内核 api 未响应, 请检查内核设置中的 api"
     XR_SUBS_LINKS_MORE = "链接内还有 {count} 条"
+    XR_SCAN_FIT = "适用于"
+    XR_SCAN_FIT_REALITY = "REALITY 伪装"
+    XR_SCAN_FIT_MLDSA = "ML-DSA-65 签名"
+    XR_SCAN_FIT_TLS = "TLS 1.3 握手"
+    XR_SCAN_FIT_YES = "是"
+    XR_SCAN_FIT_NO = "否"
 

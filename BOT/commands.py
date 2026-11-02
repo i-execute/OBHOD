@@ -49,13 +49,6 @@ def known(raw: object) -> Command | None:
     return None
 
 
-def describes() -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
-    for item in COMMANDS:
-        out.append({"command": item.menu_name(), "description": item.desc_key})
-    return out
-
-
 def menu(translate) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for item in COMMANDS:

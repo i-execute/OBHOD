@@ -35,7 +35,7 @@ SECURITY_LOG = os.environ.get("OBHOD_SECURITY_LOG", "/var/log/obhod/security.log
 SECLOG_ON = os.environ.get("OBHOD_SECLOG", "1").strip().lower() not in {"0", "off", "no", "false", "disabled"}
 BLOCKING = os.environ.get("OBHOD_SUB_BLOCK", "1").strip().lower() not in {"0", "off", "no", "false", "disabled"}
 SECLOG_LOCK = threading.Lock()
-RATE_LIMIT = env_int("OBHOD_SUB_RATE", 10, 5, 6000)
+RATE_LIMIT = env_int("OBHOD_SUB_RATE", 60, 5, 6000)
 RATE_WINDOW = 60.0
 MAX_CLIENTS = env_int("OBHOD_SUB_MAX_CLIENTS", 64, 4, 512)
 SOCKET_TIMEOUT = 15.0
@@ -186,7 +186,25 @@ def header_safe(value, limit=200):
     return text[:limit]
 
 
+CACHE = {"key": None, "body": None}
+
+
+def registry_stamp():
+    try:
+        info = os.stat(REGISTRY)
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size, info.st_ino)
+
+
 def read_registry():
+    stamp = registry_stamp()
+    if stamp is None:
+        CACHE["key"] = None
+        CACHE["body"] = None
+        return {"port": PORT, "entries": {}}
+    if CACHE["key"] == stamp and isinstance(CACHE["body"], dict):
+        return CACHE["body"]
     try:
         if os.path.islink(REGISTRY):
             return {"port": PORT, "entries": {}}
@@ -199,6 +217,8 @@ def read_registry():
     entries = body.get("entries")
     if not isinstance(entries, dict):
         body["entries"] = {}
+    CACHE["key"] = stamp
+    CACHE["body"] = body
     return body
 
 

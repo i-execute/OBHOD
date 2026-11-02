@@ -139,28 +139,6 @@ def x25519_keypair() -> tuple[str, str]:
     return _b64url(raw), _b64url(public)
 
 
-def parse_x25519_output(text: str) -> tuple[str, str]:
-    private = ""
-    public = ""
-    for line in (text or "").splitlines():
-        low = line.lower()
-        value = line.split(":", 1)[1].strip() if ":" in line else ""
-        if not value:
-            continue
-        if "private" in low and not private:
-            private = value
-        elif "public" in low and not public:
-            public = value
-    if not private or not public:
-        raise XrayError("xray x25519 returned no key pair")
-    try:
-        if len(_unb64url(private)) != 32 or len(_unb64url(public)) != 32:
-            raise XrayError("x25519 keys have the wrong length")
-    except (ValueError, IndexError):
-        raise XrayError("x25519 keys are not decodable") from None
-    return private, public
-
-
 def gen_uuid() -> str:
     return str(uuidlib.uuid4())
 
@@ -168,11 +146,6 @@ def gen_uuid() -> str:
 def gen_short_id(length: int = 8) -> str:
     length = max(2, min(16, int(length)))
     return secrets.token_hex((length + 1) // 2)[:length]
-
-
-def gen_email(prefix: str = "user") -> str:
-    clean = re.sub(r"[^A-Za-z0-9._-]", "", prefix or "user") or "user"
-    return clean + "-" + secrets.token_hex(3)
 
 
 def gen_sub_segment(length: int = SUB_SEGMENT_LEN) -> str:
@@ -313,24 +286,6 @@ def valid_ticket(value: object) -> str:
     if not TICKET_RE.match(text):
         raise XrayError("a ticket must look like 600s or 300-600s")
     return text
-
-
-def split_authority(value: str) -> tuple[str, int]:
-    text = (value or "").strip()
-    if text.startswith("["):
-        host, _, rest = text[1:].partition("]")
-        port = rest.lstrip(":")
-    elif text.count(":") == 1:
-        host, port = text.split(":", 1)
-    else:
-        host, port = text, ""
-    try:
-        number = int(port or 0)
-    except ValueError:
-        raise XrayError("a port must be a number") from None
-    if not 1 <= number <= 65535:
-        raise XrayError("a port must be between 1 and 65535")
-    return host.strip(), number
 
 
 def join_authority(host: str, port: int) -> str:
@@ -644,18 +599,6 @@ def relevant_fields(security: str, network: str) -> tuple[str, ...]:
     if network not in NETWORKS:
         raise XrayError("network must be one of " + ", ".join(NETWORKS))
     return RELEVANT_FIELDS[(security, network)]
-
-
-def field_applies(security: str, network: str, name: str) -> bool:
-    return name in relevant_fields(security, network)
-
-
-def security_needs_target(security: str) -> bool:
-    return security == "reality"
-
-
-def security_supports_mldsa65(security: str) -> bool:
-    return security == "reality"
 
 
 def new_inbound(

@@ -8,7 +8,7 @@ from typing import Any
 from . import i18n, inline, screens, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
-from .scan import CONCURRENCY, ScanResult, best_candidate, parse_candidates, scan_targets
+from .scan import CONCURRENCY, ScanResult, parse_candidates, scan_targets
 from .ui import button, code, copy_row, muted, pre, quote, row, screen
 from .xray import (
     DEFAULT_IGNOREIP,
@@ -1084,11 +1084,6 @@ def parse_port(value: object) -> int:
     return port
 
 
-def ensure_slash(value: str) -> str:
-    text = (value or "/").strip() or "/"
-    return text if text.startswith("/") else "/" + text
-
-
 def state_report(state: CoreState) -> dict[str, Any]:
     return {
         "installed": state.installed,
@@ -1109,7 +1104,3 @@ def state_report(state: CoreState) -> dict[str, Any]:
     }
 
 
-def best_of(results: list[ScanResult]) -> ScanResult | None:
-    if not results:
-        return None
-    return best_candidate(results)

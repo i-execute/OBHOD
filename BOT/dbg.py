@@ -213,6 +213,7 @@ class DebugPanel:
             "cidrs": cidrs,
             "reason": reason,
             "domains": [holder for _asn, holder in fwguard.ASNS],
+            "asns": fwguard.holders(),
             "added": sorted(fresh - old)[:64] if old else list(cidrs)[:64],
             "removed": sorted(old - fresh)[:32],
             "changed": bool(old) and fresh != old,

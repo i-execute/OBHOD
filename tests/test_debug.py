@@ -351,3 +351,14 @@ def test_the_guard_passes_the_keep_list(tmp_path: Path) -> None:
     guard_calls = [call for call in control.calls if call and call[0] == "firewall"]
     assert guard_calls
     assert guard_calls[0][4] == "22,443,2096,56000" or "22" in guard_calls[0][4]
+
+
+def test_the_vk_screen_names_the_announced_networks() -> None:
+    from BOT import dscreens, fwguard
+    from tests.fakes import make_bot
+
+    bot = make_bot(Path("/tmp"))
+    bot.debug.vk = {"cidrs": ["203.0.113.0/24"], "reason": "", "domains": ["x"], "asns": fwguard.holders(), "added": [], "removed": [], "checked_at": 0}
+    html = dscreens.vk_screen(bot.debug.view()).build()
+    assert "AS47541" in html
+    assert "AS47764" in html

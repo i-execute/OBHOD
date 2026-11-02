@@ -57,7 +57,7 @@ The path is the canonical client path and does not change when an inbound is add
 context, `?format=clash` answers 400. The server sends `Profile-Update-Interval`, `Profile-Title`,
 `Profile-Web-Page-Url`, `Support-Url`, `Announce` and `Subscription-Userinfo` with the real quota and the
 traffic taken from `xray api statsquery`, answers `404` for a wrong key, a short segment or an unknown id,
-rate limits each address and backs off exponentially on repeated misses. The bot pushes the registry after
+rate limits each address at 60 requests a minute and backs off exponentially on repeated misses. The bot pushes the registry after
 every change, so the link is live without pressing apply.
 
 ## Cores, scripts and cache
@@ -130,7 +130,7 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2078 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2110 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, and the hardening suites in `tests/test_security.py` and

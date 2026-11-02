@@ -12,8 +12,8 @@
     "Storage/remote/fail2ban_agent.py": "42c99a743ca77aa1d55c84f6f62366e102cd31374b2d6292952bae3373a1add1",
     "Storage/remote/freeturn_agent.py": "ee7c27c4d38d4f5ba4327b8e89853d35a1b00a4a7c068db91e8335872ca5328a",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
-    "Storage/remote/sub_server.py": "64a834aff8349277c5edd59b530d5183931c568d2bfe9e672497e5fbc31d7c2d",
-    "Storage/remote/xray_agent.py": "260089098221aa07be6eca01abdecae51c0557977645d24acba0e4675c58f358",
+    "Storage/remote/sub_server.py": "1385c569c45171537660e973184034acb3f60d2a463e9e62d6427162f0f9ae71",
+    "Storage/remote/xray_agent.py": "0687fa4fc6b33f40301eb202ba1ee93698924446f7d9baab9ca22d85f87acbf2",
     "tools/obhod_watchdog.py": "ccd3378bfe06c60a0b91ccd9e2b4e3ab19d7196647a935877143031b59d04cbe"
   },
   "policy": [

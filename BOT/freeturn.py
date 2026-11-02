@@ -931,13 +931,3 @@ def normalize_conf(text: str) -> str:
     return "\n".join(lines)
 
 
-def summarize(config: FtConfig, state: FtState) -> list[tuple[str, str]]:
-    return [
-        ("method", config.method),
-        ("backend", config.backend),
-        ("listen", str(config.listen_port)),
-        ("wg", "%d %s" % (config.wg_port, config.wg_net) if config.backend == "new" else "-"),
-        ("mode", config.mode),
-        ("obf", config.obf_profile),
-        ("version", state.version or config.version),
-    ]

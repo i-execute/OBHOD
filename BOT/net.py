@@ -6,8 +6,6 @@ import socket
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import scripts
-
 HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 CIDR_RE = re.compile(r"^([0-9]{1,3}(\.[0-9]{1,3}){3})/([0-9]{1,2})$")
 MAX_SUBNET = 24
@@ -253,5 +251,3 @@ def trace_text(exc: BaseException) -> str:
     return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-3500:]
 
 
-def script_report(cache: list[dict[str, Any]], probes: dict[str, dict[str, Any]], tag: str = "") -> scripts.Report:
-    return scripts.merge(scripts.parse_cache(cache), probes, tag)

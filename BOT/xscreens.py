@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import i18n, inline
-from .scan import ScanResult
+from .scan import ScanResult, ml_dsa_fit, reality_fit, tls_fit
 from .ui import (
     bold,
     bullet_list,
@@ -13,7 +13,7 @@ from .ui import (
     input_row,
     fitted,
     details,
-    divider,
+
     heading,
     inline_button,
     muted,
@@ -24,7 +24,7 @@ from .ui import (
     table,
 )
 from .xray import (
-    FINGERPRINTS,
+
     NETWORKS,
     SECURITIES,
     SUB_SEGMENT_LEN,
@@ -491,6 +491,12 @@ def scan_screen(view: XrayView, results: list[ScanResult] | None = None) -> Any:
         best = next((item for item in rows if item.feasible), None)
         if best is not None:
             blocks.append(quote(muted(t("XR_SCAN_BEST", target=best.target, latency=best.latency_ms))))
+            fits = [
+                ("lock", t("XR_SCAN_FIT_REALITY"), reality_fit(best)),
+                ("shield", t("XR_SCAN_FIT_MLDSA"), ml_dsa_fit(best)),
+                ("world", t("XR_SCAN_FIT_TLS"), tls_fit(best)),
+            ]
+            blocks.append(table([(icon, name, t("XR_SCAN_FIT_YES") if ok else t("XR_SCAN_FIT_NO"), note) for icon, name, (ok, note) in fits], (t("XR_SCAN_FIT"), t("UI_VALUE"))))
     else:
         blocks.append(quote(muted(t("XR_SCAN_EMPTY"))))
     buttons = [
@@ -583,5 +589,3 @@ def stat_line(inbound: XrayInbound) -> str:
     return f"{inbound.protocol} {inbound.port} {inbound.network} {inbound.security}"
 
 
-def fingerprint_note(lang: str) -> str:
-    return divider() + "<p>" + i18n.t("XR_FINGERPRINTS", lang, values=", ".join(FINGERPRINTS)) + "</p>"

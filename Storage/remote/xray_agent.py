@@ -599,7 +599,10 @@ def restore_config(backup):
 def write_config(payload):
     if not payload:
         raise ScriptError("config_missing", "no configuration was supplied", "config")
-    config = json.loads(payload.decode("utf-8"))
+    try:
+        config = json.loads(payload.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise ScriptError("config_invalid", "the configuration is not json", "config") from None
     if not isinstance(config, dict) or not config.get("inbounds"):
         raise ScriptError("config_invalid", "the configuration has no inbound", "config")
     ok, text = test_config(payload)

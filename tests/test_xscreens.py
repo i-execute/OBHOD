@@ -187,3 +187,37 @@ def test_version_row_and_defaults() -> None:
     assert "xr:core:ver:latest" in xscreens.version_row("v26.10.31")
     assert len(xscreens.default_targets()) >= 100
     assert xscreens.stat_line(new_inbound("vless", 443, "raw", "reality")) == "vless 443 raw reality"
+
+
+def test_the_scan_screen_reports_what_the_target_fits() -> None:
+    from BOT import xscreens
+    from BOT.scan import ScanResult
+    from BOT.xray import XrayState
+
+    state = XrayState()
+    state.scan_targets = ["www.cloudflare.com:443"]
+    state.scan_results = [
+        ScanResult(
+            host="www.cloudflare.com",
+            port=443,
+            feasible=True,
+            latency_ms=31,
+            tls13=True,
+            h2=True,
+            x25519=True,
+            pq_hybrid=True,
+            cert_valid=True,
+            days_left=90,
+            cert_chain_bytes=4096,
+            ml_dsa_ready=True,
+            cert_key_type="ECDSA",
+            server_names=["cloudflare"],
+            pq_group="x25519mlkem768",
+        ).to_dict()
+    ]
+    view = xscreens.XrayView(state=state, lang="en")
+    html = xscreens.scan_screen(view).build()
+    assert i18n.t("XR_SCAN_FIT_REALITY", "en") in html
+    assert i18n.t("XR_SCAN_FIT_MLDSA", "en") in html
+    assert i18n.t("XR_SCAN_FIT_TLS", "en") in html
+    assert html.count(i18n.t("XR_SCAN_FIT_YES", "en")) == 3

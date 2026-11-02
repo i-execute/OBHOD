@@ -45,10 +45,6 @@ def bold(value: object) -> str:
     return f"<b>{esc(value)}</b>"
 
 
-def italic(value: object) -> str:
-    return f"<i>{esc(value)}</i>"
-
-
 def muted(value: object) -> str:
     return f'<span style="color: #8a8a8a">{esc(value)}</span>'
 
@@ -127,11 +123,6 @@ def input_row(label: str, ident: str, ctx: object = "-", lang: str = "en") -> st
 def inline_button(label: str, query: str, style: str = "", icon: str = "") -> str:
     attr = f' style="{esc(style)}"' if style else ""
     return f'<tg-button type="switch_inline_query_current_chat"{attr} query="{esc(query)}">{ico(icon, "")}{esc(label)}</tg-button>'
-
-
-def inline_row(label: str, query: str, style: str = "", extra: Iterable[str] = ()) -> str:
-    items = [inline_button(label, query, style)] + [item for item in extra if item]
-    return '<tg-button-row align="left">' + "".join(items) + "</tg-button-row>"
 
 
 def row(*buttons: Button | str, align: str = "left") -> str:

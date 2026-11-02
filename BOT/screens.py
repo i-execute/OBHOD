@@ -7,7 +7,7 @@ from . import cores, i18n
 from .guard import BanState, SshState
 from .store import State
 from .ui import (
-    big,
+
     bold,
     bullet_list,
     button,
@@ -15,7 +15,7 @@ from .ui import (
     input_row,
     fitted,
     details,
-    divider,
+
     heading,
     inline_button,
     muted,
@@ -500,11 +500,6 @@ def logs_screen(view: View, lines: list[str], tail: int) -> Any:
         row(button(t("UI_REFRESH"), f"xr:logs:{tail}", icon="refresh"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("LOGS_TITLE"), t("LOGS_SUBTITLE"), blocks, buttons, icon="logs")
-
-
-def guard_rows(view: View) -> str:
-    t = view.tr()
-    return divider() + row(big(t("NAV_FAIL2BAN"), "nav:ban"), big(t("NAV_SSHD"), "nav:sshd"))
 
 
 def subscription_hint(path: str, url: str, lang: str = i18n.DEFAULT_LANGUAGE) -> Any:
