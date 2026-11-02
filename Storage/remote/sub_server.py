@@ -26,6 +26,7 @@ REGISTRY = os.environ.get("OBHOD_SUB_REGISTRY", "/var/lib/xray-manager/subscript
 PORT = env_int("OBHOD_SUB_PORT", 2096, 1, 65535)
 BIND = os.environ.get("OBHOD_SUB_BIND", "0.0.0.0")
 SEGMENT = re.compile(r"^[A-Za-z0-9_-]{64}$")
+HOST_HEADER = re.compile(r"^(?:[a-z0-9](?:[a-z0-9.-]{0,251})|\[[0-9a-f:.]{3,45}\])(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$")
 CACHE_SECONDS = 60
 UA_CLIENT = "v2rayNG"
 LOCK = threading.Lock()
@@ -224,6 +225,66 @@ def payload_of(entry):
     return encoded if len(encoded) <= MAX_BODY else ""
 
 
+def counter(entry, name):
+    try:
+        return max(int(entry.get(name) or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def userinfo(entry):
+    return "upload=%d; download=%d; total=%d; expire=%d" % (
+        counter(entry, "up"),
+        counter(entry, "down"),
+        counter(entry, "total"),
+        counter(entry, "expire"),
+    )
+
+
+def title_header(entry):
+    title = header_safe(entry.get("title") or "OBHOD", 120)
+    return "base64:" + base64.b64encode(title.encode("utf-8")).decode("ascii")
+
+
+def base_url(host):
+    text = header_safe(host or "", 120).strip().lower()
+    if not text or not HOST_HEADER.match(text):
+        return ""
+    if text.rsplit(":", 1)[-1] == "0" and not text.endswith("]"):
+        return ""
+    return "http://" + text
+
+
+def info_body(entry, link_count, base=""):
+    used = counter(entry, "up") + counter(entry, "down")
+    total = counter(entry, "total")
+    return {
+        "sId": "",
+        "enabled": entry.get("enabled") is not False,
+        "isOnline": False,
+        "download": counter(entry, "down"),
+        "upload": counter(entry, "up"),
+        "total": total,
+        "used": used,
+        "remained": max(total - used, 0) if total else 0,
+        "expire": counter(entry, "expire"),
+        "lastOnline": 0,
+        "downloadByte": counter(entry, "down"),
+        "uploadByte": counter(entry, "up"),
+        "totalByte": total,
+        "subUrl": base + str(entry.get("path") or ""),
+        "subJsonUrl": base + str(entry.get("path") or "") + "/json",
+        "subClashUrl": "",
+        "subTitle": str(entry.get("title") or "OBHOD")[:64],
+        "subSupportUrl": str(entry.get("support_url") or ""),
+        "subUpdates": int(refresh_hours(entry)),
+        "emails": [str(entry.get("email") or "")][:1] if entry.get("email") else [],
+        "datepicker": "gregorian",
+        "announce": str(entry.get("announce") or "")[:200],
+        "links": link_count,
+    }
+
+
 def refresh_hours(entry):
     try:
         value = int(entry.get("refresh") or 12)
@@ -232,16 +293,27 @@ def refresh_hours(entry):
     return str(max(1, min(168, value)))
 
 
-def header_lines(entry, filename):
+def header_lines(entry, filename, base=""):
     return [
         ("Content-Type", "text/plain; charset=utf-8"),
         ("Cache-Control", "no-store"),
-        ("Profile-Title", header_safe(entry.get("title") or "OBHOD", 120)),
+        ("Profile-Title", title_header(entry)),
         ("Profile-Update-Interval", refresh_hours(entry)),
-        ("Subscription-Userinfo", "upload=0; download=0; total=0; expire=0"),
+        ("Subscription-Userinfo", userinfo(entry)),
         ("Content-Disposition", "attachment; filename*=UTF-8''" + filename),
-        ("Profile-Web-Page-Url", header_safe(entry.get("path") or "", 120)),
-    ]
+        ("Profile-Web-Page-Url", base + header_safe(entry.get("path") or "", 200)),
+    ] + announce_lines(entry)
+
+
+def announce_lines(entry):
+    support = header_safe(entry.get("support_url") or "", 200)
+    announce = header_safe(entry.get("announce") or "", 200)
+    lines = []
+    if support.startswith("http://") or support.startswith("https://"):
+        lines.append(("Support-Url", support))
+    if announce:
+        lines.append(("Announce", announce))
+    return lines
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -279,7 +351,7 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("%s %s\n" % (self.address_string(), line))
         sys.stderr.flush()
 
-    def send_plain(self, code, body, extra=None):
+    def send_plain(self, code, body, extra=None, content_type="text/plain; charset=utf-8"):
         access_note(self.client_address[0], code)
         if code in {403, 404}:
             record_miss(self.client_address[0], True)
@@ -288,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
             record_miss(self.client_address[0], False)
         raw = body.encode("utf-8")
         self.send_response(code)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -308,7 +380,14 @@ class Handler(BaseHTTPRequestHandler):
         if throttled(self.client_address[0]):
             self.send_plain(429, "slow down\n")
             return
-        path = self.path.split("?", 1)[0][:512]
+        raw = self.path[:1024]
+        path, _, query = raw.partition("?")
+        path = path[:512]
+        want = ""
+        for pair in query.split("&"):
+            key, _, value = pair.partition("=")
+            if key.strip().lower() == "format":
+                want = value.strip().lower()[:16]
         if path in {"/", "/health", "/favicon.ico"}:
             if path == "/health":
                 self.send_plain(200, "ok\n")
@@ -316,9 +395,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_plain(404, "not found\n")
             return
         parts = [item for item in path.split("/") if item]
-        want_json = len(parts) == 3 and parts[2] == "json"
-        if want_json:
+        if len(parts) == 3 and parts[2].lower() in {"json", "info"}:
+            want = want or parts[2].lower()
             parts = parts[:2]
+        want_json = want in {"json", "info"}
+        want_info = want == "info"
+        if want == "clash":
+            self.send_plain(400, "clash is not served by this server\n")
+            return
         if len(parts) != 2 or not SEGMENT.match(parts[0]) or not SEGMENT.match(parts[1]):
             self.send_plain(404, "not found\n")
             return
@@ -340,23 +424,35 @@ class Handler(BaseHTTPRequestHandler):
         if not payload:
             self.send_plain(404, "empty\n")
             return
+        base = base_url(self.headers.get("Host"))
         if want_json:
-            body = json.dumps(
-                {
+            count = len([item for item in entry.get("links") or [] if str(item).strip()])
+            if want_info:
+                document = info_body(entry, count, base)
+            else:
+                document = {
                     "title": str(entry.get("title") or "OBHOD")[:64],
-                    "count": len([item for item in entry.get("links") or [] if str(item).strip()]),
+                    "count": count,
                     "refresh": int(refresh_hours(entry)),
+                    "userinfo": userinfo(entry),
                     "payload": payload,
-                },
-                ensure_ascii=True,
-                sort_keys=True,
+                }
+            body = json.dumps(document, ensure_ascii=True, sort_keys=True)
+            self.send_plain(
+                200,
+                body + "\n",
+                [
+                    (key, value)
+                    for key, value in header_lines(entry, "obhod", base)
+                    if key not in {"Content-Type", "Content-Disposition"}
+                ],
+                "application/json; charset=utf-8",
             )
-            self.send_plain(200, body + "\n", [("Content-Type", "application/json; charset=utf-8")])
             return
         filename = str(entry.get("filename") or "obhod")
         if not re.match(r"^[A-Za-z0-9_.-]{1,64}$", filename):
             filename = "obhod"
-        extra = header_lines(entry, filename)
+        extra = header_lines(entry, filename, base_url(self.headers.get("Host")))
         access_note(self.client_address[0], 200)
         raw = payload.encode("ascii")
         self.send_response(200)

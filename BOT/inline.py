@@ -78,6 +78,8 @@ FIELDS: dict[str, Field] = {
     "xr_log_level": Field("xr_log_level", "FLD_XR_LOG_LEVEL", "FLH_XR_LOG_LEVEL", "warning"),
     "xr_sub_port": Field("xr_sub_port", "FLD_XR_SUB_PORT", "FLH_XR_SUB_PORT", "2096"),
     "xr_sub_address": Field("xr_sub_address", "FLD_XR_SUB_ADDRESS", "FLH_XR_SUB_ADDRESS", "203.0.113.10"),
+    "xr_sub_support": Field("xr_sub_support", "FLD_XR_SUB_SUPPORT", "FLH_XR_SUB_SUPPORT", "https://t.me/your_support"),
+    "xr_sub_announce": Field("xr_sub_announce", "FLD_XR_SUB_ANNOUNCE", "FLH_XR_SUB_ANNOUNCE", "the server works, keep the traffic low"),
     "xr_sub_refresh": Field("xr_sub_refresh", "FLD_XR_SUB_REFRESH", "FLH_XR_SUB_REFRESH", "12"),
     "xr_ban_ip": Field("xr_ban_ip", "FLD_XR_BAN_IP", "FLH_XR_BAN_IP", "203.0.113.10"),
     "xr_bantime": Field("xr_bantime", "FLD_XR_BANTIME", "FLH_XR_BANTIME", "30"),

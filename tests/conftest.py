@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,10 +24,11 @@ def loopback_address(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def clean_icon_switch() -> None:
+def clean_icon_switch() -> Any:
     try:
         from BOT import ui
     except ImportError:
+        yield
         return
     ui.use_icons(False)
     yield

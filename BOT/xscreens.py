@@ -288,7 +288,9 @@ def field_row(inbound: XrayInbound, lang: str) -> str:
 def links_screen(view: XrayView, inbound: XrayInbound, address: str, links: list[tuple[str, str]]) -> Any:
     t = view.tr()
     blocks = banner(view, t)
-    blocks.append(f"<p>{t('XR_LINKS_ADDRESS', address=code(address))}</p>")
+    blocks.append(f"<p>{t('XR_LINKS_ADDRESS', address=code(address or t('UI_NOT_SET')))}</p>")
+    if not address:
+        blocks.append(quote(bold(t("XR_LINKS_NO_ADDRESS"))))
     if not links:
         blocks.append(quote(bold(t("XR_LINKS_EMPTY"))))
     copyable = []
@@ -372,6 +374,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         ("link", t("XR_SUBS_ADDRESS"), code(state.sub_address or t("UI_NOT_SET"))),
         ("link", t("XR_SUBS_FORMAT"), code(state.sub_path_pattern())),
         ("clock", t("SET_SUB_REFRESH"), code(state.sub_refresh)),
+        ("link", t("SET_SUB_SUPPORT"), code(state.support_url() or t("UI_NOT_SET"))),
+        ("bell", t("SET_SUB_ANNOUNCE"), code(state.announce() or t("UI_NOT_SET"))),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if rows_data:
@@ -379,14 +383,16 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         blocks.append(pre("\n".join(item[2] for item in rows_data[:3] if item[2])))
     else:
         blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
+    if not state.address(view.address):
+        blocks.append(quote(bold(t("XR_SUBS_NO_ADDRESS"))))
     blocks.append(quote(muted(t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN))))
     blocks.append(f"<p>{bold(t('XR_SUBS_RAW'))} {muted(t('XR_SUBS_RAW_NOTE'))}</p>")
     bundle = view.bundle
     if bundle is not None and bundle.links:
         host = state.address(view.address)
         pairs = [
-            ("link", t("XR_SUBS_ALL"), code(bundle.url(host, state.sub_port))),
-            ("file", t("XR_SUBS_JSON"), code(bundle.json_url(host, state.sub_port))),
+            ("link", t("XR_SUBS_ALL"), code(bundle.safe_url(host, state.sub_port) or t("UI_NOT_SET"))),
+            ("file", t("XR_SUBS_JSON"), code(bundle.safe_json_url(host, state.sub_port) or t("UI_NOT_SET"))),
             ("box", t("XR_SUBS_TABLE_CLIENT"), code("%d" % len(bundle.links))),
         ]
         blocks.append(table(pairs, (t("XR_SUBS_ALL"), t("UI_VALUE"))))
@@ -395,8 +401,10 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_STATUS"), "xr:subs:status", icon="info")),
         row(button(t("XR_SUBS_STOP"), "xr:subs:stop", icon="stop"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")),
         input_row(t("XR_SUBS_PORT"), "xr_sub_port", "-", view.lang),
-        input_row(t("XR_SUBS_ADDRESS"), "xr_sub_address", "-", view.lang),
+        input_row(t("XR_SUBS_ADDRESS") if state.address(view.address) else t("XR_SUBS_SET_ADDRESS"), "xr_sub_address", "-", view.lang),
         input_row(t("SET_SUB_REFRESH"), "xr_sub_refresh", "-", view.lang),
+        input_row(t("SET_SUB_SUPPORT"), "xr_sub_support", "-", view.lang),
+        input_row(t("SET_SUB_ANNOUNCE"), "xr_sub_announce", "-", view.lang),
         back_row("xr:home"),
     ]
     return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")

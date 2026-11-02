@@ -172,7 +172,7 @@ class Bot:
         return i18n.translator(self.language)
 
     def address(self) -> str:
-        return self.state.xray.sub_address or public_address() or "127.0.0.1"
+        return self.state.xray.sub_address or public_address() or ""
 
     def save(self) -> None:
         self.store.save(self.state)

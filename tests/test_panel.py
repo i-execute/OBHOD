@@ -406,7 +406,7 @@ def test_fake_guard_is_not_touched_by_panel(tmp_path: Path) -> None:
     assert guard.calls == []
     assert isinstance(bot.state.xray, XrayState)
     assert make_inbound().clients[0].email == "owner"
-    assert item.address() == "127.0.0.1"
+    assert item.address() == ""
 
 
 def test_new_global_fields(tmp_path: Path) -> None:
@@ -440,3 +440,24 @@ def test_scan_reset_uses_the_candidate_list(tmp_path: Path) -> None:
     bot.state.xray.scan_candidates = []
     run(item.scan_action(1, 0, "reset", ""))
     assert len(bot.state.xray.scan_targets) >= 100
+
+
+def test_support_link_and_announce_are_validated(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    for bad in ("t.me/help", "https://t.me/" + "a" * 300, "https://t.me/hel p", "javascript:alert(1)"):
+        with pytest.raises(PanelError):
+            item.set_field("xr_sub_support", "", bad)
+    item.set_field("xr_sub_support", "", "https://t.me/obhod_support")
+    assert bot.state.xray.support_url() == "https://t.me/obhod_support"
+    assert bot.state.xray.sub_registry("203.0.113.10")["entries"]
+    with pytest.raises(PanelError):
+        item.set_field("xr_sub_announce", "", "a" * 300)
+    with pytest.raises(PanelError):
+        item.set_field("xr_sub_announce", "", "first\nsecond")
+    item.set_field("xr_sub_announce", "", "  the   server is fine ")
+    assert bot.state.xray.announce() == "the server is fine"
+    item.set_field("xr_sub_support", "", "")
+    assert bot.state.xray.support_url() == ""
+    entry = next(iter(bot.state.xray.sub_registry("203.0.113.10")["entries"].values()))
+    assert entry["announce"] == "the server is fine"
+    assert entry["support_url"] == ""

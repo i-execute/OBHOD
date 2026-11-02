@@ -53,6 +53,8 @@ GLOBAL_FIELDS = frozenset(
         "xr_sub_port",
         "xr_sub_address",
         "xr_sub_refresh",
+        "xr_sub_support",
+        "xr_sub_announce",
         "xr_ban_ip",
         "xr_bantime",
         "xr_ssh_bantime",
@@ -136,7 +138,7 @@ class XrayPanel:
         if sub is None:
             return "", ""
         host = self.state.address(self.address())
-        return sub.path(), sub.url(host, self.state.sub_port)
+        return sub.path(), sub.safe_url(host, self.state.sub_port)
 
     def next_port(self) -> int:
         used = set(self.state.ports())
@@ -402,10 +404,10 @@ class XrayPanel:
         out: list[tuple[str, str, str]] = []
         host = self.state.address(self.address())
         for item in self.state.subscriptions(host):
-            out.append((item.email, item.path(), item.url(host, self.state.sub_port)))
+            out.append((item.email, item.path(), item.safe_url(host, self.state.sub_port)))
         bundle = self.sub_bundle(host)
         if bundle is not None:
-            out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), bundle.url(host, self.state.sub_port)))
+            out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), bundle.safe_url(host, self.state.sub_port)))
         return out
 
     def sub_bundle(self, host: str = ""):
@@ -873,6 +875,16 @@ class XrayPanel:
                 raise PanelError("the refresh interval must be between 1 and 168 hours")
             self.state.sub_refresh = int(text)
             return t("NOTICE_SUB_REFRESH", value=self.state.sub_refresh)
+        if ident == "xr_sub_support":
+            if text and (not text.startswith(("http://", "https://")) or len(text) > 200 or " " in text):
+                raise PanelError(t("ERR_SUB_SUPPORT"))
+            self.state.sub_support_url = text
+            return t("NOTICE_SUB_SUPPORT", value=text or "-")
+        if ident == "xr_sub_announce":
+            if len(text) > 200 or "\n" in text or "\r" in text:
+                raise PanelError(t("ERR_SUB_ANNOUNCE"))
+            self.state.sub_announce = text
+            return t("NOTICE_SUB_ANNOUNCE", value=text or "-")
         if ident == "xr_ban_ip":
             if not text:
                 raise PanelError("the ip address must not be empty")
@@ -952,7 +964,7 @@ class XrayPanel:
             return screens.settings(self.view(notice=notice))
         if ident == "xr_log_level":
             return xscreens.core_screen(self.view(notice=notice))
-        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_refresh"}:
+        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
             return xscreens.subs_screen(self.view(notice=notice), self.sub_rows())
         if ident in {"xr_ban_ip", "xr_bantime", "xr_ssh_bantime", "xr_ssh_maxretry"}:
             return self.bot.ban_view(notice=notice)

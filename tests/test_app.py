@@ -302,7 +302,7 @@ def test_ban_and_sshd_callbacks(tmp_path: Path) -> None:
 def test_address_prefers_sub_address(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bot = make_bot(tmp_path)
     monkeypatch.setattr("BOT.app.public_address", lambda: "")
-    assert bot.address() == "127.0.0.1"
+    assert bot.address() == ""
     bot.state.xray.sub_address = "198.51.100.5"
     assert bot.address() == "198.51.100.5"
 

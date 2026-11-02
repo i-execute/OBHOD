@@ -38,6 +38,18 @@ class Bundle:
     def json_url(self, address: str, port: int) -> str:
         return local_url(address, port) + self.json_path()
 
+    def safe_url(self, address: str, port: int) -> str:
+        try:
+            return self.url(address, port)
+        except SubError:
+            return ""
+
+    def safe_json_url(self, address: str, port: int) -> str:
+        try:
+            return self.json_url(address, port)
+        except SubError:
+            return ""
+
     def payload(self) -> str:
         return payload_of(self.links)
 
@@ -129,10 +141,7 @@ def json_body(bundle: Bundle, address: str = "", port: int = 0) -> str:
         "refresh": 12,
     }
     if address:
-        try:
-            body["url"] = bundle.url(address, port)
-        except SubError:
-            body["url"] = ""
+        body["url"] = bundle.safe_url(address, port)
     return json.dumps(body, ensure_ascii=True, sort_keys=True)
 
 
@@ -146,6 +155,19 @@ def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port:
     bundle.links.extend(clean_links(extra_links))
     bundle.links = clean_links(bundle.links)
     return bundle
+
+
+def quota_of(client: Any) -> dict[str, int]:
+    gb = 0
+    try:
+        gb = max(int(getattr(client, "total_gb", 0) or 0), 0)
+    except (TypeError, ValueError):
+        gb = 0
+    try:
+        expire = max(int(getattr(client, "expiry_ms", 0) or 0) // 1000, 0)
+    except (TypeError, ValueError):
+        expire = 0
+    return {"up": 0, "down": 0, "total": gb * 1024 * 1024 * 1024, "expire": expire}
 
 
 def entry_of(bundle: Bundle, refresh: int = 12, title: str = "") -> dict[str, Any]:

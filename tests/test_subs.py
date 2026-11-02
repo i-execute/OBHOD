@@ -161,7 +161,10 @@ def server(tmp_path: Path):
     registry = tmp_path / "subs.json"
     port = free_port()
     state = filled()
-    body = {"port": port, "entries": state.sub_registry("127.0.0.1")}
+    body = {"port": port, "entries": state.sub_registry("203.0.113.10")["entries"]}
+    for entry in body["entries"].values():
+        if entry.get("email") == "owner":
+            entry.update({"up": 2147483648, "down": 1073741824, "total": 53687091200, "expire": 1893456000})
     body["entries"]["%s" % ("a" * 64)] = {"key": "b" * 64, "title": "OBHOD all", "refresh": 12, "enabled": True, "links": ["vless://a", "freeturn://b"], "path": "/%s/%s" % ("a" * 64, "b" * 64)}
     registry.write_text(json.dumps(body), encoding="utf-8")
     env = {
@@ -180,8 +183,11 @@ def server(tmp_path: Path):
                 break
         except OSError:
             time.sleep(0.05)
+    def push() -> None:
+        registry.write_text(json.dumps(body), encoding="utf-8")
+
     try:
-        yield port, body, state
+        yield port, body, push
     finally:
         proc.terminate()
         try:
@@ -199,7 +205,7 @@ def fetch(url: str) -> tuple[int, bytes, dict[str, str]]:
 
 
 def test_the_server_serves_the_aggregate(server) -> None:
-    port, body, _state = server
+    port, body, push = server
     url = "http://127.0.0.1:%d/%s/%s" % (port, "a" * 64, "b" * 64)
     code_value, raw, headers = fetch(url)
     assert code_value == 200
@@ -208,7 +214,7 @@ def test_the_server_serves_the_aggregate(server) -> None:
 
 
 def test_the_server_serves_the_json_view(server) -> None:
-    port, _body, _state = server
+    port, _body, push = server
     url = "http://127.0.0.1:%d/%s/%s/json" % (port, "a" * 64, "b" * 64)
     code_value, raw, _headers = fetch(url)
     assert code_value == 200
@@ -217,20 +223,64 @@ def test_the_server_serves_the_json_view(server) -> None:
     assert body["payload"]
 
 
+def test_the_server_reports_the_quota_like_3x_ui(server) -> None:
+    port, body, push = server
+    owner = next(item for item in body["entries"].values() if item.get("email") == "owner")
+    code_value, raw, headers = fetch("http://127.0.0.1:%d%s" % (port, owner["path"]))
+    assert code_value == 200
+    assert headers.get("Subscription-Userinfo") == "upload=2147483648; download=1073741824; total=53687091200; expire=1893456000"
+    assert headers.get("Profile-Update-Interval") == "12"
+    assert base64.b64decode(headers["Profile-Title"].split(":", 1)[1]).decode() == "OBHOD owner"
+    assert headers.get("Profile-Web-Page-Url", "").startswith("http")
+    assert headers.get("Content-Disposition", "").startswith("attachment")
+
+
+def test_the_server_answers_the_info_page_like_3x_ui(server) -> None:
+    port, body, push = server
+    owner = next(item for item in body["entries"].values() if item.get("email") == "owner")
+    for suffix in ("/info", "?format=info"):
+        code_value, raw, headers = fetch("http://127.0.0.1:%d%s%s" % (port, owner["path"], suffix))
+        assert code_value == 200
+        page = json.loads(raw)
+        assert page["enabled"] is True
+        assert page["total"] == 53687091200
+        assert page["download"] == 1073741824
+        assert page["upload"] == 2147483648
+        assert page["used"] == 3221225472
+        assert page["remained"] == 53687091200 - 3221225472
+        assert page["expire"] == 1893456000
+        assert page["emails"] == ["owner"]
+        assert page["subTitle"] == "OBHOD owner"
+        assert page["subUrl"] == "http://127.0.0.1:%d%s" % (port, owner["path"])
+        assert page["subJsonUrl"] == page["subUrl"] + "/json"
+        assert headers.get("Subscription-Userinfo", "").endswith("expire=1893456000")
+        assert headers.get("Profile-Web-Page-Url") == page["subUrl"]
+        assert headers.get("Profile-Title", "").startswith("base64:")
+        assert headers.get("Content-Type", "").startswith("application/json")
+
+
+def test_the_server_refuses_clash(server) -> None:
+    port, body, push = server
+    owner = next(item for item in body["entries"].values() if item.get("email") == "owner")
+    for suffix in ("?format=clash", "/clash"):
+        code_value, _raw, _headers = fetch("http://127.0.0.1:%d%s%s" % (port, owner["path"], suffix))
+        assert code_value in (400, 404)
+
+
 def test_the_server_refuses_a_wrong_key(server) -> None:
-    port, _body, _state = server
+    port, _body, push = server
     code_value, _raw, _headers = fetch("http://127.0.0.1:%d/%s/%s" % (port, "a" * 64, "c" * 64))
     assert code_value == 404
 
 
 def test_the_server_refuses_a_short_segment(server) -> None:
-    port, _body, _state = server
+    port, _body, push = server
     code_value, _raw, _headers = fetch("http://127.0.0.1:%d/short/%s" % (port, "b" * 64))
     assert code_value == 404
 
 
 def test_the_server_serves_health(server) -> None:
-    port, _body, _state = server
+    port, _body, push = server
     code_value, raw, _headers = fetch("http://127.0.0.1:%d/health" % port)
     assert code_value == 200
     assert raw.strip() == b"ok"
@@ -249,13 +299,30 @@ def test_the_subs_screen_shows_the_aggregate(tmp_path: Path) -> None:
 
     bot = make_bot(tmp_path)
     bot.state.xray = filled()
+    bot.state.xray.sub_address = "203.0.113.10"
     rows = bot.xray.sub_rows()
     assert any(item[0] == "one link for everything" for item in rows)
     from BOT import xscreens
 
     html = xscreens.subs_screen(bot.xray.view(), rows).build()
-    assert "http://" in html
+    assert "http://203.0.113.10:2096/" in html
     assert "/json" in html
+
+
+def test_the_subs_screen_never_shows_a_loopback_link(tmp_path: Path) -> None:
+    from tests.fakes import make_bot
+
+    bot = make_bot(tmp_path)
+    bot.state.xray = filled()
+    bot.state.xray.sub_address = ""
+    rows = bot.xray.sub_rows()
+    from BOT import i18n, xscreens
+
+    html = xscreens.subs_screen(bot.xray.view(), rows).build()
+    assert "127.0.0.1" not in html
+    assert "http://" not in html
+    assert i18n.t("XR_SUBS_NO_ADDRESS", "en") in html
+    assert i18n.t("XR_SUBS_SET_ADDRESS", "en") in html
 
 
 def test_a_freeturn_link_lands_in_the_bundle(tmp_path: Path) -> None:
@@ -391,11 +458,13 @@ def test_a_hostile_address_never_reaches_a_link() -> None:
     inbound.make_client("owner")
     state.add(inbound)
     hostile = "\u043d\u0435-\u0430\u0434\u0440\u0435\u0441"
-    for bad in (hostile, "host with space", "a" * 300, "../etc", "-bad.example"):
-        links = state.subscriptions(bad)[0].links
-        assert hostile not in links[0]
-        assert " " not in links[0].split("@")[1].split(":")[0]
-        assert links[0].count("@") == 1
+    for bad in (hostile, "host with space", "a" * 300, "../etc", "-bad.example", "127.0.0.1", "0.0.0.0", "::1"):
+        item = state.subscriptions(bad)[0]
+        assert item.links == []
+        assert item.url(bad, 2096) == ""
+    good = state.subscriptions("203.0.113.10")[0]
+    assert good.url("203.0.113.10", 2096).startswith("http://203.0.113.10:2096/")
+    assert good.links and "@203.0.113.10:443?" in good.links[0]
     assert state.address("203.0.113.10") == "203.0.113.10"
     assert state.address("vpn.example.com") == "vpn.example.com"
     state.sub_address = "2001:db8::1"
@@ -447,3 +516,25 @@ def test_a_non_iterable_link_list_is_refused_quietly() -> None:
     assert subs.clean_links("vless://two") == ["vless://two"]
     assert subs.clean_links(b"vless://three") == ["vless://three"]
     assert subs.payload_of(1.5) == ""
+
+
+def test_the_server_publishes_support_and_announce(server) -> None:
+    port, body, push = server
+    for entry in body["entries"].values():
+        entry["support_url"] = "https://t.me/obhod_support"
+        entry["announce"] = "the server is fine"
+    push()
+    code_value, _raw, headers = fetch("http://127.0.0.1:%d%s" % (port, body["entries"][next(iter(body["entries"]))]["path"]))
+    assert code_value == 200
+    assert headers.get("Support-Url") == "https://t.me/obhod_support"
+    assert headers.get("Announce") == "the server is fine"
+
+
+def test_the_server_ignores_a_hostile_support_link(server) -> None:
+    port, body, push = server
+    entry = body["entries"][next(iter(body["entries"]))]
+    entry["support_url"] = "javascript:alert(1)"
+    push()
+    code_value, _raw, headers = fetch("http://127.0.0.1:%d%s" % (port, entry["path"]))
+    assert code_value == 200
+    assert "Support-Url" not in headers

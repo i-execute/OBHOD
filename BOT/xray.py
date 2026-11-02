@@ -10,7 +10,7 @@ import uuid as uuidlib
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import i18n
+from . import i18n, subs
 from .scan import DEFAULT_CANDIDATES
 
 LEGACY_JAIL = "3x-ipl"
@@ -193,10 +193,12 @@ def is_host_like(value: object) -> bool:
     if text.startswith("[") and text.endswith("]"):
         text = text[1:-1]
     try:
-        ipaddress.ip_address(text)
-        return True
+        parsed = ipaddress.ip_address(text)
     except ValueError:
         return bool(HOST_RE.match(text)) and ".." not in text
+    if parsed.is_loopback or parsed.is_unspecified or parsed.is_multicast or parsed.is_link_local:
+        return False
+    return True
 
 
 def valid_host_name(value: object, label: str = "the server name") -> str:
@@ -974,9 +976,19 @@ class Subscription:
 
     def url(self, address: str, port: int) -> str:
         host = (address or "").strip()
-        if host and not host.startswith("http"):
+        if not host:
+            return ""
+        if not host.startswith("http") and not is_host_like(host):
+            return ""
+        if not host.startswith("http"):
             host = "http://" + join_authority(host, port)
         return host.rstrip("/") + self.path()
+
+    def safe_url(self, address: str, port: int) -> str:
+        try:
+            return self.url(address, port)
+        except (ValueError, XrayError):
+            return ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1014,6 +1026,8 @@ class XrayState:
     access_log: str = DEFAULT_ACCESS_LOG
     error_log: str = DEFAULT_ERROR_LOG
     sub_refresh: int = 12
+    sub_support_url: str = ""
+    sub_announce: str = ""
     api_enabled: bool = True
     api_port: int = API_PORT
     metrics: str = DEFAULT_METRICS
@@ -1044,6 +1058,8 @@ class XrayState:
             "access_log": self.access_log,
             "error_log": self.error_log,
             "sub_refresh": int(self.sub_refresh),
+            "sub_support_url": self.sub_support_url,
+            "sub_announce": self.sub_announce,
             "api_enabled": bool(self.api_enabled),
             "api_port": int(self.api_port),
             "metrics": self.metrics,
@@ -1078,6 +1094,8 @@ class XrayState:
             access_log=str(data.get("access_log", DEFAULT_ACCESS_LOG) or DEFAULT_ACCESS_LOG),
             error_log=str(data.get("error_log", DEFAULT_ERROR_LOG) or DEFAULT_ERROR_LOG),
             sub_refresh=int(data.get("sub_refresh", 12) or 12),
+            sub_support_url=str(data.get("sub_support_url", "") or "")[:200],
+            sub_announce=str(data.get("sub_announce", "") or "")[:200],
             api_enabled=bool(data.get("api_enabled", True)),
             api_port=int(data.get("api_port", API_PORT) or API_PORT),
             metrics=str(data.get("metrics", DEFAULT_METRICS) or ""),
@@ -1215,6 +1233,15 @@ class XrayState:
                     return client.sub_id, client.sub_key
         return None
 
+    def client_of(self, email: str) -> Any:
+        for inbound in self.inbounds:
+            if not inbound.enable:
+                continue
+            for client in inbound.clients:
+                if client.email == email:
+                    return client
+        return None
+
     def subscriptions(self, address: str = "") -> list[Subscription]:
         host = self.address(address)
         order: list[str] = []
@@ -1230,8 +1257,10 @@ class XrayState:
                     order.append(client.email)
                     links[client.email] = []
                     canon[client.email] = (inbound.id, client.sub_id, client.sub_key)
+                if not host:
+                    continue
                 try:
-                    link = link_for(inbound, client, host or "127.0.0.1", inbound.port)
+                    link = link_for(inbound, client, host, inbound.port)
                 except XrayError:
                     link = ""
                 if link:
@@ -1272,15 +1301,26 @@ class XrayState:
             return None
         return self.subscription_of(email)
 
-    def aggregate_entry(self, address: str = "", extra_links: Any = None, refresh: int = 0) -> dict[str, Any]:
-        from . import subs
+    def support_url(self) -> str:
+        text = (self.sub_support_url or "").strip()
+        if not text.startswith(("http://", "https://")):
+            return ""
+        return text[:200]
 
+    def announce(self) -> str:
+        return " ".join((self.sub_announce or "").split())[:200]
+
+    def aggregate_entry(self, address: str = "", extra_links: Any = None, refresh: int = 0) -> dict[str, Any]:
         bundle = subs.aggregate(self, extra_links, address, self.sub_port)
-        return subs.entry_of(bundle, refresh or self.sub_refresh)
+        entry = subs.entry_of(bundle, refresh or self.sub_refresh)
+        entry["support_url"] = self.support_url()
+        entry["announce"] = self.announce()
+        return entry
 
     def sub_registry(self, address: str = "", extra_links: Any = None) -> dict[str, Any]:
         entries: dict[str, Any] = {}
         for item in self.subscriptions(address):
+            quota = subs.quota_of(self.client_of(item.email))
             entries[item.sub_id] = {
                 "key": item.sub_key,
                 "email": item.email,
@@ -1291,6 +1331,12 @@ class XrayState:
                 "enabled": True,
                 "path": item.path(),
                 "links": list(item.links),
+                "up": quota["up"],
+                "down": quota["down"],
+                "total": quota["total"],
+                "expire": quota["expire"],
+                "support_url": self.support_url(),
+                "announce": self.announce(),
             }
         bundle = self.aggregate_entry(address, extra_links)
         entries[bundle["path"].split("/")[1]] = bundle
