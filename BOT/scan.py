@@ -667,6 +667,69 @@ def tls_fit(result: ScanResult) -> tuple[bool, str]:
     return True, "a tls 1.3 target with the hybrid post quantum group"
 
 
+SECURITY_KINDS = ("reality", "reality-pq", "reality-mldsa", "tls")
+SECURITY_TLS = "tls"
+SECURITY_REALITY = "reality"
+SECURITY_PQ = "reality-pq"
+SECURITY_MLDSA = "reality-mldsa"
+
+
+def reality_gaps(result: ScanResult) -> list[str]:
+    gaps: list[str] = []
+    if not result.tls13:
+        gaps.append("tls 1.3")
+    if not result.h2:
+        gaps.append("http/2")
+    if not result.x25519:
+        gaps.append("x25519")
+    if not result.cert_valid:
+        gaps.append("certificate")
+    if result.days_left < 0:
+        gaps.append("expiry")
+    return gaps
+
+
+def security_fit(result: ScanResult, kind: str) -> tuple[bool, str]:
+    if kind not in SECURITY_KINDS:
+        raise ValueError("security must be one of " + ", ".join(SECURITY_KINDS))
+    gaps = reality_gaps(result)
+    if kind in {SECURITY_REALITY, SECURITY_PQ, SECURITY_MLDSA} and gaps:
+        return False, "missing " + ", ".join(gaps)
+    if kind == SECURITY_PQ and not result.pq_hybrid:
+        return False, "the target does not negotiate x25519mlkem768"
+    if kind == SECURITY_MLDSA:
+        if not result.pq_hybrid:
+            return False, "the target does not negotiate x25519mlkem768"
+        if not result.ml_dsa_ready:
+            return False, "the chain is %d bytes, %d bytes short of the %d byte minimum" % (
+                result.cert_chain_bytes,
+                max(ML_DSA65_CHAIN_MIN - result.cert_chain_bytes, 0),
+                ML_DSA65_CHAIN_MIN,
+            )
+        return True, "a long chain of %d bytes carries the ml-dsa-65 signature" % result.cert_chain_bytes
+    if kind == SECURITY_TLS:
+        if not result.tls13:
+            return False, "the target does not negotiate tls 1.3"
+        return True, "a tls 1.3 handshake, the certificate stays on our side"
+    if kind == SECURITY_PQ:
+        return True, "tls 1.3, http/2, x25519mlkem768 and a valid chain"
+    return True, "tls 1.3, http/2, x25519 and a valid chain"
+
+
+def security_fits(result: ScanResult) -> list[tuple[str, bool, str]]:
+    return [(kind,) + security_fit(result, kind) for kind in SECURITY_KINDS]
+
+
+def recommended_security(result: ScanResult) -> str:
+    fits = [kind for kind, ok, _ in security_fits(result) if ok]
+    if not fits:
+        return SECURITY_TLS if result.tls13 else ""
+    for kind in (SECURITY_MLDSA, SECURITY_PQ, SECURITY_REALITY, SECURITY_TLS):
+        if kind in fits:
+            return kind
+    return fits[0]
+
+
 def proxy_header(kind: int, local: tuple[str, int], remote: tuple[str, int]) -> bytes:
     if kind >= PROXY_V2:
         head = bytes([0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A, 0x21])

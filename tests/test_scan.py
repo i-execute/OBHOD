@@ -333,3 +333,36 @@ def test_scan_limits_match_the_reference() -> None:
     assert DISCOVER_MAX_IPS == 256
     assert SCAN_MAX_TOTAL == 512
     assert CONCURRENCY >= 16
+
+
+def test_security_fit_covers_every_kind() -> None:
+    result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, pq_group="x25519mlkem768", cert_valid=True, days_left=40, cert_chain_bytes=4096, ml_dsa_ready=True)
+    fits = dict((kind, (ok, note)) for kind, ok, note in scanner.security_fits(result))
+    assert set(fits) == set(scanner.SECURITY_KINDS)
+    assert all(ok for ok, _ in fits.values())
+    assert scanner.recommended_security(result) == "reality-mldsa"
+
+
+def test_security_fit_reports_a_short_chain() -> None:
+    result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, cert_valid=True, days_left=40, cert_chain_bytes=1800, ml_dsa_ready=False)
+    ok, note = scanner.security_fit(result, "reality-mldsa")
+    assert not ok
+    assert "1800" in note and "1700" in note and str(scanner.ML_DSA65_CHAIN_MIN) in note
+    assert scanner.recommended_security(result) == "reality-pq"
+
+
+def test_security_fit_without_post_quantum() -> None:
+    result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=False, cert_valid=True, days_left=40, cert_chain_bytes=1200)
+    assert scanner.security_fit(result, "reality")[0]
+    assert not scanner.security_fit(result, "reality-pq")[0]
+    assert not scanner.security_fit(result, "reality-mldsa")[0]
+    assert scanner.security_fit(result, "tls")[0]
+    assert scanner.recommended_security(result) == "reality"
+
+
+def test_security_fit_rejects_a_legacy_target() -> None:
+    result = ScanResult(target="a:443", tls13=False, cert_valid=False, days_left=-3)
+    assert not any(ok for _, ok, _ in scanner.security_fits(result))
+    assert scanner.recommended_security(result) == ""
+    with pytest.raises(ValueError):
+        scanner.security_fit(result, "xtls")

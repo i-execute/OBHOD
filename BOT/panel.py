@@ -8,7 +8,7 @@ from typing import Any
 from . import i18n, inline, screens, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
-from .scan import CONCURRENCY, ScanResult, parse_candidates, scan_targets
+from .scan import CONCURRENCY, SECURITY_KINDS, ScanResult, parse_candidates, scan_targets, security_fit
 from .ui import button, code, copy_row, muted, pre, quote, row, screen
 from .xray import (
     DEFAULT_IGNOREIP,
@@ -243,7 +243,7 @@ class XrayPanel:
             await self.logs(chat_id, msg_id, arg1)
             return
         if head == "scan":
-            await self.scan_action(chat_id, msg_id, arg1, arg2)
+            await self.scan_action(chat_id, msg_id, arg1, arg2, parts[4] if len(parts) > 4 else "")
             return
         await self.render(chat_id, msg_id, xscreens.home(self.view(notice=self.tr()("XR_HOME_NOTICE_UNKNOWN"))))
 
@@ -653,7 +653,7 @@ class XrayPanel:
             return
         await self.render(chat_id, msg_id, xscreens.logs_screen(self.view(), lines, size))
 
-    async def scan_action(self, chat_id: int, msg_id: int, action: str, extra: str) -> None:
+    async def scan_action(self, chat_id: int, msg_id: int, action: str, extra: str, tail: str = "") -> None:
         if not action:
             await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(), self.results))
             return
@@ -670,6 +670,12 @@ class XrayPanel:
             return
         if action == "use":
             await self.use_target(chat_id, msg_id, extra)
+            return
+        if action == "fit":
+            await self.show_mismatch(chat_id, msg_id, extra)
+            return
+        if action == "sec":
+            await self.switch_and_use(chat_id, msg_id, extra, tail)
             return
         await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(), self.results))
 
@@ -704,21 +710,76 @@ class XrayPanel:
         good = sum(1 for item in results if item.feasible)
         await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(notice=t("NOTICE_SCAN_DONE", good=good, total=len(results))), results))
 
-    async def use_target(self, chat_id: int, msg_id: int, index: str) -> None:
+    def target_inbound(self) -> XrayInbound | None:
+        for item in self.state.inbounds:
+            if item.security in {"reality", "tls"}:
+                return item
+        return None
+
+    def apply_target(self, inbound: XrayInbound, result: ScanResult) -> None:
+        sni = (result.server_names[0] if result.server_names else "") or result.host or result.target
+        self.state.adopt_scan(inbound.id, result.host or result.target, sni, result.port)
+
+    def result_at(self, index: str) -> tuple[int, ScanResult]:
         if not index.isdigit():
             raise PanelError("the target number must be a number")
         position = int(index)
         if position < 0 or position >= len(self.results):
             raise PanelError("the target was not found")
-        result = self.results[position]
-        inbound = next((item for item in self.state.inbounds if item.security == "reality"), None)
+        return position, self.results[position]
+
+    async def use_target(self, chat_id: int, msg_id: int, index: str) -> None:
+        position, result = self.result_at(index)
+        inbound = self.target_inbound()
         if inbound is None:
             await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error="create a reality inbound first"), self.results))
             return
-        sni = (result.server_names[0] if result.server_names else "") or result.host or result.target
-        self.state.adopt_scan(inbound.id, result.host or result.target, sni, result.port)
+        ok, _ = security_fit(result, inbound.security_kind())
+        if not ok:
+            await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(), result, inbound, position))
+            return
+        self.apply_target(inbound, result)
         self.save()
         notice = self.tr()("NOTICE_TARGET_APPLIED", target=result.target, remark=inbound.remark)
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
+
+    async def show_mismatch(self, chat_id: int, msg_id: int, index: str) -> None:
+        position, result = self.result_at(index)
+        inbound = self.target_inbound()
+        if inbound is None:
+            await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error="create a reality inbound first"), self.results))
+            return
+        await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(), result, inbound, position))
+
+    async def switch_and_use(self, chat_id: int, msg_id: int, kind: str, index: str) -> None:
+        position, result = self.result_at(index)
+        if kind not in SECURITY_KINDS:
+            raise PanelError("the encryption is not supported")
+        inbound = self.target_inbound()
+        if inbound is None:
+            await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error="create a reality inbound first"), self.results))
+            return
+        ok, _ = security_fit(result, kind)
+        if not ok:
+            bad = self.tr()("XR_SCAN_SEC_BAD", security=xscreens.security_label(kind, self.bot.state.language))
+            await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(error=bad), result, inbound, position))
+            return
+        try:
+            self.state.switch_security(inbound.id, kind)
+        except XrayError as exc:
+            await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(error=str(exc)), result, inbound, position))
+            return
+        if kind == "reality-mldsa" and not (inbound.mldsa65_seed and inbound.mldsa65_verify):
+            try:
+                seed, verify = await self.control.mldsa65(self.bot.state.ssh)
+            except RpcError as exc:
+                self.save()
+                await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(error=exc.message), inbound))
+                return
+            self.state.set_mldsa65(inbound.id, seed, verify)
+        self.apply_target(inbound, result)
+        self.save()
+        notice = self.tr()("XR_SCAN_SEC_APPLIED", security=xscreens.security_label(kind, self.bot.state.language), target=result.target, remark=inbound.remark)
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
 
     def inbound_of_ctx(self, ctx: str) -> XrayInbound | None:

@@ -130,7 +130,7 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2110 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2123 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, and the hardening suites in `tests/test_security.py` and

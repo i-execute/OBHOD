@@ -24,6 +24,8 @@ def guard_jail(raw: Any) -> str:
 PROTOCOLS = ("vless",)
 NETWORKS = ("raw", "grpc", "xhttp")
 SECURITIES = ("reality", "tls", "none")
+SECURITY_KINDS = ("reality", "reality-pq", "reality-mldsa", "tls")
+PQ_HYBRID = "x25519mlkem768"
 VLESS_MODES = ("native", "xorpub", "random")
 VLESS_TICKETS = ("600s", "0s", "300-600s")
 VLESS_CLIENT_MODES = ("0rtt", "1rtt")
@@ -436,6 +438,7 @@ class XrayInbound:
     fingerprint: str = "chrome"
     mldsa65_seed: str = ""
     mldsa65_verify: str = ""
+    pq_mode: str = ""
     reality_private: str = ""
     reality_public: str = ""
     alpn: list[str] = field(default_factory=list)
@@ -453,6 +456,17 @@ class XrayInbound:
             if item.email == email:
                 return item
         return None
+
+    def security_kind(self) -> str:
+        if self.security == "tls":
+            return "tls"
+        if self.security == "reality":
+            if self.mldsa65_seed and self.mldsa65_verify:
+                return "reality-mldsa"
+            if self.pq_mode == PQ_HYBRID:
+                return "reality-pq"
+            return "reality"
+        return "none"
 
     def make_client(self, email: str) -> XrayClient:
         name = valid_email(email)
@@ -545,6 +559,7 @@ class XrayInbound:
             "fingerprint": self.fingerprint,
             "mldsa65_seed": self.mldsa65_seed,
             "mldsa65_verify": self.mldsa65_verify,
+            "pq_mode": self.pq_mode,
             "reality_private": self.reality_private,
             "reality_public": self.reality_public,
             "alpn": list(self.alpn),
@@ -579,6 +594,7 @@ class XrayInbound:
             fingerprint=str(data.get("fingerprint", "chrome")),
             mldsa65_seed=str(data.get("mldsa65_seed", "") or ""),
             mldsa65_verify=str(data.get("mldsa65_verify", "") or ""),
+            pq_mode=str(data.get("pq_mode", "") or ""),
             reality_private=str(data.get("reality_private", data.get("private_key", "")) or ""),
             reality_public=str(data.get("reality_public", data.get("public_key", "")) or ""),
             alpn=[str(item) for item in data.get("alpn") or []],
@@ -1152,6 +1168,27 @@ class XrayState:
             raise XrayError("an ml-dsa-65 key pair needs both a seed and a verify key")
         item.mldsa65_seed = seed
         item.mldsa65_verify = verify
+
+    def switch_security(self, ident: object, kind: str) -> XrayInbound:
+        item = self.inbound(ident)
+        if item is None:
+            raise XrayError("inbound not found")
+        if kind not in SECURITY_KINDS:
+            raise XrayError("security must be one of " + ", ".join(SECURITY_KINDS))
+        if kind == "tls":
+            if not item.cert_file or not item.key_file:
+                raise XrayError("tls needs a certificate and a key, import a certificate first")
+        if kind in {"reality", "reality-pq", "reality-mldsa"} and not item.reality_private:
+            raise XrayError("reality needs a key pair, generate the reality keys first")
+        item.security = "tls" if kind == "tls" else "reality"
+        if kind == "reality-pq":
+            item.pq_mode = PQ_HYBRID
+        elif kind == "reality" or kind == "tls":
+            item.pq_mode = ""
+        if kind != "reality-mldsa":
+            item.mldsa65_seed = ""
+            item.mldsa65_verify = ""
+        return item
 
     def clear_mldsa65(self, ident: object) -> None:
         item = self.inbound(ident)

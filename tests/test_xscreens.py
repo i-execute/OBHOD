@@ -5,7 +5,7 @@ import pytest
 from BOT import i18n, xscreens
 from BOT.scan import ScanResult
 from BOT.ui import MAX_BUTTONS, count_buttons
-from BOT.xray import NETWORKS, SECURITIES, SUB_SEGMENT_LEN, new_inbound
+from BOT.xray import NETWORKS, SECURITIES, SUB_SEGMENT_LEN, XrayState, new_inbound
 
 
 def view(security: str = "reality", network: str = "raw") -> xscreens.XrayView:
@@ -217,7 +217,52 @@ def test_the_scan_screen_reports_what_the_target_fits() -> None:
     ]
     view = xscreens.XrayView(state=state, lang="en")
     html = xscreens.scan_screen(view).build()
-    assert i18n.t("XR_SCAN_FIT_REALITY", "en") in html
-    assert i18n.t("XR_SCAN_FIT_MLDSA", "en") in html
-    assert i18n.t("XR_SCAN_FIT_TLS", "en") in html
-    assert html.count(i18n.t("XR_SCAN_FIT_YES", "en")) == 3
+    for kind in ("reality", "reality-pq", "reality-mldsa", "tls"):
+        assert xscreens.security_label(kind, "en") in html
+    assert html.count(i18n.t("XR_SCAN_FIT_YES", "en")) == 4
+
+
+def test_the_mismatch_screen_offers_another_encryption() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.remark = "reality-443"
+    inbound.reality_private = "k" * 43
+    inbound.reality_public = "v" * 43
+    inbound.dest = "legacy.example.com:443"
+    state.add(inbound)
+    legacy = ScanResult(
+        target="legacy.example.com:443",
+        host="legacy.example.com",
+        port=443,
+        tls13=True,
+        h2=True,
+        x25519=True,
+        pq_hybrid=False,
+        cert_valid=True,
+        days_left=30,
+        cert_chain_bytes=1200,
+        ml_dsa_ready=False,
+        latency_ms=91,
+    )
+    view = xscreens.XrayView(state=state, lang="en")
+    html = xscreens.scan_mismatch_screen(view, legacy, inbound, 0).to_html()
+    assert i18n.t("XR_SCAN_MISMATCH_TITLE", "en") in html
+    assert "xr:scan:sec:tls:0" in html
+    assert "xr:scan:sec:reality-pq:0" not in html
+    assert i18n.t("XR_SCAN_MISMATCH_BODY", "en", target="legacy.example.com:443", security="reality, x25519").replace("<code>", "").replace("</code>", "") in html.replace("<code>", "").replace("</code>", "")
+
+
+def test_the_mismatch_screen_explains_a_short_chain() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.mldsa65_seed = "s" * 32
+    inbound.mldsa65_verify = "v" * 32
+    state.add(inbound)
+    short = ScanResult(target="a.example:443", host="a.example", port=443, tls13=True, h2=True, x25519=True, pq_hybrid=True, cert_valid=True, days_left=30, cert_chain_bytes=1800, ml_dsa_ready=False)
+    view = xscreens.XrayView(state=state, lang="en")
+    html = xscreens.scan_mismatch_screen(view, short, inbound, 1).to_html()
+    assert "1800" in html
+    assert "3500" in html
+    assert "xr:scan:sec:reality-pq:1" in html
+    assert "xr:scan:sec:reality:1" in html

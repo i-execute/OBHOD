@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from BOT import i18n
+from BOT import i18n, xscreens
 from BOT.panel import PanelError, XrayPanel, host_port, parse_port, state_report
 from BOT.scan import ScanResult
 from BOT.xray import SUB_SEGMENT_LEN, XrayState, new_inbound
@@ -511,3 +511,107 @@ def test_the_subs_screen_pulls_the_traffic_first(tmp_path: Path) -> None:
     asyncio.run(item.subs_action(1, 0, ""))
     assert ["stats", "user>>>"] in bot.control.calls[before:]
     assert bot.state.xray.traffic["owner"] == {"up": 5, "down": 6}
+
+
+def short_chain_target() -> ScanResult:
+    return ScanResult(
+        target="legacy.example.com:443",
+        host="legacy.example.com",
+        port=443,
+        tls13=True,
+        h2=True,
+        x25519=True,
+        pq_hybrid=False,
+        cert_valid=True,
+        days_left=30,
+        cert_chain_bytes=1200,
+        ml_dsa_ready=False,
+        latency_ms=40,
+    )
+
+
+def test_scan_target_mismatch_offers_another_encryption(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.mldsa65_seed = "s" * 32
+    inbound.mldsa65_verify = "v" * 32
+    bot.state.xray.add(inbound)
+    item.results = [short_chain_target()]
+    run(item.scan_action(1, 0, "use", "0"))
+    assert inbound.dest != "legacy.example.com:443"
+    run(item.scan_action(1, 0, "fit", "0"))
+    html = bot.rendered[-1].to_html()
+    assert "xr:scan:sec:tls:0" in html
+    assert "xr:scan:sec:reality:0" in html
+    assert "xr:scan:sec:reality-mldsa:0" not in html
+
+
+def test_scan_switch_encryption_applies_the_target(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.cert_file = "/etc/ssl/fullchain.pem"
+    inbound.key_file = "/etc/ssl/key.pem"
+    bot.state.xray.add(inbound)
+    item.results = [short_chain_target()]
+    run(item.scan_action(1, 0, "sec", "tls", "0"))
+    assert inbound.security == "tls"
+    assert inbound.dest == "legacy.example.com:443"
+
+
+def test_scan_switch_to_post_quantum_records_the_group(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    bot.state.xray.add(inbound)
+    item.results = [ScanResult(target="www.apple.com:443", host="www.apple.com", port=443, tls13=True, h2=True, x25519=True, pq_hybrid=True, cert_valid=True, days_left=90, cert_chain_bytes=2000)]
+    run(item.scan_action(1, 0, "sec", "reality-pq", "0"))
+    assert inbound.security == "reality"
+    assert inbound.pq_mode == "x25519mlkem768"
+    assert inbound.security_kind() == "reality-pq"
+
+
+def test_scan_switch_to_ml_dsa_generates_the_keys(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    bot.state.xray.add(inbound)
+    item.results = [ScanResult(target="www.apple.com:443", host="www.apple.com", port=443, tls13=True, h2=True, x25519=True, pq_hybrid=True, cert_valid=True, days_left=90, cert_chain_bytes=4096, ml_dsa_ready=True)]
+    run(item.scan_action(1, 0, "sec", "reality-mldsa", "0"))
+    assert inbound.mldsa65_seed == "SEEDVALUE"
+    assert inbound.security_kind() == "reality-mldsa"
+    assert inbound.dest == "www.apple.com:443"
+
+
+def test_scan_switch_rejects_an_unknown_kind(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    bot.state.xray.add(inbound)
+    item.results = [short_chain_target()]
+    with pytest.raises(PanelError):
+        run(item.scan_action(1, 0, "sec", "xtls", "0"))
+    with pytest.raises(PanelError):
+        run(item.scan_action(1, 0, "sec", "tls", "x"))
+
+
+def test_scan_switch_to_tls_needs_a_certificate(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    bot.state.xray.add(inbound)
+    item.results = [short_chain_target()]
+    run(item.scan_action(1, 0, "sec", "tls", "0"))
+    assert inbound.security == "reality"
+    assert "certificate" in bot.rendered[-1].to_html()
+
+
+def test_scan_switch_rejects_an_encryption_the_target_does_not_fit(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    bot.state.xray.add(inbound)
+    item.results = [short_chain_target()]
+    run(item.scan_action(1, 0, "sec", "reality-pq", "0"))
+    assert inbound.pq_mode == ""
+    assert i18n.t("XR_SCAN_SEC_BAD", "en", security=xscreens.security_label("reality-pq", "en")) in bot.rendered[-1].to_html()
