@@ -50,10 +50,15 @@ name is registered through its menu alias while the bot still accepts the long f
 ## Subscriptions
 
 3x-ui style, by raw `ip:port`, no tunnel needed: `http://203.0.113.10:2096/<64 chars>/<64 chars>`.
-Both segments come from `secrets` over `A-Za-z0-9-_`. One client has one subscription that holds every link of
-that client, and a sibling path `/<64>/<64>/json` returns the same list as JSON for tools. The server sends
-`Profile-Update-Interval` and `Subscription-Userinfo`, answers `404` for a wrong key, a short segment or an
-unknown id, rate limits each address and backs off exponentially on repeated misses.
+Both segments come from `secrets` over `A-Za-z0-9-_`. There is always exactly one subscription and it serves
+every link of every enabled inbound on the server, so a new config lands in the same link without a new url.
+The path is the canonical client path and does not change when an inbound is added, disabled or removed.
+`/<64>/<64>/json` returns the same list as JSON, `/<64>/<64>/info` and `?format=info` return the 3x-ui page
+context, `?format=clash` answers 400. The server sends `Profile-Update-Interval`, `Profile-Title`,
+`Profile-Web-Page-Url`, `Support-Url`, `Announce` and `Subscription-Userinfo` with the real quota and the
+traffic taken from `xray api statsquery`, answers `404` for a wrong key, a short segment or an unknown id,
+rate limits each address and backs off exponentially on repeated misses. The bot pushes the registry after
+every change, so the link is live without pressing apply.
 
 ## Cores, scripts and cache
 
@@ -125,7 +130,7 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2032 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2078 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, and the hardening suites in `tests/test_security.py` and
