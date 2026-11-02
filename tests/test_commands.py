@@ -166,7 +166,10 @@ class FakeApp:
         self.commands: list[dict[str, str]] = []
         self.fail = fail
 
-    async def set_my_commands(self, payload: Any, **kwargs: Any) -> bool:
+    async def set_my_commands(self, **kwargs: Any) -> bool:
+        payload = kwargs.get("commands")
+        if payload is None:
+            raise TypeError("set_my_commands takes keyword arguments only")
         if self.fail:
             raise RuntimeError("the api is down")
         self.commands = list(payload)

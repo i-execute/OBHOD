@@ -532,7 +532,7 @@ class Bot:
             if not commands.MENU_RE.match(item["command"]):
                 return False
         try:
-            await self.app.set_my_commands(payload)
+            await self.app.set_my_commands(commands=payload)
         except Exception as exc:
             log.warning("the command menu was not set: %s", exc)
             return False

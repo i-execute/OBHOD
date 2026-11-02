@@ -67,7 +67,11 @@ full names, plus the old `/vless_rkn_bypass_raskur` as an alias.
 
 ## Subscriptions
 
-3x-ui style, by raw `ip:port`, no tunnel needed: `http://203.0.113.10:2096/<64 chars>/<64 chars>`.
+3x-ui style, but only with a permanent name: `https://<host>.<tailnet>.ts.net/<64 chars>/<64 chars>`.
+Without a domain there is no endpoint at all: the `Subscriptions` screen hides apply, sync, stop and rotate,
+the panel answers with a notice, the bot skips the push even when forced, and the agent refuses
+`sub-install` and `sub-sync` with `no_domain`, so no file and no unit is written. The listener binds
+`127.0.0.1:<sub port>` and only the tunnel publishes it.
 Both segments come from `secrets` over `A-Za-z0-9-_`. There is always exactly one subscription and it serves
 every link of every enabled inbound on the server, so a new config lands in the same link without a new url.
 The path is the canonical client path and does not change when an inbound is added, disabled or removed.
@@ -97,11 +101,16 @@ and the keys come from `xray vlessenc` on the server, so the auth half is real a
 
 ## A permanent name
 
-The subscription can leave the bare ip behind. `Debug` is not needed for it: the Xray home screen has a `domain`
-button that installs tailscale from its signed repository, takes a `tskey-auth-` key and a hostname, and runs
+The subscription keeps the bare ip out of the url. The Xray home screen has a `domain` button that installs
+tailscale from its signed repository, takes a hostname, and runs
 `tailscale funnel --bg --https=443 http://127.0.0.1:<sub port>`. The name is `<hostname>.<tailnet>.ts.net`, it
 survives reboots and ip changes, the certificate is real, the port stays on loopback and vless inbounds never go
-through the tunnel. While the tunnel is on the subscription url is `https://<hostname>/<64>/<64>` with no port.
+through the tunnel. While the tunnel is on the subscription url is `https://<hostname>/<64>/<64>` with no port,
+and while it is off the url does not exist.
+The `tskey-auth-` key never travels through the chat: the `auth key` button opens the inline field, the picked
+result carries an encoded payload instead of the key, and the key itself is written to `<state dir>/tunnel.key`
+with mode `0600` and shown on the screen as `tskey-auth-k7...pnCe`. It is never stored in `state.json`, never in
+a log and never in a rendered screen. Turning the tunnel off takes the subscription service down with it.
 Behind any local proxy the server reads the visitor from `X-Forwarded-For`, falling back to `CF-Connecting-IP`
 only for a loopback peer, so one visitor cannot outrun the 60 a minute limit by faking a header.
 
@@ -168,7 +177,7 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2204 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2212 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, and the hardening suites in `tests/test_security.py` and

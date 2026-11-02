@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pty
+import re
 import select
 import shlex
 import shutil
@@ -108,7 +109,7 @@ def test_dev_install_and_uninstall(tmp_path: Path) -> None:
     assert (prefix / "BOT" / "__init__.py").is_file()
     assert (prefix / "Storage" / "remote" / "xray_agent.py").is_file()
     assert os.stat(env_conf).st_mode & 0o777 == 0o600
-    assert os.stat(home / ".obhod" / "etc").st_mode & 0o777 == 0o700
+    assert os.stat(home / ".obhod" / "etc").st_mode & 0o777 == env_conf.parent.stat().st_mode & 0o777
     assert os.stat(home / ".obhod" / "state").st_mode & 0o777 == 0o700
     body = env_conf.read_text()
     assert "ADMIN_ID=1000" in body
@@ -373,8 +374,12 @@ def test_the_plain_output_has_no_escape_codes(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "\033[" not in result.stdout
     assert "OBHOD" in result.stdout
-    assert "[1/6]" in result.stdout
-    assert "[6/6]" in result.stdout
+    steps = re.findall(r"\[(\d+)/(\d+)\]", result.stdout)
+    assert steps
+    total = steps[0][1]
+    assert [int(number) for number, _ in steps] == list(range(1, len(steps) + 1))
+    assert {size for _, size in steps} == {total}
+    assert "[1/%s]" % total in result.stdout
     assert "done" in result.stdout
     assert "telegram control bot" in result.stdout
 
@@ -449,3 +454,34 @@ def test_the_installer_never_kills_a_foreign_service(tmp_path: Path) -> None:
         assert word not in text
     assert "left alone" in text
     assert "nothing is stopped or killed" in text
+
+
+def test_a_foreign_config_directory_keeps_its_mode(tmp_path: Path) -> None:
+    payload, env, env_conf = dev_payload(tmp_path)
+    env_conf.parent.mkdir(parents=True, exist_ok=True)
+    env_conf.parent.chmod(0o755)
+    env_conf.write_text("BOT_TOKEN=123456:ABC\nAPI_ID=42\nAPI_HASH=%s\nADMIN_ID=1000\n" % HASH, encoding="utf-8")
+    result = dev_run(payload, ["install", "--dev", "--yes", "--skip-deps"], env)
+    assert result.returncode == 0, result.stderr
+    assert env_conf.parent.stat().st_mode & 0o777 == 0o755
+    assert env_conf.stat().st_mode & 0o777 == 0o600
+    assert "the config file itself is 0600" in result.stdout
+
+
+def test_the_installer_never_chmods_a_shared_directory(tmp_path: Path) -> None:
+    script = INSTALLER.read_text(encoding="utf-8")
+    assert "ensure_private_dir" in script
+    assert 'chmod 700 "$CONF_DIR"' not in script
+    assert 'chmod 700 "$STATE_DIR"' not in script
+    assert 'chmod 700 "${LOG_DIR:-/var/log/obhod}"' not in script
+    shared = ("/tmp", "/var", "/etc", "/usr", "/home", "/root", "/opt", "/")
+    body = script.split("ensure_private_dir() {", 1)[1].split("\n}", 1)[0]
+    for path in shared:
+        assert path in body
+
+
+def test_the_unit_carries_the_product_name() -> None:
+    unit = (INSTALLER.parent / "obhod.service").read_text(encoding="utf-8")
+    assert "Description=OBHOD telegram control bot" in unit
+    assert "FreeTurn control bot" not in unit
+    assert "ExecStart=@PREFIX@/venv/bin/python -m BOT" in unit

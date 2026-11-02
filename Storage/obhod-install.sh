@@ -237,6 +237,26 @@ check_credential() {
   [ "${#value}" -le 200 ] || die "$name is too long"
 }
 
+ensure_private_dir() {
+  local path="$1"
+  case "$path" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+      die "$path is a shared system directory, point the config, the state and the logs at their own directory"
+      ;;
+  esac
+  if [ ! -d "$path" ]; then
+    mkdir -p "$path"
+    chmod 700 "$path" || die "cannot tighten the permissions of $path"
+    return 0
+  fi
+  local mode=""
+  mode="$(stat -c '%a' "$path" 2>/dev/null || echo unknown)"
+  case "$mode" in
+    700|710|750|770) return 0 ;;
+  esac
+  warn_line "$path holds other files, its mode stays $mode, the config file itself is 0600"
+}
+
 write_env() {
   local token="$1" api_id="$2" api_hash="$3" admin_id="$4"
   check_credential BOT_TOKEN "$token"
@@ -249,8 +269,7 @@ write_env() {
   case "$admin_id" in
     *[!0-9]*) die "admin id must be a number" ;;
   esac
-  mkdir -p "$CONF_DIR"
-  chmod 700 "$CONF_DIR"
+  ensure_private_dir "$CONF_DIR"
   umask 077
   cat > "$ENV_FILE" <<EOF
 BOT_TOKEN=$token
@@ -423,7 +442,7 @@ cmd_install() {
     require_root
   fi
   ui_init
-  STEP_TOTAL=6
+  STEP_TOTAL=7
   banner
   kv host "$(hostname 2>/dev/null || echo localhost)"
   kv prefix "$PREFIX"
@@ -432,11 +451,9 @@ cmd_install() {
 
   step "checking the environment"
   check_python
-  mkdir -p "$STATE_DIR"
-  chmod 700 "$STATE_DIR"
+  ensure_private_dir "$STATE_DIR"
   if [ "$DEV" = "0" ]; then
-    mkdir -p "${LOG_DIR:-/var/log/obhod}"
-    chmod 700 "${LOG_DIR:-/var/log/obhod}"
+    ensure_private_dir "${LOG_DIR:-/var/log/obhod}"
   fi
   ok_line "$("$PYTHON_BIN" -c 'import sys; print("python %d.%d.%d" % sys.version_info[:3])')"
   if [ "$DEV" = "0" ]; then

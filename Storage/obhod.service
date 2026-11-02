@@ -1,5 +1,5 @@
 [Unit]
-Description=FreeTurn control bot
+Description=OBHOD telegram control bot
 After=network-online.target
 Wants=network-online.target
 
