@@ -480,6 +480,8 @@ def test_a_new_inbound_is_pushed_to_the_live_subscription(tmp_path: Path) -> Non
     bot.state.xray.add(inbound)
     bot.state.xray.sub_address = "203.0.113.10"
     bot.state.xray.sub_enabled = True
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = True
     control = bot.control
     first = asyncio.run(bot.subs_sync())
     assert first is True
@@ -491,6 +493,24 @@ def test_a_new_inbound_is_pushed_to_the_live_subscription(tmp_path: Path) -> Non
     bot.state.xray.add(extra)
     assert asyncio.run(bot.subs_sync()) is True
     assert control.calls[-1][0] == "sub-sync"
+
+
+def test_the_subscription_push_is_off_without_a_permanent_domain(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.sub_enabled = True
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = False
+    before = len(bot.control.calls)
+    assert asyncio.run(bot.subs_sync()) is False
+    assert asyncio.run(bot.subs_sync(force=True)) is False
+    assert len(bot.control.calls) == before
+    bot.state.xray.tunnel_enabled = True
+    assert asyncio.run(bot.subs_sync()) is True
+    assert bot.control.calls[-1][-1] == "obhod-test.tail1234.ts.net"
 
 
 def test_the_subscription_push_is_off_until_it_is_enabled(tmp_path: Path) -> None:

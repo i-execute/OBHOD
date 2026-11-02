@@ -496,8 +496,15 @@ def test_the_agent_takes_a_large_registry_over_stdin(tmp_path: Path) -> None:
 def test_the_agent_reads_the_stdin_payload_and_reports_a_bad_one(tmp_path: Path) -> None:
     server = tmp_path / "obhod-sub"
     good = base64.b64encode(json.dumps({"entries": {}, "port": 2096}).encode())
-    done = subprocess.run(
+    no_domain = subprocess.run(
         [sys.executable, str(AGENT), "sub-sync", "--registry-b64=-", "--port=2096"],
+        input=good,
+        capture_output=True,
+        timeout=60,
+    )
+    assert "no_domain" in no_domain.stdout.decode("utf-8", "replace")
+    done = subprocess.run(
+        [sys.executable, str(AGENT), "sub-sync", "--registry-b64=-", "--port=2096", "--domain=obhod-test.tail1234.ts.net"],
         input=good,
         capture_output=True,
         timeout=60,
@@ -506,7 +513,7 @@ def test_the_agent_reads_the_stdin_payload_and_reports_a_bad_one(tmp_path: Path)
     assert "not_installed" in text
     assert "bad_arg" not in text
     bad = subprocess.run(
-        [sys.executable, str(AGENT), "sub-sync", "--registry-b64=-", "--port=2096"],
+        [sys.executable, str(AGENT), "sub-sync", "--registry-b64=-", "--port=2096", "--domain=obhod-test.tail1234.ts.net"],
         input=b"not-base64!!",
         capture_output=True,
         timeout=60,
@@ -612,16 +619,18 @@ def test_the_subs_screen_keeps_one_link_and_folds_the_rest() -> None:
     bot = make_bot(Path("/tmp"))
     state = filled()
     state.sub_address = "203.0.113.10"
+    state.tunnel_host = "obhod-test.tail1234.ts.net"
+    state.tunnel_enabled = True
     bot.state.xray = state
     html = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).build()
     assert len(bot.xray.sub_rows()) == 1
     assert html.count("xr:subs:apply") == 1
-    assert html.count("http://203.0.113.10:2096/") == 2
+    assert html.count("https://obhod-test.tail1234.ts.net/") == 2
     assert html.count("<details><summary>") == 3
-    assert "<pre>http://203.0.113.10:2096/" in html
+    assert "<pre>https://obhod-test.tail1234.ts.net/" in html
     head = html.split("<details>")[0]
     assert head.count("vless://") == 0
-    bundle = bot.xray.sub_bundle("203.0.113.10")
+    bundle = bot.xray.sub_bundle("obhod-test.tail1234.ts.net")
     tail = html.split("<details><summary>")[-1]
     assert tail.count("vless://") == len(bundle.links)
     assert len(bundle.links) >= 1

@@ -157,16 +157,16 @@ class FakeControl:
         self.calls.append(["stats", pattern])
         return dict(self.traffic)
 
-    async def sub_install(self, cfg: Any, port: int = 2096) -> Any:
+    async def sub_install(self, cfg: Any, port: int = 2096, domain: str = "") -> Any:
         from BOT.xrayrpc import SubState
 
-        self.calls.append(["sub-install", str(port)])
+        self.calls.append(["sub-install", str(port), str(domain)])
         return SubState(installed=True, port=port, listening=False, entries=0)
 
-    async def sub_sync(self, cfg: Any, registry: dict[str, Any], port: int = 2096) -> Any:
+    async def sub_sync(self, cfg: Any, registry: dict[str, Any], port: int = 2096, domain: str = "") -> Any:
         from BOT.xrayrpc import SubState
 
-        self.calls.append(["sub-sync", str(port), str(len(registry.get("entries") or {}))])
+        self.calls.append(["sub-sync", str(port), str(len(registry.get("entries") or {})), str(domain)])
         return SubState(installed=True, port=port, listening=True, entries=len(registry.get("entries") or {}))
 
     async def sub_status(self, cfg: Any, port: int = 2096) -> Any:

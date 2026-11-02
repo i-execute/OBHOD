@@ -405,9 +405,15 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     else:
         blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
     blocks.append(quote(muted(t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN))))
-    buttons = [
-        row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_STATUS"), "xr:subs:status", icon="info")),
-        row(button(t("XR_SUBS_STOP"), "xr:subs:stop", icon="stop"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")),
+    domain_ok = bool(state.tunnel_enabled and state.public_base())
+    buttons = []
+    if not domain_ok:
+        blocks.insert(1, quote(bold(t("XR_SUBS_NO_DOMAIN"))))
+        buttons.append(row(button(t("NAV_DOMAIN"), "xr:dom", icon="world")))
+    else:
+        buttons.append(row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_STATUS"), "xr:subs:status", icon="info")))
+        buttons.append(row(button(t("XR_SUBS_STOP"), "xr:subs:stop", icon="stop"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")))
+    buttons += [
         input_row(t("XR_SUBS_PORT"), "xr_sub_port", "-", view.lang),
         input_row(t("XR_SUBS_ADDRESS") if state.address(view.address) else t("XR_SUBS_SET_ADDRESS"), "xr_sub_address", "-", view.lang),
         row(button(t("XR_SUBS_TRAFFIC_BTN"), "xr:subs:traffic", icon="chart")),
@@ -591,7 +597,7 @@ def scan_mismatch_screen(view: XrayView, result: ScanResult, inbound: XrayInboun
     return screen(t("XR_SCAN_MISMATCH_TITLE"), t("XR_SCAN_MISMATCH_SUBTITLE"), blocks, buttons, icon="warn")
 
 
-def domain_screen(view: XrayView, tunnel: Any = None) -> Any:
+def domain_screen(view: XrayView, tunnel: Any = None, key_mask: str = "") -> Any:
     t = view.tr()
     state = view.state
     blocks = banner(view, t)
@@ -601,6 +607,7 @@ def domain_screen(view: XrayView, tunnel: Any = None) -> Any:
         ("link", t("DOM_HOST"), code(state.tunnel_host or t("UI_NONE"))),
         ("link", t("DOM_SUB_URL"), code(state.sub_url_host(view.address) or t("UI_NOT_SET"))),
         ("clock", t("DOM_CLIENT_IP"), code(t("DOM_CLIENT_IP_VALUE"))),
+        ("key", t("DOM_KEY_SET"), code(key_mask or t("UI_NOT_SET"))),
     ]
     if tunnel is not None:
         pairs.append(("server", t("DOM_BACKEND"), code(tunnel.backend or "absent")))

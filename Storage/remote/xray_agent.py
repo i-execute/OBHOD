@@ -1043,6 +1043,7 @@ def write_sub_unit(server, registry, port):
             "User=root",
             "Environment=OBHOD_SUB_REGISTRY=" + registry,
             "Environment=OBHOD_SUB_PORT=" + str(int(port)),
+            "Environment=OBHOD_SUB_BIND=127.0.0.1",
             "Environment=OBHOD_SUB_ACCESS_LOG=" + os.path.join(path_of("/var/log/xray"), "sub.log"),
             "Environment=OBHOD_SECURITY_LOG=" + os.path.join(path_of("/var/log/obhod"), "security.log"),
             "ExecStart=" + sys.executable + " " + server,
@@ -1140,6 +1141,7 @@ def start_sub(port, registry):
     env = dict(os.environ)
     env["OBHOD_SUB_REGISTRY"] = registry
     env["OBHOD_SUB_PORT"] = str(int(port))
+    env["OBHOD_SUB_BIND"] = "127.0.0.1"
     env["OBHOD_SECURITY_LOG"] = os.path.join(path_of("/var/log/obhod"), "security.log")
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
@@ -1157,7 +1159,20 @@ def start_sub(port, registry):
         raise ScriptError("start_failed", "the subscription server exited right after the start", "sub")
 
 
+SUB_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){2,4}$")
+
+
+def sub_domain(flags):
+    host = str(flags.get("domain", "") or "").strip().lower()
+    if not host:
+        raise ScriptError("no_domain", "the subscription needs a public domain, bring the tunnel up first", "sub")
+    if not SUB_DOMAIN_RE.match(host) or host.replace(".", "").isdigit():
+        raise ScriptError("bad_arg", "the subscription domain is not valid", "sub")
+    return host
+
+
 def cmd_sub_install(flags, rest):
+    sub_domain(flags)
     payload = payload_of(flags, "server_b64")
     if not payload:
         raise ScriptError("bad_arg", "the subscription server body is required", "sub")
@@ -1194,6 +1209,7 @@ def write_atomic(target, payload, mode=0o600):
 
 
 def cmd_sub_sync(flags, rest):
+    sub_domain(flags)
     payload = payload_of(flags, "registry_b64")
     if not payload:
         raise ScriptError("bad_arg", "the subscription registry is required", "sub")
@@ -1211,7 +1227,7 @@ def cmd_sub_sync(flags, rest):
         raise ScriptError("bad_arg", "the registry path is a symbolic link", "sub")
     write_atomic(registry, json.dumps(body, ensure_ascii=False, sort_keys=True), 0o600)
     state = sub_state(port)
-    if state["installed"] and state["listening"] and int(state["port"]) == port and state["unit"]:
+    if state["installed"] and state["listening"] and int(state["port"]) == port and os.path.isfile(unit):
         note("the subscription registry is rewritten, the service keeps running")
         return state, None
     stop_sub()

@@ -241,22 +241,52 @@ def test_subs_apply_pushes_registry(tmp_path: Path) -> None:
     inbound = new_inbound("vless", 443, "raw", "reality")
     inbound.make_client("owner")
     bot.state.xray.add(inbound)
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = True
     item.save()
     run(item.subs_action(1, 0, "apply"))
     calls = [call for call in bot.control.calls if call[0].startswith("sub-")]
     assert calls[0][0] == "sub-install"
     assert calls[1][0] == "sub-sync"
+    assert calls[0][2] == "obhod-test.tail1234.ts.net"
+    assert calls[1][3] == "obhod-test.tail1234.ts.net"
     assert bot.state.xray.sub_enabled is True
     run(item.subs_action(1, 0, "status"))
     run(item.subs_action(1, 0, "stop"))
     assert bot.state.xray.sub_enabled is False
 
 
+def test_subs_apply_is_blocked_without_a_domain(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = False
+    item.save()
+    before = [call for call in bot.control.calls]
+    run(item.subs_action(1, 0, "apply"))
+    assert [call for call in bot.control.calls if call[0].startswith("sub-")] == []
+    assert bot.state.xray.sub_enabled is False
+    assert len(bot.control.calls) == len(before)
+    run(item.subs_action(1, 0, "sync"))
+    assert [call for call in bot.control.calls if call[0].startswith("sub-")] == []
+    bot.state.xray.tunnel_host = ""
+    bot.state.xray.tunnel_enabled = True
+    run(item.subs_action(1, 0, "apply"))
+    assert [call for call in bot.control.calls if call[0].startswith("sub-")] == []
+
+
 def test_subs_need_no_credentials(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     item = XrayPanel(bot, bot.control)
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = True
     run(item.subs_action(1, 0, "apply"))
-    assert "sub_install" in bot.control.calls or bot.control.calls
+    assert bot.control.calls
+    assert [call[0] for call in bot.control.calls if call[0].startswith("sub-")] == ["sub-install", "sub-sync"]
 
 
 def test_core_actions(tmp_path: Path) -> None:
@@ -898,3 +928,83 @@ def test_the_subscription_url_switches_to_the_tunnel(tmp_path: Path) -> None:
     through = item.sub_rows()[0][2]
     assert through.startswith("https://obhod.tail1234.ts.net/")
     assert ":2096" not in through
+
+
+def test_the_tailscale_key_is_stored_privately_and_never_in_the_state(tmp_path: Path) -> None:
+    from BOT import i18n
+
+    item, bot = panel(tmp_path)
+    key = "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567"
+    message = item.set_field("xr_tunnel_key", "-", key)
+    path = item.key_path()
+    assert path.read_text(encoding="utf-8") == key
+    assert oct(path.stat().st_mode)[-3:] == "600"
+    assert item.tunnel_key == key
+    assert item.key_mask() == "tskey-auth-k7...4567"
+    assert key not in message
+    item.save()
+    assert key not in bot.store.path.read_text(encoding="utf-8")
+    restarted = XrayPanel(bot, bot.control)
+    assert restarted.tunnel_key == key
+    assert item.set_field("xr_tunnel_key", "-", "") == i18n.t("NOTICE_TUNNEL_KEY_CLEARED", bot.state.language)
+    assert not path.exists()
+    assert item.tunnel_key == ""
+    with pytest.raises(PanelError):
+        item.set_field("xr_tunnel_key", "-", "ssh-rsa AAAAB3NzaC1yc2E")
+
+
+def test_the_tunnel_up_needs_a_key_before_it_runs(tmp_path: Path) -> None:
+    from BOT import i18n
+
+    item, bot = panel(tmp_path)
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    item.save()
+    before = len(bot.control.calls)
+    run(item.tunnel_action(1, 0, "up"))
+    assert [call for call in bot.control.calls if call[0].startswith("tunnel-")] == []
+    assert len(bot.control.calls) == before
+    assert i18n.t("DOM_KEY_MISSING", bot.state.language) in bot.rendered[-1].build()
+
+
+def test_turning_the_tunnel_off_takes_the_subscription_down(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = True
+    bot.state.xray.tunnel_installed = True
+    bot.state.xray.sub_enabled = True
+    item.save()
+    run(item.tunnel_action(1, 0, "off"))
+    assert bot.state.xray.tunnel_enabled is False
+    assert bot.state.xray.sub_enabled is False
+    assert any(call[0] == "sub-stop" for call in bot.control.calls)
+
+
+def test_the_domain_screen_shows_the_masked_key(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    item.save()
+    item.set_field("xr_tunnel_key", "-", "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567")
+    html = item.dom_screen(item.view()).build()
+    assert "tskey-auth-k7...4567" in html
+    assert "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567" not in html
+    assert html.count('switch_inline_query_current_chat') == 2
+
+
+def test_the_key_arrives_through_the_inline_button_and_never_through_a_message(tmp_path: Path) -> None:
+    from BOT import inline
+
+    bot = make_bot(tmp_path)
+    inline.configure("test-secret")
+    key = "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567"
+    token = inline.token_for("xr_tunnel_key", "-")
+    results = inline.results_for("%s %s" % (token, key), current={}, lang=bot.state.language)
+    assert len(results) == 1
+    entry = results[0]
+    assert key not in entry["description"]
+    assert key not in entry["title"]
+    assert entry["description"] == i18n.t("INL_SAVE_DESC", bot.state.language)
+    body = entry["input_message_content"]["message_text"]
+    assert key not in body
+    _, kind, index, payload = inline.parse_payload(body)
+    value = inline.value_from_payload(token, kind, index, payload, bot.state.language)
+    assert value == key

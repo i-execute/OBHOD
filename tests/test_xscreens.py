@@ -126,8 +126,15 @@ def test_subs_screen_shows_path_format() -> None:
     item = view()
     html = xscreens.subs_screen(item, []).to_html()
     assert i18n.t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN) in html
-    assert "xr:subs:apply" in html
     assert i18n.t("XR_SUBS_EMPTY") in html
+    assert "xr:subs:apply" not in html
+    assert i18n.t("XR_SUBS_NO_DOMAIN") in html
+    assert "xr:dom" in html
+    item.state.tunnel_host = "obhod-test.tail1234.ts.net"
+    item.state.tunnel_enabled = True
+    named = xscreens.subs_screen(item, []).to_html()
+    assert named.count("xr:subs:apply") == 1
+    assert i18n.t("XR_SUBS_NO_DOMAIN") not in named
 
 
 def test_subs_screen_keeps_one_link_in_a_collapsed_block() -> None:

@@ -391,17 +391,17 @@ class XrayControl:
                 continue
         return found
 
-    async def sub_install(self, cfg: SshSettings, port: int = SUB_PORT) -> SubState:
+    async def sub_install(self, cfg: SshSettings, port: int = SUB_PORT, domain: str = "") -> SubState:
         payload = sub_server_code().encode("utf-8")
         flag, stdin = payload_arg("server-b64", payload)
-        response = await self.call(cfg, ["sub-install", flag, f"--port={int(port)}"], timeout=180, stdin=stdin)
+        response = await self.call(cfg, ["sub-install", flag, f"--port={int(port)}", "--domain=" + str(domain)[:64]], timeout=180, stdin=stdin)
         response.raise_for_status()
         return SubState.from_dict(response.data)
 
-    async def sub_sync(self, cfg: SshSettings, registry: dict[str, Any], port: int = SUB_PORT) -> SubState:
+    async def sub_sync(self, cfg: SshSettings, registry: dict[str, Any], port: int = SUB_PORT, domain: str = "") -> SubState:
         payload = json.dumps(registry, ensure_ascii=False, sort_keys=True).encode("utf-8")
         flag, stdin = payload_arg("registry-b64", payload)
-        response = await self.call(cfg, ["sub-sync", flag, f"--port={int(port)}"], timeout=180, stdin=stdin)
+        response = await self.call(cfg, ["sub-sync", flag, f"--port={int(port)}", "--domain=" + str(domain)[:64]], timeout=180, stdin=stdin)
         response.raise_for_status()
         return SubState.from_dict(response.data)
 

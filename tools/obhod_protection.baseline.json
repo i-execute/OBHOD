@@ -1,6 +1,6 @@
 {
   "files": {
-    "BOT/app.py": "5cde66989ee20bca5f728a1a412d0904eabf4f65ef561fcd99af086db691ad38",
+    "BOT/app.py": "4ea4a4bc38059f4c1933626f73f51b2846e6afd9a9ca7abc464a9331222c3cda",
     "BOT/audit.py": "5e3417b27eac442950ca527032b5db51dedc6256b8e724d045df5513626afdc4",
     "BOT/guard.py": "be03d58332d2a9d932c5421e0f487017786ddbdc3799733a21adb0edadabfa73",
     "BOT/inline.py": "ef93ff95b0c425f95ab4cbbdc0f517f9fb417dccdd7a4967dc682e8ec38a568a",
@@ -13,7 +13,7 @@
     "Storage/remote/freeturn_agent.py": "ee7c27c4d38d4f5ba4327b8e89853d35a1b00a4a7c068db91e8335872ca5328a",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "9ec0f191200009771e3ff62126fe1b917843562c603edd2fbaf3492106ea74e6",
-    "Storage/remote/xray_agent.py": "f2d2831b9675c89f8188652625b91bebe2114b015d42d60229ae7828147da52c",
+    "Storage/remote/xray_agent.py": "b6c42167f5b57508d792eabaa41a2b9881024bb5b0d69dc2734c4c16e9176e2a",
     "tools/obhod_watchdog.py": "ccd3378bfe06c60a0b91ccd9e2b4e3ab19d7196647a935877143031b59d04cbe"
   },
   "policy": [

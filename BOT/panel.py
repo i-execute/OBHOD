@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 from . import i18n, inline, portguard, screens, subs, xscreens
@@ -79,7 +81,9 @@ GLOBAL_FIELDS = frozenset(
 
 
 class PanelError(Exception):
-    pass
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message)
+        self.message = str(message)
 
 
 class XrayPanel:
@@ -90,11 +94,57 @@ class XrayPanel:
         self.draft: dict[str, str] = {}
         self.results: list[ScanResult] = [ScanResult.from_dict(item) for item in bot.state.xray.scan_results]
         self.sub_state: dict[str, Any] = {}
-        self.tunnel_key = str(getattr(bot, "tunnel_key", "") or "")
+        self.tunnel_key = self.load_tunnel_key()
 
     @property
     def state(self) -> XrayState:
         return self.bot.state.xray
+
+    def key_path(self) -> Path:
+        return Path(str(getattr(self.bot.cfg, "state_dir", "/var/lib/obhod"))) / "tunnel.key"
+
+    def load_tunnel_key(self) -> str:
+        try:
+            text = self.key_path().read_text(encoding="utf-8").strip()
+        except OSError:
+            return str(getattr(self.bot, "tunnel_key", "") or "")
+        return text if TUNNEL_KEY_RE.match(text) else ""
+
+    def store_tunnel_key(self, value: str) -> None:
+        path = self.key_path()
+        if not value:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(value)
+        os.chmod(path, 0o600)
+
+    def dom_screen(self, view: Any, tunnel: Any = None, key_mask: str = "") -> Any:
+        return xscreens.domain_screen(view, tunnel, key_mask or self.key_mask())
+
+    def key_mask(self) -> str:
+        text = self.tunnel_key or ""
+        if len(text) < 16:
+            return ""
+        return "%s...%s" % (text[:13], text[-4:])
+
+    def public_domain(self) -> str:
+        state = self.state
+        if not state.tunnel_enabled:
+            return ""
+        host = (state.tunnel_host or "").strip().lower()
+        return host if TUNNEL_HOST_RE.match(host) else ""
+
+    def require_domain(self) -> str:
+        host = self.public_domain()
+        if not host:
+            raise PanelError(self.tr()("DOM_REQUIRED"))
+        return host
 
     def tr(self) -> i18n.Translator:
         return i18n.translator(self.bot.state.language)
@@ -385,20 +435,23 @@ class XrayPanel:
             try:
                 tunnel = await self.control.tunnel_install(self.bot.state.ssh)
             except RpcError as exc:
-                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=exc.message), None))
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
                 return
         elif action == "up":
             host = (self.state.tunnel_host or "").strip().lower()
             if not TUNNEL_HOST_RE.match(host):
                 host = ""
             if not host:
-                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=t("DOM_HOST_BAD")), None))
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=t("DOM_HOST_BAD")), None))
+                return
+            if not self.tunnel_key:
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=t("DOM_KEY_MISSING")), None))
                 return
             await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_UP"), self.bot.state.language))
             try:
                 tunnel = await self.control.tunnel_up(self.bot.state.ssh, self.tunnel_key, host, self.state.sub_port)
             except RpcError as exc:
-                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=exc.message), None))
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
                 return
             self.state.tunnel_enabled = True
             self.state.tunnel_backend = tunnel.backend
@@ -407,21 +460,27 @@ class XrayPanel:
             try:
                 tunnel = await self.control.tunnel_down(self.bot.state.ssh)
             except RpcError as exc:
-                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=exc.message), None))
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
                 return
             self.state.tunnel_enabled = False
+            if self.state.sub_enabled:
+                self.state.sub_enabled = False
+                try:
+                    await self.control.sub_stop(self.bot.state.ssh, self.state.sub_port)
+                except RpcError:
+                    pass
             self.save()
-            await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(notice=t("DOM_OFF_DONE")), tunnel))
+            await self.render(chat_id, msg_id, self.dom_screen(self.view(notice=t("DOM_OFF_DONE")), tunnel))
             return
         else:
             await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_CHECK"), self.bot.state.language))
             try:
                 tunnel = await self.control.tunnel_status(self.bot.state.ssh)
             except RpcError as exc:
-                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=exc.message), None))
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
                 return
         notice = t("DOM_READY") if tunnel is not None and tunnel.healthy() else ""
-        await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(notice=notice), tunnel))
+        await self.render(chat_id, msg_id, self.dom_screen(self.view(notice=notice), tunnel))
 
     async def encryption_action(self, chat_id: int, msg_id: int, ident: str, combo: str) -> None:
         t = self.tr()
@@ -594,6 +653,11 @@ class XrayPanel:
     async def subs_apply(self, chat_id: int, msg_id: int) -> None:
         state = self.state
         t = self.tr()
+        try:
+            domain = self.require_domain()
+        except PanelError as exc:
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
+            return
         await self.render(
             chat_id,
             msg_id,
@@ -602,13 +666,13 @@ class XrayPanel:
         try:
             self.bot.state.sub_port = int(state.sub_port)
             state.sub_port = int(state.sub_port)
-            await self.control.sub_install(self.bot.state.ssh, state.sub_port)
+            await self.control.sub_install(self.bot.state.ssh, state.sub_port, domain)
             extra: list[str] = []
             freeturn = getattr(self.bot, "freeturn", None)
             if freeturn is not None:
                 extra = freeturn.state.link_values()
             registry = state.sub_registry(state.address(self.address()), extra)
-            await self.control.sub_sync(self.bot.state.ssh, registry, state.sub_port)
+            await self.control.sub_sync(self.bot.state.ssh, registry, state.sub_port, domain)
         except (RpcError, OSError) as exc:
             message = getattr(exc, "message", str(exc))
             await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=str(message)), self.sub_rows()))
@@ -1184,10 +1248,12 @@ class XrayPanel:
         if ident == "xr_tunnel_key":
             if text and not TUNNEL_KEY_RE.match(text):
                 raise PanelError(t("DOM_KEY_BAD"))
-            if text:
-                self.tunnel_key = text
-                self.bot.tunnel_key = text
-            return t("NOTICE_TUNNEL_KEY")
+            self.tunnel_key = text
+            self.bot.tunnel_key = text
+            self.store_tunnel_key(text)
+            if not text:
+                return t("NOTICE_TUNNEL_KEY_CLEARED")
+            return t("NOTICE_TUNNEL_KEY", value=self.key_mask())
         if ident == "xr_access_log":
             if not text.startswith("/") or "\n" in text or "\r" in text:
                 raise PanelError("the access log path must be an absolute path without newlines")

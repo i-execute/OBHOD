@@ -117,9 +117,9 @@ def test_the_xray_flags_are_parsed_strictly(xray) -> None:
 
 def test_the_xray_agent_refuses_a_missing_registry_on_sync(xray, tmp_path: Path) -> None:
     with pytest.raises(xray.ScriptError):
-        xray.cmd_sub_sync({"registry_b64": ""}, [])
+        xray.cmd_sub_sync({"registry_b64": "", "domain": "obhod-test.tail1234.ts.net"}, [])
     with pytest.raises(xray.ScriptError):
-        xray.cmd_sub_sync({"registry_b64": "e30="}, [])
+        xray.cmd_sub_sync({"registry_b64": "e30=", "domain": "obhod-test.tail1234.ts.net"}, [])
 
 
 def test_the_xray_state_report_survives_a_bare_host(xray, tmp_path: Path) -> None:
@@ -264,13 +264,15 @@ def test_the_xray_subscription_server_is_written_privately(xray, tmp_path: Path)
     import base64 as b64
 
     body = b"#!/usr/bin/env python3\nprint('sub')\n"
-    state, _ = xray.cmd_sub_install({"server_b64": b64.b64encode(body).decode(), "port": "2096"}, [])
+    state, _ = xray.cmd_sub_install({"server_b64": b64.b64encode(body).decode(), "port": "2096", "domain": "obhod-test.tail1234.ts.net"}, [])
     server, registry, _unit = xray.sub_paths()
     assert Path(server).read_bytes() == body
     assert oct(Path(server).stat().st_mode)[-3:] == "755"
     assert state["installed"] is True
     with pytest.raises(xray.ScriptError):
         xray.cmd_sub_install({}, [])
+    with pytest.raises(xray.ScriptError):
+        xray.cmd_sub_install({"server_b64": "", "domain": "obhod-test.tail1234.ts.net"}, [])
 
 
 def test_the_xray_registry_is_written_0600(xray, tmp_path: Path) -> None:
@@ -283,11 +285,11 @@ def test_the_xray_registry_is_written_0600(xray, tmp_path: Path) -> None:
     xray.has_systemd = lambda: False
     xray.start_sub = lambda port, path: None
     payload = json.dumps({"port": 2096, "entries": {"a": {"links": ["vless://x"]}}})
-    xray.cmd_sub_sync({"registry_b64": b64.b64encode(payload.encode()).decode()}, [])
+    xray.cmd_sub_sync({"registry_b64": b64.b64encode(payload.encode()).decode(), "domain": "obhod-test.tail1234.ts.net"}, [])
     assert oct(Path(registry).stat().st_mode)[-3:] == "600"
     assert json.loads(Path(registry).read_text())["entries"]["a"]["links"] == ["vless://x"]
     with pytest.raises(xray.ScriptError):
-        xray.cmd_sub_sync({"registry_b64": b64.b64encode(b"not json").decode()}, [])
+        xray.cmd_sub_sync({"registry_b64": b64.b64encode(b"not json").decode(), "domain": "obhod-test.tail1234.ts.net"}, [])
 
 
 def test_the_freeturn_guard_refuses_a_wildcard_port(freeturn) -> None:
@@ -381,3 +383,16 @@ def test_the_tunnel_status_without_tailscale(xray, monkeypatch) -> None:
     assert error is None
     assert state["installed"] is False
     assert state["funnel"] is False
+
+
+def test_the_xray_agent_refuses_the_subscription_without_a_domain(xray, tmp_path: Path) -> None:
+    import base64 as b64
+
+    payload = b64.b64encode(b'{"port": 2096, "entries": {}}').decode()
+    for flags in ({}, {"domain": ""}, {"domain": "localhost"}, {"domain": "192.168.1.5"}, {"domain": "-bad.ts.net"}, {"domain": "a b.ts.net"}):
+        with pytest.raises(xray.ScriptError) as install_error:
+            xray.cmd_sub_install(dict(flags, server_b64=payload), [])
+        assert "domain" in str(install_error.value).lower()
+        with pytest.raises(xray.ScriptError):
+            xray.cmd_sub_sync(dict(flags, registry_b64=payload), [])
+    assert xray.sub_domain({"domain": "Node.Tail1234.Ts.Net"}) == "node.tail1234.ts.net"

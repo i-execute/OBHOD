@@ -212,6 +212,9 @@ class Bot:
         state = self.state.xray
         if not state.sub_enabled and not force:
             return False
+        domain = state.tunnel_host if state.tunnel_enabled else ""
+        if not domain:
+            return False
         try:
             registry = self.subs_payload()
         except Exception as exc:
@@ -221,7 +224,7 @@ class Bot:
         if not force and digest == self.subs_digest:
             return False
         try:
-            await self.control.sub_sync(self.state.ssh, registry, state.sub_port)
+            await self.control.sub_sync(self.state.ssh, registry, state.sub_port, domain)
         except Exception as exc:
             self.subs_failed = time.monotonic()
             log.warning("the subscription registry was not pushed: %s", exc)
