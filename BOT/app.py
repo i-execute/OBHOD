@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import logging
 import socket
 import time
+from typing import Any
 
 from goygram import GoyGram
 
@@ -103,6 +105,8 @@ class Bot:
         self.expensive_limit = EXPENSIVE_LIMIT
         self.inline_limit = INLINE_LIMIT
         self.inline_seen: dict[tuple[str, str, str], float] = {}
+        self.subs_digest = ""
+        self.subs_failed = 0.0
         ui.use_icons(self.emoji_enabled)
 
     def is_busy(self) -> bool:
@@ -176,6 +180,38 @@ class Bot:
 
     def save(self) -> None:
         self.store.save(self.state)
+
+    def subs_payload(self) -> dict[str, Any]:
+        state = self.state.xray
+        extra: list[str] = []
+        freeturn = getattr(self, "freeturn", None)
+        if freeturn is not None:
+            try:
+                extra = freeturn.state.link_values()
+            except Exception:
+                extra = []
+        return state.sub_registry(self.address(), extra)
+
+    async def subs_sync(self, force: bool = False) -> bool:
+        state = self.state.xray
+        if not state.sub_enabled and not force:
+            return False
+        try:
+            registry = self.subs_payload()
+        except Exception as exc:
+            log.debug("the subscription registry was skipped: %s", exc)
+            return False
+        digest = hashlib.sha256(json.dumps(registry, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        if not force and digest == self.subs_digest:
+            return False
+        try:
+            await self.control.sub_sync(self.state.ssh, registry, state.sub_port)
+        except Exception as exc:
+            self.subs_failed = time.monotonic()
+            log.warning("the subscription registry was not pushed: %s", exc)
+            return False
+        self.subs_digest = digest
+        return True
 
     def view(self, notice: str = "", error: str = "", busy: str = "") -> screens.View:
         notice = notice or self.update_notice_text()
@@ -589,6 +625,11 @@ class Bot:
                 log.debug("the loading screen failed: %s", exc)
         try:
             await self.route(chat_id, msg_id, data)
+            if data.startswith("xr:") and not data.startswith(("xr:home", "xr:in:nav")):
+                try:
+                    await self.subs_sync()
+                except Exception as exc:
+                    log.debug("the subscription refresh was skipped: %s", exc)
         except (PanelError, ModelError, ConfigError, RpcError, ShellError, FtError) as exc:
             message = getattr(exc, "message", str(exc))
             await self.render(chat_id, msg_id, screens.error_screen(self.view(), self.tr()("ERR_TITLE"), message))

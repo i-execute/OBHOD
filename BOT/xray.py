@@ -1001,6 +1001,34 @@ class Subscription:
         }
 
 
+MAX_TRAFFIC = 4096
+
+
+def safe_port(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return int(SUB_PORT)
+    return number if 1 <= number <= 65535 else int(SUB_PORT)
+
+
+def traffic_map(raw: Any) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in list(raw.items())[:MAX_TRAFFIC]:
+        name = str(key or "")[:64]
+        if not name or not isinstance(value, dict):
+            continue
+        try:
+            up = max(int(value.get("up") or 0), 0)
+            down = max(int(value.get("down") or 0), 0)
+        except (TypeError, ValueError):
+            continue
+        out[name] = {"up": up, "down": down}
+    return out
+
+
 @dataclass
 class XrayState:
     inbounds: list[XrayInbound] = field(default_factory=list)
@@ -1026,6 +1054,7 @@ class XrayState:
     access_log: str = DEFAULT_ACCESS_LOG
     error_log: str = DEFAULT_ERROR_LOG
     sub_refresh: int = 12
+    traffic: dict[str, dict[str, int]] = field(default_factory=dict)
     sub_support_url: str = ""
     sub_announce: str = ""
     api_enabled: bool = True
@@ -1058,6 +1087,7 @@ class XrayState:
             "access_log": self.access_log,
             "error_log": self.error_log,
             "sub_refresh": int(self.sub_refresh),
+            "traffic": {str(key): {"up": int(value.get("up", 0) or 0), "down": int(value.get("down", 0) or 0)} for key, value in list(self.traffic.items())[:MAX_TRAFFIC]},
             "sub_support_url": self.sub_support_url,
             "sub_announce": self.sub_announce,
             "api_enabled": bool(self.api_enabled),
@@ -1094,6 +1124,7 @@ class XrayState:
             access_log=str(data.get("access_log", DEFAULT_ACCESS_LOG) or DEFAULT_ACCESS_LOG),
             error_log=str(data.get("error_log", DEFAULT_ERROR_LOG) or DEFAULT_ERROR_LOG),
             sub_refresh=int(data.get("sub_refresh", 12) or 12),
+            traffic=traffic_map(data.get("traffic")),
             sub_support_url=str(data.get("sub_support_url", "") or "")[:200],
             sub_announce=str(data.get("sub_announce", "") or "")[:200],
             api_enabled=bool(data.get("api_enabled", True)),
@@ -1209,11 +1240,51 @@ class XrayState:
         return value if value in VERSION_CHOICES else LATEST_CHOICE
 
     def ensure_sub_all(self) -> tuple[str, str]:
+        for client in self.canonical_clients():
+            return client.sub_id, client.sub_key
         if len(self.sub_all_id) != SUB_SEGMENT_LEN or any(char not in SUB_ALPHABET for char in self.sub_all_id):
             self.sub_all_id = gen_sub_segment()
         if len(self.sub_all_key) != SUB_SEGMENT_LEN or any(char not in SUB_ALPHABET for char in self.sub_all_key):
             self.sub_all_key = gen_sub_segment()
         return self.sub_all_id, self.sub_all_key
+
+    def canonical_clients(self) -> list[Any]:
+        found: list[tuple[str, int, Any]] = []
+        for inbound in self.inbounds:
+            for client in inbound.clients:
+                if client.sub_id and client.sub_key:
+                    found.append((client.email, int(inbound.id), client))
+        found.sort(key=lambda item: (item[0], item[1]))
+        return [item[2] for item in found]
+
+    def only_client(self) -> list[Any]:
+        found: list[Any] = []
+        for inbound in self.inbounds:
+            if not inbound.enable:
+                continue
+            for client in inbound.clients:
+                if client.sub_id and client.sub_key:
+                    found.append(client)
+        return found
+
+    def single_email(self) -> str:
+        found = self.only_client()
+        if not found:
+            return ""
+        counts: dict[str, int] = {}
+        for client in found:
+            counts[client.email] = counts.get(client.email, 0) + 1
+        best = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return best[0][0]
+
+    def usage_of(self, email: str) -> dict[str, int]:
+        found = self.traffic.get(str(email or ""))
+        if not isinstance(found, dict):
+            return {"up": 0, "down": 0}
+        try:
+            return {"up": max(int(found.get("up") or 0), 0), "down": max(int(found.get("down") or 0), 0)}
+        except (TypeError, ValueError):
+            return {"up": 0, "down": 0}
 
     def sub_path_pattern(self) -> str:
         return "/<%d>/<%d>" % (SUB_SEGMENT_LEN, SUB_SEGMENT_LEN)
@@ -1312,35 +1383,21 @@ class XrayState:
 
     def aggregate_entry(self, address: str = "", extra_links: Any = None, refresh: int = 0) -> dict[str, Any]:
         bundle = subs.aggregate(self, extra_links, address, self.sub_port)
+        quotas: list[dict[str, int]] = []
+        seen: set[str] = set()
+        for client in self.only_client():
+            usage = {"up": 0, "down": 0} if client.email in seen else self.usage_of(client.email)
+            seen.add(client.email)
+            quotas.append(subs.quota_of(client, usage))
+        bundle.quotas = quotas
         entry = subs.entry_of(bundle, refresh or self.sub_refresh)
         entry["support_url"] = self.support_url()
         entry["announce"] = self.announce()
         return entry
 
     def sub_registry(self, address: str = "", extra_links: Any = None) -> dict[str, Any]:
-        entries: dict[str, Any] = {}
-        for item in self.subscriptions(address):
-            quota = subs.quota_of(self.client_of(item.email))
-            entries[item.sub_id] = {
-                "key": item.sub_key,
-                "email": item.email,
-                "inbound": int(item.inbound_id),
-                "title": "OBHOD " + item.email,
-                "refresh": int(self.sub_refresh),
-                "filename": "obhod-" + item.email,
-                "enabled": True,
-                "path": item.path(),
-                "links": list(item.links),
-                "up": quota["up"],
-                "down": quota["down"],
-                "total": quota["total"],
-                "expire": quota["expire"],
-                "support_url": self.support_url(),
-                "announce": self.announce(),
-            }
         bundle = self.aggregate_entry(address, extra_links)
-        entries[bundle["path"].split("/")[1]] = bundle
-        return {"port": int(self.sub_port), "sub_id_len": SUB_SEGMENT_LEN, "entries": entries}
+        return {"port": safe_port(self.sub_port), "sub_id_len": SUB_SEGMENT_LEN, "entries": {bundle["path"].split("/")[1]: bundle}}
 
     def to_config(self) -> str:
         return config_text(

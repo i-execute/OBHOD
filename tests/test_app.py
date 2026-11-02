@@ -470,3 +470,34 @@ def test_freeturm_inline_inputs_are_routed(tmp_path: Path) -> None:
     bot.freeturn.control = FakeFtControl()
     run(bot.dispatch_input(7, "ft_port", "-", "56140"))
     assert bot.state.freeturn.config.listen_port == 56140
+
+
+def test_a_new_inbound_is_pushed_to_the_live_subscription(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.sub_enabled = True
+    control = bot.control
+    first = asyncio.run(bot.subs_sync())
+    assert first is True
+    assert control.calls[-1][0] == "sub-sync"
+    again = asyncio.run(bot.subs_sync())
+    assert again is False
+    extra = new_inbound("vless", 8443, "grpc", "tls")
+    extra.make_client("owner")
+    bot.state.xray.add(extra)
+    assert asyncio.run(bot.subs_sync()) is True
+    assert control.calls[-1][0] == "sub-sync"
+
+
+def test_the_subscription_push_is_off_until_it_is_enabled(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.state.xray.sub_enabled = False
+    before = len(bot.control.calls)
+    assert asyncio.run(bot.subs_sync()) is False
+    assert len(bot.control.calls) == before

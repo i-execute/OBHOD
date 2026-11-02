@@ -52,6 +52,7 @@ class FakeApp:
 class FakeControl:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.traffic: dict[str, int] = {}
         self.core = {
             "installed": True,
             "version": "26.10.29",
@@ -123,6 +124,10 @@ class FakeControl:
 
         self.calls.append(["uninstall"])
         return XrayResponse(result="ok", data={"removed": ["unit"]})
+
+    async def stats(self, cfg: Any, pattern: str = "user>>>") -> dict[str, int]:
+        self.calls.append(["stats", pattern])
+        return dict(self.traffic)
 
     async def sub_install(self, cfg: Any, port: int = 2096) -> Any:
         from BOT.xrayrpc import SubState

@@ -25,6 +25,7 @@ class Bundle:
     key: str = ""
     title: str = "OBHOD"
     links: list[str] = field(default_factory=list)
+    quotas: list[dict[str, int]] = field(default_factory=list)
 
     def path(self) -> str:
         return "/%s/%s" % (self.id, self.key)
@@ -34,6 +35,9 @@ class Bundle:
 
     def url(self, address: str, port: int) -> str:
         return local_url(address, port) + self.path()
+
+    def quota(self) -> dict[str, int]:
+        return sum_quota(getattr(self, "quotas", []) or [])
 
     def json_url(self, address: str, port: int) -> str:
         return local_url(address, port) + self.json_path()
@@ -157,7 +161,22 @@ def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port:
     return bundle
 
 
-def quota_of(client: Any) -> dict[str, int]:
+def usage_of(stats: Any, email: str) -> dict[str, int]:
+    up = 0
+    down = 0
+    if isinstance(stats, dict) and email:
+        try:
+            up = max(int(stats.get("user>>>%s>>>traffic>>>uplink" % email) or 0), 0)
+        except (TypeError, ValueError):
+            up = 0
+        try:
+            down = max(int(stats.get("user>>>%s>>>traffic>>>downlink" % email) or 0), 0)
+        except (TypeError, ValueError):
+            down = 0
+    return {"up": up, "down": down}
+
+
+def quota_of(client: Any, usage: Any = None) -> dict[str, int]:
     gb = 0
     try:
         gb = max(int(getattr(client, "total_gb", 0) or 0), 0)
@@ -167,10 +186,37 @@ def quota_of(client: Any) -> dict[str, int]:
         expire = max(int(getattr(client, "expiry_ms", 0) or 0) // 1000, 0)
     except (TypeError, ValueError):
         expire = 0
-    return {"up": 0, "down": 0, "total": gb * 1024 * 1024 * 1024, "expire": expire}
+    used = usage if isinstance(usage, dict) else {}
+    try:
+        up = max(int(used.get("up") or 0), 0)
+    except (TypeError, ValueError):
+        up = 0
+    try:
+        down = max(int(used.get("down") or 0), 0)
+    except (TypeError, ValueError):
+        down = 0
+    return {"up": up, "down": down, "total": gb * 1024 * 1024 * 1024, "expire": expire}
+
+
+def sum_quota(items: Any) -> dict[str, int]:
+    total = 0
+    up = 0
+    down = 0
+    expire = 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        total += max(int(item.get("total") or 0), 0)
+        up += max(int(item.get("up") or 0), 0)
+        down += max(int(item.get("down") or 0), 0)
+        value = max(int(item.get("expire") or 0), 0)
+        if value and (not expire or value < expire):
+            expire = value
+    return {"up": up, "down": down, "total": total, "expire": expire}
 
 
 def entry_of(bundle: Bundle, refresh: int = 12, title: str = "") -> dict[str, Any]:
+    quota = bundle.quota()
     return {
         "key": bundle.key,
         "email": ALL_EMAIL,
@@ -181,6 +227,10 @@ def entry_of(bundle: Bundle, refresh: int = 12, title: str = "") -> dict[str, An
         "enabled": True,
         "path": bundle.path(),
         "links": list(bundle.links),
+        "up": quota["up"],
+        "down": quota["down"],
+        "total": quota["total"],
+        "expire": quota["expire"],
     }
 
 

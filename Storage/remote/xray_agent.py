@@ -869,6 +869,78 @@ def cmd_x25519(flags, rest):
     return {"private": private, "public": public}, None
 
 
+def api_endpoint():
+    try:
+        config = read_config()
+    except ScriptError:
+        return ""
+    for inbound in config.get("inbounds") or []:
+        if not isinstance(inbound, dict):
+            continue
+        port = 0
+        try:
+            port = int(inbound.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if not port or not 1 <= port <= 65535:
+            continue
+        if str(inbound.get("tag") or "") == "api" or str(inbound.get("protocol") or "") == "tunnel":
+            return "127.0.0.1:%d" % port
+    return ""
+
+
+def parse_stats(text):
+    found = {}
+    raw = (text or "").strip()
+    if not raw:
+        return found
+    items = []
+    try:
+        document = json.loads(raw)
+    except ValueError:
+        document = None
+    if isinstance(document, dict):
+        items = document.get("stat") or document.get("stats") or []
+    elif isinstance(document, list):
+        items = document
+    else:
+        for line in raw.splitlines():
+            token = line.strip()
+            if not token:
+                continue
+            try:
+                items.append(json.loads(token))
+            except ValueError:
+                continue
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if not name or len(name) > 300:
+            continue
+        try:
+            number = int(item.get("value") or 0)
+        except (TypeError, ValueError):
+            number = 0
+        found[name] = max(number, 0)
+    return found
+
+
+def cmd_stats(flags, rest):
+    if not os.path.isfile(CORE):
+        raise ScriptError("not_installed", "the core is not installed", "stats")
+    server = api_endpoint()
+    if not server:
+        raise ScriptError("not_found", "the api inbound is not in the config, turn the api on in the core settings", "stats")
+    pattern = str(flags.get("pattern", "user>>>"))[:64]
+    code, text = run([CORE, "api", "statsquery", "--server=" + server, "-pattern", pattern, "-reset=false"], timeout=60)
+    if code != 0 or not (text or "").strip():
+        code, text = run([CORE, "api", "stats", "--server=" + server, "-pattern", pattern, "-reset=false"], timeout=60)
+    if code != 0:
+        raise ScriptError("internal", "the stats query failed: " + (text or "").strip()[:200], "stats")
+    return {"stats": parse_stats(text), "server": server}, None
+
+
 def cmd_uninstall(flags, rest):
     stop_core()
     removed = []
@@ -1121,6 +1193,10 @@ def cmd_sub_sync(flags, rest):
     if os.path.islink(registry):
         raise ScriptError("bad_arg", "the registry path is a symbolic link", "sub")
     write_atomic(registry, json.dumps(body, ensure_ascii=False, sort_keys=True), 0o600)
+    state = sub_state(port)
+    if state["installed"] and state["listening"] and int(state["port"]) == port and state["unit"]:
+        note("the subscription registry is rewritten, the service keeps running")
+        return state, None
     stop_sub()
     deadline = time.time() + 6
     while time.time() < deadline and port_open(port):
@@ -1163,6 +1239,7 @@ COMMANDS = {
     "vlessenc": cmd_vlessenc,
     "sub-install": cmd_sub_install,
     "sub-sync": cmd_sub_sync,
+    "stats": cmd_stats,
     "sub-status": cmd_sub_status,
     "sub-stop": cmd_sub_stop,
     "uninstall": cmd_uninstall,

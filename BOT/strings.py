@@ -1034,6 +1034,13 @@ class EN:
     NOTICE_SUB_ANNOUNCE = "announcement: {value}"
     ERR_SUB_SUPPORT = "the support link must start with http:// or https:// and stay under 200 characters"
     ERR_SUB_ANNOUNCE = "the announcement must be one line under 200 characters"
+    XR_SUBS_ONE = "one link for everything"
+    XR_SUBS_TRAFFIC = "traffic now"
+    XR_SUBS_LINKS_TITLE = "links inside this subscription"
+    XR_SUBS_TRAFFIC_BTN = "refresh traffic"
+    NOTICE_SUBS_TRAFFIC = "traffic updated from the core api"
+    ERR_SUBS_TRAFFIC = "the core api did not answer, check the api in the core settings"
+    XR_SUBS_LINKS_MORE = "and {count} more inside the link"
 
 class RU:
     LANG_CODE = "ru"
@@ -2068,6 +2075,13 @@ class RU:
     NOTICE_SUB_ANNOUNCE = "объявление: {value}"
     ERR_SUB_SUPPORT = "ссылка поддержки должна начинаться с http:// или https:// и быть короче 200 символов"
     ERR_SUB_ANNOUNCE = "объявление должно быть одной строкой короче 200 символов"
+    XR_SUBS_ONE = "одна ссылка на всё"
+    XR_SUBS_TRAFFIC = "трафик сейчас"
+    XR_SUBS_LINKS_TITLE = "ссылки внутри этой подписки"
+    XR_SUBS_TRAFFIC_BTN = "обновить трафик"
+    NOTICE_SUBS_TRAFFIC = "трафик обновлён через api ядра"
+    ERR_SUBS_TRAFFIC = "api ядра не отвечает, проверь api в настройках ядра"
+    XR_SUBS_LINKS_MORE = "и ещё {count} внутри ссылки"
 
 class ZH:
     LANG_CODE = "zh"
@@ -3102,4 +3116,11 @@ class ZH:
     NOTICE_SUB_ANNOUNCE = "公告: {value}"
     ERR_SUB_SUPPORT = "支持链接必须以 http:// 或 https:// 开头且不超过 200 个字符"
     ERR_SUB_ANNOUNCE = "公告必须是 200 个字符以内的单行文本"
+    XR_SUBS_ONE = "一条链接搞定全部"
+    XR_SUBS_TRAFFIC = "当前流量"
+    XR_SUBS_LINKS_TITLE = "此订阅内的链接"
+    XR_SUBS_TRAFFIC_BTN = "刷新流量"
+    NOTICE_SUBS_TRAFFIC = "已通过内核 api 更新流量"
+    ERR_SUBS_TRAFFIC = "内核 api 未响应, 请检查内核设置中的 api"
+    XR_SUBS_LINKS_MORE = "链接内还有 {count} 条"
 

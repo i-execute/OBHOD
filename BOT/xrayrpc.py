@@ -336,6 +336,18 @@ class XrayControl:
         response.raise_for_status()
         return {str(key): str(value) for key, value in response.data.items()}
 
+    async def stats(self, cfg: SshSettings, pattern: str = "user>>>") -> dict[str, int]:
+        response = await self.call(cfg, ["stats", "--pattern=" + str(pattern)[:64]], timeout=90)
+        response.raise_for_status()
+        found: dict[str, int] = {}
+        for key, value in (response.data.get("stats") or {}).items():
+            name = str(key)[:300]
+            try:
+                found[name] = max(int(value), 0)
+            except (TypeError, ValueError):
+                continue
+        return found
+
     async def sub_install(self, cfg: SshSettings, port: int = SUB_PORT) -> SubState:
         payload = sub_server_code().encode("utf-8")
         flag, stdin = payload_arg("server-b64", payload)

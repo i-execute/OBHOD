@@ -17,6 +17,7 @@ from BOT import subs
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "Storage" / "remote" / "sub_server.py"
 AGENT = ROOT / "Storage" / "remote" / "xray_agent.py"
+from BOT import i18n
 from BOT.xray import XrayState, new_inbound
 
 
@@ -131,20 +132,27 @@ def test_the_aggregate_segments_survive_a_save_and_load(tmp_path: Path) -> None:
     from BOT.store import State, Store
 
     state = State(xray=filled())
-    state.xray.ensure_sub_all()
+    owner = state.xray.only_client()[0]
+    assert state.xray.ensure_sub_all() == (owner.sub_id, owner.sub_key)
     store = Store(tmp_path / "state.json")
     store.save(state)
     loaded = store.load()
-    assert loaded.xray.ensure_sub_all() == (state.xray.sub_all_id, state.xray.sub_all_key)
+    assert loaded.xray.ensure_sub_all() == (owner.sub_id, owner.sub_key)
+    assert loaded.xray.ensure_sub_all() == state.xray.ensure_sub_all()
 
 
 def test_a_broken_aggregate_segment_is_replaced() -> None:
-    state = filled()
+    state = XrayState()
     state.sub_all_id = "short"
     state.sub_all_key = "x" * 64
     found = state.ensure_sub_all()
     assert len(found[0]) == 64
     assert found[1] == "x" * 64
+    state.sub_all_id = ""
+    state.sub_all_key = ""
+    generated = state.ensure_sub_all()
+    assert len(generated[0]) == 64 and len(generated[1]) == 64
+    assert generated == state.ensure_sub_all()
 
 
 def free_port() -> int:
@@ -163,8 +171,7 @@ def server(tmp_path: Path):
     state = filled()
     body = {"port": port, "entries": state.sub_registry("203.0.113.10")["entries"]}
     for entry in body["entries"].values():
-        if entry.get("email") == "owner":
-            entry.update({"up": 2147483648, "down": 1073741824, "total": 53687091200, "expire": 1893456000})
+        entry.update({"up": 2147483648, "down": 1073741824, "total": 53687091200, "expire": 1893456000})
     body["entries"]["%s" % ("a" * 64)] = {"key": "b" * 64, "title": "OBHOD all", "refresh": 12, "enabled": True, "links": ["vless://a", "freeturn://b"], "path": "/%s/%s" % ("a" * 64, "b" * 64)}
     registry.write_text(json.dumps(body), encoding="utf-8")
     env = {
@@ -225,19 +232,19 @@ def test_the_server_serves_the_json_view(server) -> None:
 
 def test_the_server_reports_the_quota_like_3x_ui(server) -> None:
     port, body, push = server
-    owner = next(item for item in body["entries"].values() if item.get("email") == "owner")
+    owner = next(iter(body["entries"].values()))
     code_value, raw, headers = fetch("http://127.0.0.1:%d%s" % (port, owner["path"]))
     assert code_value == 200
     assert headers.get("Subscription-Userinfo") == "upload=2147483648; download=1073741824; total=53687091200; expire=1893456000"
     assert headers.get("Profile-Update-Interval") == "12"
-    assert base64.b64decode(headers["Profile-Title"].split(":", 1)[1]).decode() == "OBHOD owner"
+    assert base64.b64decode(headers["Profile-Title"].split(":", 1)[1]).decode() == subs.ALL_TITLE
     assert headers.get("Profile-Web-Page-Url", "").startswith("http")
     assert headers.get("Content-Disposition", "").startswith("attachment")
 
 
 def test_the_server_answers_the_info_page_like_3x_ui(server) -> None:
     port, body, push = server
-    owner = next(item for item in body["entries"].values() if item.get("email") == "owner")
+    owner = next(iter(body["entries"].values()))
     for suffix in ("/info", "?format=info"):
         code_value, raw, headers = fetch("http://127.0.0.1:%d%s%s" % (port, owner["path"], suffix))
         assert code_value == 200
@@ -249,8 +256,8 @@ def test_the_server_answers_the_info_page_like_3x_ui(server) -> None:
         assert page["used"] == 3221225472
         assert page["remained"] == 53687091200 - 3221225472
         assert page["expire"] == 1893456000
-        assert page["emails"] == ["owner"]
-        assert page["subTitle"] == "OBHOD owner"
+        assert page["emails"] == [subs.ALL_EMAIL]
+        assert page["subTitle"] == subs.ALL_TITLE
         assert page["subUrl"] == "http://127.0.0.1:%d%s" % (port, owner["path"])
         assert page["subJsonUrl"] == page["subUrl"] + "/json"
         assert headers.get("Subscription-Userinfo", "").endswith("expire=1893456000")
@@ -261,7 +268,7 @@ def test_the_server_answers_the_info_page_like_3x_ui(server) -> None:
 
 def test_the_server_refuses_clash(server) -> None:
     port, body, push = server
-    owner = next(item for item in body["entries"].values() if item.get("email") == "owner")
+    owner = next(iter(body["entries"].values()))
     for suffix in ("?format=clash", "/clash"):
         code_value, _raw, _headers = fetch("http://127.0.0.1:%d%s%s" % (port, owner["path"], suffix))
         assert code_value in (400, 404)
@@ -387,12 +394,14 @@ def test_every_client_key_reaches_the_aggregate_bundle_once() -> None:
         assert sum(1 for item in links if item.rsplit("#", 1)[-1].endswith("-%s" % name) or "-%s-" % name in item.rsplit("#", 1)[-1] or item.rsplit("#", 1)[-1].startswith("%s-" % name)) == 2
     registry = state.sub_registry("203.0.113.10", extra)
     entries = list(registry["entries"].values())
-    owners = [item for item in entries if item["email"] != subs.ALL_EMAIL]
-    aggregate_entry = [item for item in entries if item["email"] == subs.ALL_EMAIL]
-    assert len(owners) == 3
-    assert all(len(item["links"]) == 2 for item in owners)
-    assert len(aggregate_entry) == 1
-    assert aggregate_entry[0]["links"] == links
+    assert len(entries) == 1
+    assert entries[0]["email"] == subs.ALL_EMAIL
+    assert entries[0]["links"] == links
+    canonical = state.canonical_clients()[0]
+    assert entries[0]["path"] == "/%s/%s" % (canonical.sub_id, canonical.sub_key)
+    assert entries[0]["key"] == canonical.sub_key
+    state.inbounds[0].enable = False
+    assert state.sub_registry("203.0.113.10", extra)["entries"].keys() == {canonical.sub_id}
 
 
 def test_a_client_with_no_links_is_never_silently_dropped() -> None:
@@ -442,14 +451,11 @@ def test_a_client_named_all_never_collides_with_the_aggregate() -> None:
     inbound.make_client("owner")
     state.add(inbound)
     registry = state.sub_registry("203.0.113.10", [])
-    emails = [item["email"] for item in registry["entries"].values()]
-    assert emails.count(subs.ALL_EMAIL) == 1
-    assert emails.count("all") == 1
-    aggregate = [item for item in registry["entries"].values() if item["email"] == subs.ALL_EMAIL]
-    assert aggregate[0]["title"] == subs.ALL_TITLE
-    assert len(aggregate[0]["links"]) == 2
-    human = [item for item in registry["entries"].values() if item["email"] == "all"]
-    assert len(human[0]["links"]) == 1
+    entries = list(registry["entries"].values())
+    assert len(entries) == 1
+    assert entries[0]["title"] == subs.ALL_TITLE
+    assert len(entries[0]["links"]) == 2
+    assert sum(1 for item in entries[0]["links"] if item.rsplit("#", 1)[-1].endswith("-all-reality-raw")) == 1
 
 
 def test_a_hostile_address_never_reaches_a_link() -> None:
@@ -538,3 +544,144 @@ def test_the_server_ignores_a_hostile_support_link(server) -> None:
     code_value, _raw, headers = fetch("http://127.0.0.1:%d%s" % (port, entry["path"]))
     assert code_value == 200
     assert "Support-Url" not in headers
+
+
+def test_the_registry_always_holds_exactly_one_entry() -> None:
+    state = XrayState()
+    for index in range(4):
+        inbound = new_inbound("vless", 443 + index, "raw", "reality")
+        for name in ("owner", "phone", "peer%04d" % index):
+            inbound.make_client(name)
+        state.add(inbound)
+    registry = state.sub_registry("203.0.113.10", ["freeturn://" + "c" * 40])
+    assert len(registry["entries"]) == 1
+    entry = list(registry["entries"].values())[0]
+    assert len(entry["links"]) == 12 + 1
+    canonical = state.canonical_clients()[0]
+    assert entry["key"] == canonical.sub_key
+    again = state.sub_registry("203.0.113.10", ["freeturn://" + "c" * 40])
+    assert again["entries"].keys() == registry["entries"].keys()
+
+
+def test_the_single_link_survives_a_disabled_inbound() -> None:
+    state = XrayState()
+    first = new_inbound("vless", 443, "raw", "reality")
+    first.make_client("owner")
+    state.add(first)
+    before = set(state.sub_registry("203.0.113.10")["entries"])
+    first.enable = False
+    after = state.sub_registry("203.0.113.10")["entries"]
+    assert set(after) == before
+    assert list(after.values())[0]["links"] == []
+
+
+def test_the_core_traffic_reaches_the_quota() -> None:
+    state = XrayState()
+    first = new_inbound("vless", 443, "raw", "reality")
+    first.make_client("owner")
+    first.clients[0].total_gb = 50
+    state.add(first)
+    second = new_inbound("vless", 8443, "grpc", "tls")
+    second.make_client("owner")
+    second.clients[0].total_gb = 50
+    state.add(second)
+    state.traffic = {"owner": {"up": 1000, "down": 2000}}
+    entry = list(state.sub_registry("203.0.113.10")["entries"].values())[0]
+    assert entry["up"] == 1000
+    assert entry["down"] == 2000
+    assert entry["total"] == 100 * 1024 * 1024 * 1024
+    assert entry["expire"] == 0
+
+
+def test_a_broken_traffic_map_is_ignored() -> None:
+    from BOT.xray import traffic_map
+
+    assert traffic_map(None) == {}
+    assert traffic_map({"owner": {"up": "x", "down": 5}}) == {}
+    assert traffic_map({"owner": {"up": -4, "down": 5}}) == {"owner": {"up": 0, "down": 5}}
+    state = XrayState()
+    state.traffic = {"owner": {"up": 7, "down": 8}}
+    assert state.usage_of("owner") == {"up": 7, "down": 8}
+    assert state.usage_of("nobody") == {"up": 0, "down": 0}
+
+
+def test_the_subs_screen_keeps_one_link_and_folds_the_rest() -> None:
+    from tests.fakes import make_bot
+    from BOT import xscreens
+
+    bot = make_bot(Path("/tmp"))
+    state = filled()
+    state.sub_address = "203.0.113.10"
+    bot.state.xray = state
+    html = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).build()
+    assert len(bot.xray.sub_rows()) == 1
+    assert html.count("xr:subs:apply") == 1
+    assert html.count("http://203.0.113.10:2096/") == 2
+    assert '<pre><code class="language-vless">' in html
+    bundle = bot.xray.sub_bundle("203.0.113.10")
+    assert html.count("vless://") == min(len(bundle.links), 10)
+    assert i18n.t("XR_SUBS_LINKS_MORE", "en", count=max(len(bundle.links) - 10, 0)) in html or len(bundle.links) <= 10
+    assert "/json" in html
+
+
+def test_the_subs_screen_has_no_per_client_link() -> None:
+    from tests.fakes import make_bot
+    from BOT import xscreens
+
+    bot = make_bot(Path("/tmp"))
+    state = filled()
+    state.sub_address = "203.0.113.10"
+    bot.state.xray = state
+    rows = bot.xray.sub_rows()
+    assert [item[0] for item in rows] == [i18n.t("XR_SUBS_ONE", "en")]
+    html = xscreens.subs_screen(bot.xray.view(), rows).build()
+    canonical = state.canonical_clients()[0]
+    single = "/%s/%s" % (canonical.sub_id, canonical.sub_key)
+    assert single in html
+    for item in state.subscriptions("203.0.113.10"):
+        if item.sub_id == canonical.sub_id:
+            continue
+        assert item.path() not in html
+
+
+def test_the_agent_parses_core_stats() -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("obhod_agent_stats", AGENT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    document = '{"stat":[{"name":"user>>>owner>>>traffic>>>uplink","value":"1234"}]}'
+    assert module.parse_stats(document) == {"user>>>owner>>>traffic>>>uplink": 1234}
+    lines = '{"name":"user>>>a>>>traffic>>>downlink","value":77}\n{"name":"user>>>b>>>traffic>>>uplink","value":5}'
+    assert module.parse_stats(lines) == {"user>>>a>>>traffic>>>downlink": 77, "user>>>b>>>traffic>>>uplink": 5}
+    assert module.parse_stats("") == {}
+    assert module.parse_stats("not json at all") == {}
+    assert module.parse_stats('{"stat":[{"name":"","value":1},{"name":"x" * 400,"value":2}]}') == {}
+    assert module.parse_stats('{"stat":[{"name":"user>>>a>>>traffic>>>uplink","value":"-9"}]}') == {"user>>>a>>>traffic>>>uplink": 0}
+
+
+def test_the_agent_reports_a_missing_core() -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("obhod_agent_stats_missing", AGENT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.CORE = "/nonexistent/xray"
+    with pytest.raises(module.ScriptError):
+        module.cmd_stats({"pattern": "user>>>"}, [])
+
+
+def test_a_broken_port_never_breaks_the_registry() -> None:
+    from BOT.xray import safe_port
+
+    state = filled()
+    state.sub_port = "not a port"
+    registry = state.sub_registry("203.0.113.10")
+    assert registry["port"] == 2096
+    state.sub_port = 70000
+    assert state.sub_registry("203.0.113.10")["port"] == 2096
+    state.sub_port = 8443
+    assert state.sub_registry("203.0.113.10")["port"] == 8443
+    assert safe_port("2096") == 2096
+    assert safe_port(None) == 2096
+    assert safe_port(-1) == 2096

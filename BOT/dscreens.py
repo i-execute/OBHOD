@@ -263,7 +263,7 @@ def busy(view: DbgView, text: str) -> Any:
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(muted(text or t("LOADING_BODY"))))
-    return screen(t("LOADING_TITLE"), text, blocks, [row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"))], icon="loading")
+    return screen(t("LOADING_TITLE"), t("BUSY_SUBTITLE"), blocks, [row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"))], icon="loading")
 
 
 def crash_screen(view: DbgView, route: str, trace: str) -> Any:

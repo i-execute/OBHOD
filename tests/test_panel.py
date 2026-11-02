@@ -9,6 +9,7 @@ from BOT import i18n
 from BOT.panel import PanelError, XrayPanel, host_port, parse_port, state_report
 from BOT.scan import ScanResult
 from BOT.xray import SUB_SEGMENT_LEN, XrayState, new_inbound
+from BOT.xrayrpc import XrayError as RpcError
 from tests.fakes import FakeControl, FakeGuard, make_bot, make_inbound
 
 
@@ -461,3 +462,52 @@ def test_support_link_and_announce_are_validated(tmp_path: Path) -> None:
     entry = next(iter(bot.state.xray.sub_registry("203.0.113.10")["entries"].values()))
     assert entry["announce"] == "the server is fine"
     assert entry["support_url"] == ""
+
+
+def test_traffic_from_the_core_reaches_the_registry(tmp_path: Path) -> None:
+    import asyncio
+
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    inbound.clients[0].total_gb = 100
+    bot.state.xray.add(inbound)
+    bot.control.traffic = {
+        "user>>>owner>>>traffic>>>uplink": 4096,
+        "user>>>owner>>>traffic>>>downlink": 8192,
+    }
+    assert asyncio.run(item.refresh_traffic()) is True
+    assert bot.state.xray.traffic["owner"] == {"up": 4096, "down": 8192}
+    entry = list(bot.state.xray.sub_registry("203.0.113.10")["entries"].values())[0]
+    assert entry["up"] == 4096
+    assert entry["down"] == 8192
+    assert entry["total"] == 100 * 1024 * 1024 * 1024
+
+
+def test_a_silent_core_api_keeps_the_old_traffic(tmp_path: Path) -> None:
+    import asyncio
+
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.state.xray.traffic = {"owner": {"up": 11, "down": 22}}
+
+    async def boom(cfg, pattern="user>>>"):
+        raise RpcError("the api is off")
+
+    bot.control.stats = boom
+    assert asyncio.run(item.refresh_traffic()) is False
+    assert bot.state.xray.traffic["owner"] == {"up": 11, "down": 22}
+
+
+def test_the_subs_screen_pulls_the_traffic_first(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.control.traffic = {"user>>>owner>>>traffic>>>uplink": 5, "user>>>owner>>>traffic>>>downlink": 6}
+    before = len(bot.control.calls)
+    asyncio.run(item.subs_action(1, 0, ""))
+    assert ["stats", "user>>>"] in bot.control.calls[before:]
+    assert bot.state.xray.traffic["owner"] == {"up": 5, "down": 6}

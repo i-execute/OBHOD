@@ -34,6 +34,7 @@ from .xray import (
     summary,
 )
 
+LINK_PREVIEW = 10
 MAX_LINKS = 4
 
 FIELD_LABELS = {
@@ -364,6 +365,23 @@ def mldsa_screen(view: XrayView, inbound: XrayInbound) -> Any:
     return screen(t("XR_MLDSA_TITLE"), inbound.remark, blocks, buttons, icon="key")
 
 
+def traffic_line(t: Any, quota: dict[str, int]) -> str:
+    used = int(quota.get("up") or 0) + int(quota.get("down") or 0)
+    total = int(quota.get("total") or 0)
+    if not total:
+        return size_text(used)
+    return "%s / %s" % (size_text(used), size_text(total))
+
+
+def size_text(value: int) -> str:
+    number = float(max(int(value or 0), 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if number < 1024 or unit == "TB":
+            return ("%d %s" % (number, unit)) if unit == "B" else ("%.1f %s" % (number, unit))
+        number /= 1024.0
+    return "0 B"
+
+
 def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     t = view.tr()
     state = view.state
@@ -378,10 +396,7 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         ("bell", t("SET_SUB_ANNOUNCE"), code(state.announce() or t("UI_NOT_SET"))),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
-    if rows_data:
-        blocks.append(table([("user", item[0], item[1]) for item in rows_data[:8]], (t("XR_SUBS_TABLE_CLIENT"), t("XR_SUBS_TABLE_PATH"))))
-        blocks.append(pre("\n".join(item[2] for item in rows_data[:3] if item[2])))
-    else:
+    if not rows_data:
         blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
     if not state.address(view.address):
         blocks.append(quote(bold(t("XR_SUBS_NO_ADDRESS"))))
@@ -390,18 +405,26 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     bundle = view.bundle
     if bundle is not None and bundle.links:
         host = state.address(view.address)
+        quota = bundle.quota()
         pairs = [
-            ("link", t("XR_SUBS_ALL"), code(bundle.safe_url(host, state.sub_port) or t("UI_NOT_SET"))),
+            ("link", t("XR_SUBS_ONE"), code(bundle.safe_url(host, state.sub_port) or t("UI_NOT_SET"))),
             ("file", t("XR_SUBS_JSON"), code(bundle.safe_json_url(host, state.sub_port) or t("UI_NOT_SET"))),
             ("box", t("XR_SUBS_TABLE_CLIENT"), code("%d" % len(bundle.links))),
+            ("chart", t("XR_SUBS_TRAFFIC"), code(traffic_line(t, quota))),
         ]
-        blocks.append(table(pairs, (t("XR_SUBS_ALL"), t("UI_VALUE"))))
+        blocks.append(table(pairs, (t("XR_SUBS_ONE"), t("UI_VALUE"))))
         blocks.append(f"<p>{muted(t('XR_SUBS_ALL_NOTE'))}</p>")
+        blocks.append(f"<p>{bold(t('XR_SUBS_LINKS_TITLE'))}</p>")
+        shown = bundle.links[:LINK_PREVIEW]
+        blocks.append(pre("\n".join(shown), "vless"))
+        if len(bundle.links) > len(shown):
+            blocks.append(quote(muted(t("XR_SUBS_LINKS_MORE", count=len(bundle.links) - len(shown)))))
     buttons = [
         row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_STATUS"), "xr:subs:status", icon="info")),
         row(button(t("XR_SUBS_STOP"), "xr:subs:stop", icon="stop"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")),
         input_row(t("XR_SUBS_PORT"), "xr_sub_port", "-", view.lang),
         input_row(t("XR_SUBS_ADDRESS") if state.address(view.address) else t("XR_SUBS_SET_ADDRESS"), "xr_sub_address", "-", view.lang),
+        row(button(t("XR_SUBS_TRAFFIC_BTN"), "xr:subs:traffic", icon="chart")),
         input_row(t("SET_SUB_REFRESH"), "xr_sub_refresh", "-", view.lang),
         input_row(t("SET_SUB_SUPPORT"), "xr_sub_support", "-", view.lang),
         input_row(t("SET_SUB_ANNOUNCE"), "xr_sub_announce", "-", view.lang),

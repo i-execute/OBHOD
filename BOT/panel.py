@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any
 
-from . import i18n, inline, screens, xscreens
+from . import i18n, inline, screens, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
 from .scan import CONCURRENCY, ScanResult, best_candidate, parse_candidates, scan_targets
@@ -403,16 +403,22 @@ class XrayPanel:
     def sub_rows(self) -> list[tuple[str, str, str]]:
         out: list[tuple[str, str, str]] = []
         host = self.state.address(self.address())
-        for item in self.state.subscriptions(host):
-            out.append((item.email, item.path(), item.safe_url(host, self.state.sub_port)))
         bundle = self.sub_bundle(host)
         if bundle is not None:
             out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), bundle.safe_url(host, self.state.sub_port)))
         return out
 
-    def sub_bundle(self, host: str = ""):
-        from . import subs
+    async def refresh_traffic(self) -> bool:
+        try:
+            stats = await self.control.stats(self.bot.state.ssh)
+        except (RpcError, OSError):
+            return False
+        emails = {client.email for client in self.state.only_client()}
+        self.state.traffic = {email: subs.usage_of(stats, email) for email in emails}
+        self.save()
+        return True
 
+    def sub_bundle(self, host: str = ""):
         address = str(host or self.state.address(self.address()))
         extra: list[str] = []
         freeturn = getattr(self.bot, "freeturn", None)
@@ -424,11 +430,21 @@ class XrayPanel:
             return None
 
     async def subs_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        if not action:
+            await self.refresh_traffic()
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
+            return
         if action == "apply":
             await self.subs_apply(chat_id, msg_id)
             return
         if action == "status":
             await self.subs_status(chat_id, msg_id)
+            return
+        if action == "traffic":
+            ok = await self.refresh_traffic()
+            notice = self.tr()("NOTICE_SUBS_TRAFFIC") if ok else ""
+            error = "" if ok else self.tr()("ERR_SUBS_TRAFFIC")
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=notice, error=error), self.sub_rows()))
             return
         if action == "stop":
             await self.subs_stop(chat_id, msg_id)
