@@ -79,6 +79,8 @@ class XrayView:
     busy: str = ""
     draft: dict[str, str] = field(default_factory=dict)
     lang: str = i18n.DEFAULT_LANGUAGE
+    bundle: Any = None
+    address: str = ""
 
     @property
     def installed(self) -> bool:
@@ -121,7 +123,7 @@ def core_line(view: XrayView, t: i18n.Translator) -> str:
 
 
 def back_row(target: str = "nav:home", lang: str = i18n.DEFAULT_LANGUAGE) -> str:
-    return row(button(i18n.t("UI_HOME", lang), target), button(i18n.t("NAV_XRAY", lang), "xr:home", icon="xray"))
+    return row(button(i18n.t("UI_HOME", lang), target, icon="home"), button(i18n.t("NAV_XRAY", lang), "xr:home", icon="xray"))
 
 
 def home(view: XrayView) -> Any:
@@ -142,12 +144,12 @@ def home(view: XrayView) -> Any:
         rows = []
         for item in state.inbounds:
             mark = t("UI_ON") if item.enable else t("UI_OFF")
-            rows.append((f"{item.id} {item.remark}", f"{item.port} {item.network} {item.security} {mark}"))
+            rows.append(("xray", f"{item.id} {item.remark}", f"{item.port} {item.network} {item.security} {mark}"))
         blocks.append(table(rows, (t("XR_HOME_TABLE"), t("XR_HOME_TABLE2"))))
     else:
         blocks.append(quote(muted(t("XR_HOME_EMPTY"))))
     buttons = [
-        row(button(t("XR_BTN_NEW"), "xr:new"), button(t("NAV_SCANNER"), "xr:scan", icon="scan")),
+        row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("NAV_SCANNER"), "xr:scan", icon="scan")),
         row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("NAV_CORE"), "xr:core", icon="xray")),
         row(button(t("NAV_LOGS"), "xr:logs", icon="logs"), button(t("XR_BTN_CHECK"), "xr:check", icon="scan")),
     ]
@@ -205,6 +207,23 @@ def grab(view: XrayView, key: str) -> str:
     return str(view.draft.get(key, ""))
 
 
+FIELD_ICONS = {
+    "dest": "target",
+    "sni": "world",
+    "short_id": "tag",
+    "mldsa65": "star",
+    "service": "module",
+    "path": "route",
+    "host_header": "world",
+    "mode": "route",
+    "alpn": "shield",
+    "cert_file": "file",
+    "key_file": "key",
+    "fingerprint": "world",
+    "spider_x": "compass",
+}
+
+
 def field_pairs(inbound: XrayInbound, names: tuple[str, ...], lang: str) -> list[tuple[str, str]]:
     data = {
         "dest": inbound.dest,
@@ -221,13 +240,13 @@ def field_pairs(inbound: XrayInbound, names: tuple[str, ...], lang: str) -> list
         "cert_file": inbound.cert_file,
         "key_file": inbound.key_file,
     }
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for name in names:
         if name == "mldsa65":
             value = i18n.t("UI_ON", lang) if inbound.mldsa65_seed else i18n.t("UI_OFF", lang)
         else:
             value = str(data.get(name) or i18n.t("UI_NONE", lang))
-        out.append((field_label(name, lang), code(value)))
+        out.append((FIELD_ICONS.get(name, "tag"), field_label(name, lang), code(value)))
     return out
 
 
@@ -248,10 +267,10 @@ def inbound_screen(view: XrayView, inbound: XrayInbound) -> Any:
     buttons = [
         row(button(t("XR_BTN_LINKS"), f"xr:link:{inbound.id}", icon="link"), button(t("XR_BTN_ADD_CLIENT"), f"xr:cladd:{inbound.id}", icon="add")),
         row(*[button(t("XR_BTN_CLIENT", email=item.email), f"xr:cl:{inbound.id}:{item.email}", icon="user") for item in inbound.clients[:3]]),
-        row(button(t("XR_BTN_PORT"), f"xr:edit:{inbound.id}:xr_port"), button(t("XR_BTN_NAME"), f"xr:edit:{inbound.id}:xr_remark")),
+        row(button(t("XR_BTN_PORT"), f"xr:edit:{inbound.id}:xr_port", icon="plug"), button(t("XR_BTN_NAME"), f"xr:edit:{inbound.id}:xr_remark", icon="tag")),
         field_row(inbound, view.lang),
-        row(button(t("XR_BTN_REALITY_KEYS"), f"xr:keys:{inbound.id}"), button(t("XR_BTN_MLDSA"), f"xr:mldsa:{inbound.id}")),
-        row(button(t("XR_BTN_TOGGLE"), f"xr:toggle:{inbound.id}"), button(t("UI_DELETE"), f"xr:del:{inbound.id}")),
+        row(button(t("XR_BTN_REALITY_KEYS"), f"xr:keys:{inbound.id}", icon="key"), button(t("XR_BTN_MLDSA"), f"xr:mldsa:{inbound.id}", icon="shield")),
+        row(button(t("XR_BTN_TOGGLE"), f"xr:toggle:{inbound.id}", icon="update"), button(t("UI_DELETE"), f"xr:del:{inbound.id}", icon="delete")),
         back_row("xr:home"),
     ]
     return screen(t("XR_INBOUND_TITLE"), t("XR_INBOUND_SUBTITLE", ident=inbound.id), blocks, buttons, icon="module")
@@ -261,8 +280,8 @@ def field_row(inbound: XrayInbound, lang: str) -> str:
     names = [name for name in relevant_fields(inbound.security, inbound.network) if name in FIELD_BUTTONS]
     if not names:
         return ""
-    manual = row(*[inline_button(field_label(name, lang), inline.prefill(FIELD_BUTTONS[name], str(inbound.id))) for name in names[:2]])
-    picks = [inline_button(i18n.t("BTN_LIST", lang), inline.list_query(FIELD_BUTTONS[name], str(inbound.id))) for name in names if inline.has_options(FIELD_BUTTONS[name])]
+    manual = row(*[inline_button(field_label(name, lang), inline.prefill(FIELD_BUTTONS[name], str(inbound.id)), icon="tag") for name in names[:2]])
+    picks = [inline_button(i18n.t("BTN_LIST", lang), inline.list_query(FIELD_BUTTONS[name], str(inbound.id)), icon="compass") for name in names if inline.has_options(FIELD_BUTTONS[name])]
     return manual + row(*picks[:2] if picks else [])
 
 
@@ -283,7 +302,7 @@ def links_screen(view: XrayView, inbound: XrayInbound, address: str, links: list
             blocks.append(block_html)
     buttons = [
         *copyable,
-        row(button(t("UI_REFRESH"), f"xr:link:{inbound.id}"), button(t("XR_BTN_INBOUND"), f"xr:in:{inbound.id}")),
+        row(button(t("UI_REFRESH"), f"xr:link:{inbound.id}", icon="refresh"), button(t("XR_BTN_INBOUND"), f"xr:in:{inbound.id}", icon="xray")),
         back_row("xr:home"),
     ]
     return screen(t("XR_LINKS_TITLE"), inbound.remark, blocks, buttons, icon="link")
@@ -305,7 +324,7 @@ def client_screen(view: XrayView, inbound: XrayInbound, email: str, link: str, s
         ("chart", t("XR_CLIENT_TRAFFIC"), code(client.total_gb)),
     ]
     if sub_path:
-        pairs.append((t("XR_CLIENT_SUB_PATH"), code(sub_path)))
+        pairs.append(("link", t("XR_CLIENT_SUB_PATH"), code(sub_path)))
     blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
     link_button, link_block = fitted(t("XR_CLIENT_COPY"), link, view.lang)
     if link_block:
@@ -315,9 +334,9 @@ def client_screen(view: XrayView, inbound: XrayInbound, email: str, link: str, s
         blocks.append(sub_block)
     buttons = [
         link_button,
-        row(button(t("XR_CLIENT_SUB"), f"xr:sub:{inbound.id}:{client.email}"), button(t("XR_CLIENT_NEW_PATH"), f"xr:subrot:{inbound.id}:{client.email}")),
-        row(button(t("XR_CLIENT_FLOW_BTN"), f"xr:clflow:{inbound.id}:{client.email}"), button(t("XR_CLIENT_LIMIT_BTN"), f"xr:cllimit:{inbound.id}:{client.email}")),
-        row(button(t("UI_DELETE_CLIENT"), f"xr:cldel:{inbound.id}:{client.email}"), button(t("XR_BTN_INBOUND"), f"xr:in:{inbound.id}")),
+        row(button(t("XR_CLIENT_SUB"), f"xr:sub:{inbound.id}:{client.email}", icon="link"), button(t("XR_CLIENT_NEW_PATH"), f"xr:subrot:{inbound.id}:{client.email}", icon="refresh")),
+        row(button(t("XR_CLIENT_FLOW_BTN"), f"xr:clflow:{inbound.id}:{client.email}", icon="route"), button(t("XR_CLIENT_LIMIT_BTN"), f"xr:cllimit:{inbound.id}:{client.email}", icon="speed")),
+        row(button(t("UI_DELETE_CLIENT"), f"xr:cldel:{inbound.id}:{client.email}", icon="delete"), button(t("XR_BTN_INBOUND"), f"xr:in:{inbound.id}", icon="xray")),
         back_row("xr:home"),
     ]
     return screen(t("XR_CLIENT_TITLE"), f"{inbound.remark} / {client.email}", blocks, buttons, icon="user")
@@ -337,7 +356,7 @@ def mldsa_screen(view: XrayView, inbound: XrayInbound) -> Any:
     buttons = [
         input_row(t("XR_MLDSA_SEED"), "xr_mldsa65_seed", str(inbound.id), view.lang),
         input_row(t("XR_MLDSA_VERIFY_BTN"), "xr_mldsa65_verify", str(inbound.id), view.lang),
-        row(button(t("UI_GENERATE"), f"xr:mldsa:{inbound.id}:gen"), button(t("UI_REMOVE"), f"xr:mldsa:{inbound.id}:clear")),
+        row(button(t("UI_GENERATE"), f"xr:mldsa:{inbound.id}:gen", icon="star"), button(t("UI_REMOVE"), f"xr:mldsa:{inbound.id}:clear", icon="delete")),
         back_row(f"xr:in:{inbound.id}"),
     ]
     return screen(t("XR_MLDSA_TITLE"), inbound.remark, blocks, buttons, icon="key")
@@ -356,14 +375,25 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if rows_data:
-        blocks.append(table([(item[0], item[1]) for item in rows_data[:8]], (t("XR_SUBS_TABLE_CLIENT"), t("XR_SUBS_TABLE_PATH"))))
+        blocks.append(table([("user", item[0], item[1]) for item in rows_data[:8]], (t("XR_SUBS_TABLE_CLIENT"), t("XR_SUBS_TABLE_PATH"))))
         blocks.append(pre("\n".join(item[2] for item in rows_data[:3] if item[2])))
     else:
         blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
     blocks.append(quote(muted(t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN))))
+    blocks.append(f"<p>{bold(t('XR_SUBS_RAW'))} {muted(t('XR_SUBS_RAW_NOTE'))}</p>")
+    bundle = view.bundle
+    if bundle is not None and bundle.links:
+        host = state.address(view.address)
+        pairs = [
+            ("link", t("XR_SUBS_ALL"), code(bundle.url(host, state.sub_port))),
+            ("file", t("XR_SUBS_JSON"), code(bundle.json_url(host, state.sub_port))),
+            ("box", t("XR_SUBS_TABLE_CLIENT"), code("%d" % len(bundle.links))),
+        ]
+        blocks.append(table(pairs, (t("XR_SUBS_ALL"), t("UI_VALUE"))))
+        blocks.append(f"<p>{muted(t('XR_SUBS_ALL_NOTE'))}</p>")
     buttons = [
-        row(button(t("XR_SUBS_APPLY"), "xr:subs:apply"), button(t("XR_SUBS_STATUS"), "xr:subs:status")),
-        row(button(t("XR_SUBS_STOP"), "xr:subs:stop"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate")),
+        row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_STATUS"), "xr:subs:status", icon="info")),
+        row(button(t("XR_SUBS_STOP"), "xr:subs:stop", icon="stop"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")),
         input_row(t("XR_SUBS_PORT"), "xr_sub_port", "-", view.lang),
         input_row(t("XR_SUBS_ADDRESS"), "xr_sub_address", "-", view.lang),
         input_row(t("SET_SUB_REFRESH"), "xr_sub_refresh", "-", view.lang),
@@ -394,9 +424,9 @@ def core_screen(view: XrayView) -> Any:
     else:
         blocks.append(quote(muted(t("XR_CORE_UNKNOWN"))))
     buttons = [
-        row(button(t("XR_CORE_INSTALL"), "xr:core:install"), button(t("XR_CORE_APPLY"), "xr:core:apply")),
-        row(button(t("XR_CORE_RESTART"), "xr:core:restart"), button(t("XR_CORE_STOP"), "xr:core:stop")),
-        row(button(t("XR_CORE_PURGE"), "xr:core:purge"), button(t("UI_REFRESH"), "xr:check", icon="scan")),
+        row(button(t("XR_CORE_INSTALL"), "xr:core:install", icon="box"), button(t("XR_CORE_APPLY"), "xr:core:apply", icon="save")),
+        row(button(t("XR_CORE_RESTART"), "xr:core:restart", icon="restart"), button(t("XR_CORE_STOP"), "xr:core:stop", icon="stop")),
+        row(button(t("XR_CORE_PURGE"), "xr:core:purge", icon="delete"), button(t("UI_REFRESH"), "xr:check", icon="scan")),
         version_row(view.state.version, view.lang, view.state.pinned()),
         back_row("xr:home"),
     ]
@@ -425,7 +455,7 @@ def scan_screen(view: XrayView, results: list[ScanResult] | None = None) -> Any:
             mark = t("XR_SCAN_FEASIBLE") if item.feasible else t("XR_SCAN_INFEASIBLE")
             name = (item.server_names[0] if item.server_names else "") or item.host or item.target
             group = item.pq_group or t("XR_SCAN_NO_PQ")
-            pairs.append((item.target, t("XR_SCAN_ROW", mark=mark, latency=item.latency_ms, group=group, name=name)))
+            pairs.append(("radar" if item.feasible else "warn", item.target, t("XR_SCAN_ROW", mark=mark, latency=item.latency_ms, group=group, name=name)))
         blocks.append(table(pairs, (t("XR_SCAN_TARGET"), t("XR_SCAN_RESULT"))))
         best = next((item for item in rows if item.feasible), None)
         if best is not None:
@@ -433,14 +463,14 @@ def scan_screen(view: XrayView, results: list[ScanResult] | None = None) -> Any:
     else:
         blocks.append(quote(muted(t("XR_SCAN_EMPTY"))))
     buttons = [
-        row(button(t("XR_SCAN_RUN"), "xr:scan:run"), button(t("XR_SCAN_MY_TARGETS"), "xr:scan:targets")),
+        row(button(t("XR_SCAN_RUN"), "xr:scan:run", icon="radar"), button(t("XR_SCAN_MY_TARGETS"), "xr:scan:targets", icon="target")),
         input_row(t("XR_SCAN_OWN_TARGET"), "xr_scan_manual", "-", view.lang),
-        row(button(t("XR_SCAN_RESET"), "xr:scan:reset")),
+        row(button(t("XR_SCAN_RESET"), "xr:scan:reset", icon="refresh")),
         input_row(t("SET_SCAN_SNI"), "xr_scan_sni", "-", view.lang),
         input_row(t("SET_SCAN_XVER"), "xr_scan_xver", "-", view.lang),
     ]
     if rows:
-        buttons.insert(1, row(*[button(t("XR_SCAN_USE", target=item.target), f"xr:scan:use:{index}") for index, item in enumerate(rows[:3])]))
+        buttons.insert(1, row(*[button(t("XR_SCAN_USE", target=item.target), f"xr:scan:use:{index}", icon="ok") for index, item in enumerate(rows[:3])]))
     buttons.append(back_row("xr:home"))
     return screen(t("XR_SCAN_TITLE"), t("XR_SCAN_SUBTITLE"), blocks, buttons, icon="scan")
 
@@ -455,7 +485,7 @@ def scan_targets_screen(view: XrayView) -> Any:
     buttons = [
         input_row(t("XR_TARGETS_EDIT"), "xr_scan_targets", "-", view.lang),
         input_row(t("XR_TARGETS_EDIT_CANDIDATES"), "xr_scan_candidates", "-", view.lang),
-        row(button(t("XR_TARGETS_DEFAULT"), "xr:scan:reset"), button(t("NAV_SCANNER"), "xr:scan", icon="scan")),
+        row(button(t("XR_TARGETS_DEFAULT"), "xr:scan:reset", icon="refresh"), button(t("NAV_SCANNER"), "xr:scan", icon="scan")),
         back_row("xr:home"),
     ]
     return screen(t("XR_TARGETS_TITLE"), t("XR_TARGETS_SUBTITLE"), blocks, buttons, icon="target")
@@ -467,13 +497,18 @@ def input_screen(view: XrayView, ident: str, ctx: str = "", back: str = "xr:home
     t = view.tr()
     item = inline.field(ident)
     blocks = banner(view, t)
-    blocks.append(table([(t("UI_FIELD"), code(item.label(view.lang))), (t("UI_HINT"), muted(item.hint(view.lang)))], (t("UI_FIELD"), t("UI_VALUE"))))
+    blocks.append(
+        table(
+            [("tag", t("UI_FIELD"), code(item.label(view.lang))), ("info", t("UI_HINT"), muted(item.hint(view.lang)))],
+            (t("UI_FIELD"), t("UI_VALUE")),
+        )
+    )
     if item.example:
         blocks.append(f"<p>{t('PROMPT_EXAMPLE', example=code(item.example))}</p>")
     blocks.append(quote(muted(t("XR_INPUT_NOTE"))))
     buttons = [
         input_row(t("PROMPT_INPUT"), ident, ctx or "-", view.lang),
-        row(button(t("UI_BACK"), back), button(t("NAV_XRAY"), "xr:home", icon="xray")),
+        row(button(t("UI_BACK"), back, icon="back"), button(t("NAV_XRAY"), "xr:home", icon="xray")),
     ]
     return screen(t("PROMPT_TITLE"), item.label(view.lang), blocks, buttons, icon="file")
 
@@ -482,7 +517,7 @@ def confirm_screen(view: XrayView, title: str, body: str, action: str, back: str
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(bold(body)))
-    buttons = [row(button(t("UI_CONFIRM"), action), button(t("UI_CANCEL"), back))]
+    buttons = [row(button(t("UI_CONFIRM"), action, icon="ok"), button(t("UI_CANCEL"), back, icon="back"))]
     return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, icon="warn")
 
 
@@ -492,8 +527,8 @@ def logs_screen(view: XrayView, lines: list[str], tail: int) -> Any:
     blocks.append(f"<p>{t('LOGS_LAST', count=code(tail))}</p>")
     blocks.append(pre("\n".join(lines) or t("UI_EMPTY")))
     buttons = [
-        row(button("50", "xr:logs:50"), button("200", "xr:logs:200"), button("500", "xr:logs:500")),
-        row(button(t("UI_REFRESH"), f"xr:logs:{tail}"), button(t("NAV_CORE"), "xr:core", icon="xray")),
+        row(button("50", "xr:logs:50", icon="logs"), button("200", "xr:logs:200", icon="logs"), button("500", "xr:logs:500", icon="logs")),
+        row(button(t("UI_REFRESH"), f"xr:logs:{tail}", icon="refresh"), button(t("NAV_CORE"), "xr:core", icon="xray")),
         back_row("xr:home"),
     ]
     return screen(t("XR_LOGS_TITLE"), t("XR_LOGS_SUBTITLE"), blocks, buttons, icon="logs")

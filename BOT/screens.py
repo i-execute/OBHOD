@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import i18n
+from . import cores, i18n
 from .guard import BanState, SshState
 from .store import State
 from .ui import (
@@ -38,6 +38,7 @@ class View:
     busy: str = ""
     lang: str = i18n.DEFAULT_LANGUAGE
     emoji_default: bool = False
+    ft_clients: int = 0
 
     @property
     def emoji_on(self) -> bool:
@@ -97,13 +98,33 @@ def core_line(view: View, t: i18n.Translator) -> str:
     return bold(t("HOME_CORE_STATE", version=version, state=state)) + " " + muted(t("HOME_CORE_PORTS", ports=ports))
 
 
+def core_rows(view: View, t: i18n.Translator) -> list[tuple[str, str, str]]:
+    cards = cores.snapshot(view.state, view.core, view.ft_clients)
+    rows: list[tuple[str, str, str]] = []
+    for card in cards:
+        rows.append((card.icon, card.label(t), card.detail(t)))
+    return rows
+
+
 def home(view: View) -> Any:
     t = view.tr()
     state = view.state
     xray = state.xray
+    cards = cores.snapshot(state, view.core, view.ft_clients)
     blocks = banner(view, t)
     blocks.append(f"<p>{ssh_line(view, t)}</p>")
-    blocks.append(f"<p>{core_line(view, t)}</p>")
+    summary = [
+        ("module", t("HOME_SUMMARY_ACTIVE"), code(t("CORE_NAME_%s" % cores.normalize(state.core).upper()))),
+        ("ok", t("HOME_SUMMARY_RUNNING"), code(cores.running_count(cards))),
+        ("save", t("HOME_SUMMARY_INSTALLED"), code(cores.installed_count(cards))),
+        ("info", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
+        ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
+        ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
+        ("shield", t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),
+    ]
+    blocks.append(table(summary, (t("HOME_SUMMARY_TITLE"), t("UI_VALUE"))))
+    blocks.append(table(core_rows(view, t), (t("HOME_CORE_TABLE"), t("HOME_CORE_TABLE2"))))
+    blocks.append(f"<p>{muted(t('HOME_CORE_HINT'))}</p>")
     pairs = [
         ("info", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
         ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
@@ -114,12 +135,14 @@ def home(view: View) -> Any:
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if xray.inbounds:
-        rows = [(f"{item.id} {item.remark}", f"{item.port} {item.network} {item.security}") for item in xray.inbounds]
+        rows = [
+            ("xray", f"{item.id} {item.remark}", f"{item.port} {item.network} {item.security}") for item in xray.inbounds
+        ]
         blocks.append(table(rows, (t("HOME_TABLE_HEADER"), t("HOME_TABLE_HEADER2"))))
-    buttons = [
-        row(button(t("NAV_XRAY"), "xr:home", icon="xray"), button(t("NAV_FREETURN"), "ft:home", icon="tunnel")),
+    core_buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cards]
+    buttons = core_buttons + [
         row(button(t("NAV_SCANNER"), "xr:scan", icon="scan"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
-        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("CORE_NAV"), "core:show", icon="module")),
+        row(button(t("CORE_NAV"), "core:show", icon="module"), button(t("NAV_DEBUG"), "dbg:home", icon="bug")),
         row(button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield"), button(t("NAV_SSHD"), "nav:sshd", icon="lock")),
         row(button(t("NAV_SSH"), "nav:ssh", icon="key"), button(t("NAV_SETTINGS"), "nav:settings", icon="settings")),
         row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("NAV_LANGUAGE"), "nav:lang", icon="language")),
@@ -131,7 +154,7 @@ def home(view: View) -> Any:
 def language_screen(view: View) -> Any:
     t = view.tr()
     blocks = banner(view, t)
-    blocks.append(table([(t("LANG_CURRENT"), code(t("LANG_NAME")))], (t("UI_PARAM"), t("UI_VALUE"))))
+    blocks.append(table([("language", t("LANG_CURRENT"), code(t("LANG_NAME")))], (t("UI_PARAM"), t("UI_VALUE"))))
     blocks.append(quote(muted(t("LANG_NOTE"))))
     buttons = [row(*[button(i18n.t("LANG_NAME", item), f"lang:set:{item}", icon="language") for item in i18n.LANGUAGES])]
     buttons.append(row(button(t("UI_HOME"), "nav:home", icon="home")))
@@ -308,8 +331,8 @@ def sshd_screen(view: View) -> Any:
         row(button(t("SSHD_BTN_CHECK"), "sshd:status", icon="info")),
         input_row(t("SSHD_NEW_PORT"), "ssh_new_port", "-", view.lang),
         input_row(t("SSHD_PUBKEY"), "ssh_pubkey", "-", view.lang),
-        row(button(t("SSHD_PW_OFF"), "sshd:auth:no", icon="lock"), button(t("SSHD_PW_ON"), "sshd:auth:yes")),
-        row(button(t("SSHD_ROOT_KEY"), "sshd:root:prohibit-password"), button(t("SSHD_ROOT_OFF"), "sshd:root:no", icon="lock")),
+        row(button(t("SSHD_PW_OFF"), "sshd:auth:no", icon="lock"), button(t("SSHD_PW_ON"), "sshd:auth:yes", icon="unlock")),
+        row(button(t("SSHD_ROOT_KEY"), "sshd:root:prohibit-password", icon="key"), button(t("SSHD_ROOT_OFF"), "sshd:root:no", icon="lock")),
         row(button(t("SSHD_REMOVE"), "sshd:remove", icon="delete"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("SSHD_TITLE"), t("SSHD_SUBTITLE"), blocks, buttons, footer=t("SSHD_FOOTER"), icon="lock")
@@ -359,7 +382,7 @@ def update_confirm_screen(view: View, info: dict[str, Any], preview: dict[str, A
         if extra > 0:
             blocks.append(quote(muted(t("UPD_PREVIEW_MORE", count=extra))))
     buttons = [
-        row(button(t("UI_CONFIRM"), action), button(t("UI_CANCEL"), "upd:show", icon="update")),
+        row(button(t("UI_CONFIRM"), action, icon="ok"), button(t("UI_CANCEL"), "upd:show", icon="update")),
     ]
     return screen(t("UPD_CONFIRM_TITLE"), t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="warn")
 
@@ -447,13 +470,16 @@ def prompt(ident: str, lang: str = i18n.DEFAULT_LANGUAGE, error: str = "") -> An
         blocks.append(quote(bold(error)))
     blocks.append(
         table(
-            [(t("UI_FIELD"), code(item.label(lang))), (t("UI_HINT"), muted(item.hint(lang)))],
+            [
+                ("tag", t("UI_FIELD"), code(item.label(lang))),
+                ("info", t("UI_HINT"), muted(item.hint(lang))),
+            ],
             (t("UI_FIELD"), t("UI_VALUE")),
         )
     )
     if item.example:
         blocks.append(f"<p>{t('PROMPT_EXAMPLE', example=code(item.example))}</p>")
-    buttons = [row(inline_button(t("PROMPT_INPUT"), inline.prefill(ident)), button(t("UI_CANCEL"), "nav:home", icon="home"))]
+    buttons = [row(inline_button(t("PROMPT_INPUT"), inline.prefill(ident), icon="tag"), button(t("UI_CANCEL"), "nav:home", icon="home"))]
     return screen(t("PROMPT_TITLE"), item.label(lang), blocks, buttons, icon="file")
 
 
@@ -471,7 +497,7 @@ def logs_screen(view: View, lines: list[str], tail: int) -> Any:
     blocks.append(pre("\n".join(lines) or t("UI_EMPTY")))
     buttons = [
         row(button("50", "xr:logs:50", icon="logs"), button("200", "xr:logs:200", icon="logs"), button("500", "xr:logs:500", icon="logs")),
-        row(button(t("UI_REFRESH"), f"xr:logs:{tail}"), button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("UI_REFRESH"), f"xr:logs:{tail}", icon="refresh"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("LOGS_TITLE"), t("LOGS_SUBTITLE"), blocks, buttons, icon="logs")
 

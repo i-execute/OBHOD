@@ -81,6 +81,8 @@ HOSTPORT_RE = re.compile(r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]{1,253}):(\d{1,5})$
 FT_ERROR_CODES = {
     "bad_arg": "wrong arguments for the install script",
     "wg_missing": "the wireguard tools are not installed on the server",
+    "port_protected": "that port belongs to ssh or to another module, the guard will not touch it",
+    "netstat_missing": "neither ss nor netstat is installed on the server",
     "needs_root": "the install script needs root on the server",
     "not_installed": "freeturn is not installed on the server",
     "unsupported_arch": "the server architecture is not supported by freeturn",
@@ -548,6 +550,21 @@ class FtState:
     config: FtConfig = field(default_factory=FtConfig)
     key_present: bool = False
     configured: bool = False
+    links: dict[str, str] = field(default_factory=dict)
+
+    def remember(self, name: str, link: str) -> None:
+        key = str(name or "").strip()[:32]
+        if key and not valid_name(key):
+            return
+        text = str(link or "").strip()
+        if not key or not text or not text.startswith("freeturn://"):
+            return
+        self.links[key] = text[:4096]
+        while len(self.links) > 512:
+            self.links.pop(next(iter(self.links)))
+
+    def link_values(self) -> list[str]:
+        return [text for text in self.links.values() if text.startswith("freeturn://")]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -559,6 +576,7 @@ class FtState:
             "version": self.version,
             "config": self.config.to_dict(),
             "key_present": bool(self.key_present),
+            "links": {str(key)[:32]: str(value)[:4096] for key, value in list(self.links.items())[:512]},
         }
 
     @property
@@ -584,6 +602,13 @@ class FtState:
             config=config,
             key_present=valid_hex64(key) or bool(data.get("key_present", False)),
             configured=bool((data.get("config") or {}) and data.get("config")),
+            links={
+                str(name)[:32]: str(value)[:4096]
+                for name, value in list((data.get("links") or {}).items())[:512]
+                if str(value).startswith("freeturn://")
+            }
+            if isinstance(data.get("links"), dict)
+            else {},
         )
 
 
@@ -622,10 +647,12 @@ class FtControl:
             raise FtError(exc.message, "transport") from None
         return parse_response(out.text)
 
-    async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 240.0) -> FtGuard:
+    async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 240.0, keep: str = "") -> FtGuard:
         argv = ["fw-guard", "--mode=%s" % mode, "--port=%d" % int(port), "--proto=%s" % str(proto or "udp")]
         if cidrs:
             argv.append("--cidrs=%s" % cidrs)
+        if keep:
+            argv.append("--keep=%s" % keep)
         try:
             out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
         except ShellError as exc:
@@ -633,6 +660,114 @@ class FtControl:
         response = parse_response(out.text)
         response.raise_for_status()
         return FtGuard.from_dict(response.data)
+
+    async def net_scan(self, target: str, ports: list[int], timeout: float = 240.0) -> dict[str, Any]:
+        text = str(target or "").strip()
+        if not text or len(text) > 253 or any(char in text for char in " \n\r\t;|&`$"):
+            raise FtError("the scan target is not usable", "bad_arg")
+        clean = []
+        for item in ports or []:
+            try:
+                number = int(item)
+            except (TypeError, ValueError):
+                raise FtError("a port must be a number", "bad_arg") from None
+            if not 1 <= number <= 65535:
+                raise FtError("a port must be between 1 and 65535", "bad_arg")
+            clean.append(number)
+        if not clean or len(clean) > 128:
+            raise FtError("the port list is empty or too long", "bad_arg")
+        argv = ["net-scan", "--target=%s" % text, "--ports=%s" % ",".join(str(item) for item in sorted(set(clean)))]
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        return dict(response.data or {})
+
+    async def net_ports(self, keep: str = "", timeout: float = 60.0) -> dict[str, Any]:
+        clean = []
+        for item in str(keep or "").split(","):
+            text = item.strip()
+            if not text:
+                continue
+            if not text.isdigit() or not 1 <= int(text) <= 65535:
+                raise FtError("a kept port must be a number between 1 and 65535", "bad_arg")
+            clean.append(text)
+        argv = ["net-ports"]
+        if clean:
+            argv.append("--keep=%s" % ",".join(clean[:64]))
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        return dict(response.data or {})
+
+    async def net_trace(self, target: str, hops: int = 12, timeout: float = 180.0) -> dict[str, Any]:
+        text = str(target or "").strip()
+        if not text or len(text) > 253 or any(char in text for char in " \n\r\t;|&`$"):
+            raise FtError("the trace target is not usable", "bad_arg")
+        try:
+            count = int(hops)
+        except (TypeError, ValueError):
+            raise FtError("the hop count must be a number", "bad_arg") from None
+        if not 1 <= count <= 20:
+            raise FtError("the hop count must be between 1 and 20", "bad_arg")
+        argv = ["net-trace", "--target=%s" % text, "--hops=%d" % count]
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        return dict(response.data or {})
+
+    async def scripts_list(self, timeout: float = 90.0) -> list[dict[str, Any]]:
+        argv = ["scripts-list"]
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        return [item for item in response.data.get("files") or [] if isinstance(item, dict)]
+
+    async def scripts_probe(self, url: str, timeout: float = 120.0) -> dict[str, Any]:
+        text = str(url or "").strip()
+        if not text.startswith("https://github.com/") and not text.startswith("https://raw.githubusercontent.com/"):
+            raise FtError("the script address must be https on github", "bad_arg")
+        if len(text) > 300 or any(char in text for char in " \n\r\t"):
+            raise FtError("the script address is not usable", "bad_arg")
+        argv = ["scripts-probe", "--url=%s" % text]
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        return dict(response.data or {})
+
+    async def scripts_fetch(self, url: str, digest: str = "", timeout: float = 180.0) -> dict[str, Any]:
+        text = str(url or "").strip()
+        if not text.startswith("https://github.com/") and not text.startswith("https://raw.githubusercontent.com/"):
+            raise FtError("the script address must be https on github", "bad_arg")
+        if len(text) > 300 or any(char in text for char in " \n\r\t"):
+            raise FtError("the script address is not usable", "bad_arg")
+        clean = str(digest or "").strip().lower()
+        if clean and not re.fullmatch(r"[0-9a-f]{64}", clean):
+            raise FtError("the script digest is not hexadecimal", "bad_arg")
+        argv = ["scripts-fetch", "--url=%s" % text]
+        if clean:
+            argv.append("--sha256=%s" % clean)
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(argv, agent_code()), timeout=timeout)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        return dict(response.data or {})
 
     async def wg_peers(self, iface: str = "all", timeout: float = 60.0) -> tuple[list[dict[str, Any]], list[str]]:
         name = str(iface or "all").strip().lower()

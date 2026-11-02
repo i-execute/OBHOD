@@ -99,6 +99,8 @@ class XrayPanel:
     def view(self, notice: str = "", error: str = "") -> xscreens.XrayView:
         item = xscreens.XrayView(state=self.state, core=dict(self.core), notice=notice, error=error, lang=self.bot.state.language)
         item.draft = dict(self.draft)
+        item.address = self.address()
+        item.bundle = self.sub_bundle()
         return item
 
     async def render(self, chat_id: int, msg_id: int, rich: Any) -> None:
@@ -384,8 +386,8 @@ class XrayPanel:
             quote(muted(t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN))),
         ]
         buttons = [
-            copy_row(t("SUB_COPY"), url) or "",
-            row(button(t("XR_CLIENT_NEW_PATH"), f"xr:subrot:{ident}:{email}"), button(t("XR_CLIENT_SUB"), f"xr:cl:{ident}:{email}")),
+            copy_row(t("SUB_COPY"), url, icon="copy") or "",
+            row(button(t("XR_CLIENT_NEW_PATH"), f"xr:subrot:{ident}:{email}", icon="refresh"), button(t("XR_CLIENT_SUB"), f"xr:cl:{ident}:{email}", icon="link")),
             xscreens.back_row(self.bot.state.language, "xr:home"),
         ]
         await self.render(chat_id, msg_id, screen(t("SUB_TITLE"), email, blocks, buttons))
@@ -401,7 +403,23 @@ class XrayPanel:
         host = self.state.address(self.address())
         for item in self.state.subscriptions(host):
             out.append((item.email, item.path(), item.url(host, self.state.sub_port)))
+        bundle = self.sub_bundle(host)
+        if bundle is not None:
+            out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), bundle.url(host, self.state.sub_port)))
         return out
+
+    def sub_bundle(self, host: str = ""):
+        from . import subs
+
+        address = str(host or self.state.address(self.address()))
+        extra: list[str] = []
+        freeturn = getattr(self.bot, "freeturn", None)
+        if freeturn is not None:
+            extra = freeturn.state.link_values()
+        try:
+            return subs.aggregate(self.state, extra, address, self.state.sub_port)
+        except subs.SubError:
+            return None
 
     async def subs_action(self, chat_id: int, msg_id: int, action: str) -> None:
         if action == "apply":
@@ -436,7 +454,11 @@ class XrayPanel:
             self.bot.state.sub_port = int(state.sub_port)
             state.sub_port = int(state.sub_port)
             await self.control.sub_install(self.bot.state.ssh, state.sub_port)
-            registry = state.sub_registry(state.address(self.address()))
+            extra: list[str] = []
+            freeturn = getattr(self.bot, "freeturn", None)
+            if freeturn is not None:
+                extra = freeturn.state.link_values()
+            registry = state.sub_registry(state.address(self.address()), extra)
             await self.control.sub_sync(self.bot.state.ssh, registry, state.sub_port)
         except (RpcError, OSError) as exc:
             message = getattr(exc, "message", str(exc))

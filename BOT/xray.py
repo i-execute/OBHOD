@@ -918,31 +918,31 @@ def subscription_payload(links: list[str]) -> str:
     return base64.b64encode(body.encode("utf-8")).decode("ascii")
 
 
-def summary(inbound: XrayInbound, language: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, str]]:
+def summary(inbound: XrayInbound, language: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, str, str]]:
     lang = i18n.normalize(language)
     rows = [
-        (i18n.t("SUM_PROTOCOL", lang), inbound.protocol),
-        (i18n.t("SUM_PORT", lang), str(inbound.port)),
-        (i18n.t("SUM_NETWORK", lang), inbound.network),
-        (i18n.t("SUM_SECURITY", lang), inbound.security),
-        (i18n.t("SUM_CLIENTS", lang), str(len(inbound.clients))),
-        (i18n.t("SUM_ENCRYPTION", lang), VLESS_HANDSHAKE + "." + inbound.encryption.mode),
+        ("xray", i18n.t("SUM_PROTOCOL", lang), inbound.protocol),
+        ("plug", i18n.t("SUM_PORT", lang), str(inbound.port)),
+        ("route", i18n.t("SUM_NETWORK", lang), inbound.network),
+        ("shield", i18n.t("SUM_SECURITY", lang), inbound.security),
+        ("users", i18n.t("SUM_CLIENTS", lang), str(len(inbound.clients))),
+        ("key", i18n.t("SUM_ENCRYPTION", lang), VLESS_HANDSHAKE + "." + inbound.encryption.mode),
     ]
     fields = relevant_fields(inbound.security, inbound.network)
     if "dest" in fields:
-        rows.append((i18n.t("FIELD_DEST", lang), inbound.dest))
+        rows.append(("target", i18n.t("FIELD_DEST", lang), inbound.dest))
     if "sni" in fields:
-        rows.append((i18n.t("FIELD_SNI", lang), inbound.sni))
+        rows.append(("world", i18n.t("FIELD_SNI", lang), inbound.sni))
     if "short_id" in fields:
-        rows.append((i18n.t("FIELD_SHORT_ID", lang), (inbound.short_ids or [""])[0]))
+        rows.append(("tag", i18n.t("FIELD_SHORT_ID", lang), (inbound.short_ids or [""])[0]))
     if "mldsa65" in fields:
-        rows.append((i18n.t("SUM_MLDSA", lang), i18n.t("UI_ON" if inbound.mldsa65_seed else "UI_OFF", lang)))
+        rows.append(("star", i18n.t("SUM_MLDSA", lang), i18n.t("UI_ON" if inbound.mldsa65_seed else "UI_OFF", lang)))
     if "path" in fields:
-        rows.append((i18n.t("FIELD_PATH", lang), inbound.path))
+        rows.append(("route", i18n.t("FIELD_PATH", lang), inbound.path))
     if "service" in fields:
-        rows.append((i18n.t("FIELD_SERVICE", lang), inbound.service_name or inbound.tag))
+        rows.append(("module", i18n.t("FIELD_SERVICE", lang), inbound.service_name or inbound.tag))
     if "cert_file" in fields:
-        rows.append((i18n.t("FIELD_CERT_FILE", lang), inbound.cert_file or i18n.t("UI_NOT_SET", lang)))
+        rows.append(("file", i18n.t("FIELD_CERT_FILE", lang), inbound.cert_file or i18n.t("UI_NOT_SET", lang)))
     return rows
 
 
@@ -986,6 +986,8 @@ class XrayState:
     sub_port: int = SUB_PORT
     sub_enabled: bool = False
     sub_address: str = ""
+    sub_all_id: str = ""
+    sub_all_key: str = ""
     fail2ban_enabled: bool = False
     fail2ban_bantime: int = 30
     fail2ban_ssh_bantime: str = DEFAULT_SSH_BANTIME
@@ -1014,6 +1016,8 @@ class XrayState:
             "sub_port": int(self.sub_port),
             "sub_enabled": bool(self.sub_enabled),
             "sub_address": self.sub_address,
+            "sub_all_id": self.sub_all_id,
+            "sub_all_key": self.sub_all_key,
             "fail2ban_enabled": bool(self.fail2ban_enabled),
             "fail2ban_bantime": int(self.fail2ban_bantime),
             "fail2ban_ssh_bantime": self.fail2ban_ssh_bantime,
@@ -1046,6 +1050,8 @@ class XrayState:
             sub_port=int(data.get("sub_port", SUB_PORT) or SUB_PORT),
             sub_enabled=bool(data.get("sub_enabled", False)),
             sub_address=str(data.get("sub_address", "") or ""),
+            sub_all_id=str(data.get("sub_all_id", "") or ""),
+            sub_all_key=str(data.get("sub_all_key", "") or ""),
             fail2ban_enabled=bool(data.get("fail2ban_enabled", False)),
             fail2ban_bantime=int(data.get("fail2ban_bantime", 30) or 30),
             fail2ban_ssh_bantime=str(data.get("fail2ban_ssh_bantime", DEFAULT_SSH_BANTIME) or DEFAULT_SSH_BANTIME),
@@ -1170,6 +1176,13 @@ class XrayState:
         value = str(self.version or LATEST_CHOICE).strip()
         return value if value in VERSION_CHOICES else LATEST_CHOICE
 
+    def ensure_sub_all(self) -> tuple[str, str]:
+        if len(self.sub_all_id) != SUB_SEGMENT_LEN or any(char not in SUB_ALPHABET for char in self.sub_all_id):
+            self.sub_all_id = gen_sub_segment()
+        if len(self.sub_all_key) != SUB_SEGMENT_LEN or any(char not in SUB_ALPHABET for char in self.sub_all_key):
+            self.sub_all_key = gen_sub_segment()
+        return self.sub_all_id, self.sub_all_key
+
     def sub_path_pattern(self) -> str:
         return "/<%d>/<%d>" % (SUB_SEGMENT_LEN, SUB_SEGMENT_LEN)
 
@@ -1191,6 +1204,8 @@ class XrayState:
         links: dict[str, list[str]] = {}
         canon: dict[str, tuple[int, str, str]] = {}
         for inbound in self.inbounds:
+            if not inbound.enable:
+                continue
             for client in inbound.clients:
                 if not client.sub_id or not client.sub_key:
                     continue
@@ -1240,7 +1255,13 @@ class XrayState:
             return None
         return self.subscription_of(email)
 
-    def sub_registry(self, address: str = "") -> dict[str, Any]:
+    def aggregate_entry(self, address: str = "", extra_links: Any = None, refresh: int = 0) -> dict[str, Any]:
+        from . import subs
+
+        bundle = subs.aggregate(self, extra_links, address, self.sub_port)
+        return subs.entry_of(bundle, refresh or self.sub_refresh)
+
+    def sub_registry(self, address: str = "", extra_links: Any = None) -> dict[str, Any]:
         entries: dict[str, Any] = {}
         for item in self.subscriptions(address):
             entries[item.sub_id] = {
@@ -1254,6 +1275,8 @@ class XrayState:
                 "path": item.path(),
                 "links": list(item.links),
             }
+        bundle = self.aggregate_entry(address, extra_links)
+        entries[bundle["path"].split("/")[1]] = bundle
         return {"port": int(self.sub_port), "sub_id_len": SUB_SEGMENT_LEN, "entries": entries}
 
     def to_config(self) -> str:

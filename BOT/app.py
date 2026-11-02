@@ -8,8 +8,9 @@ import time
 
 from goygram import GoyGram
 
-from . import ftscreens, i18n, inline, screens, ui, xscreens
+from . import commands, cores, ftscreens, i18n, inline, screens, ui, xscreens
 from .config import Config, ConfigError
+from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
 from .ftpanel import FtPanel
 from .guard import DEFAULT_BANTIME, BanState, GuardClient, SshState
@@ -32,6 +33,8 @@ INLINE_DUPLICATE_WINDOW = 8.0
 BUSY_QUIET = 5.0
 BUSY_TTL = 900.0
 RENDER_QUIET = 5.0
+LOADING_MARKS = ("xr:", "ft:", "dbg:", "upd:", "fb:", "sshd:", "ssh:")
+LOADING_SKIP = ("nav:", "lang:", "set:", "dbg:home", "dbg:emoji", "dbg:info", "ft:home", "xr:home")
 RENDER_CACHE = 64
 DENY_LIMIT = 1
 DENY_WINDOW = 60.0
@@ -79,6 +82,7 @@ class Bot:
         self.guard = guard or GuardClient(self.control)
         self.xray = XrayPanel(self, self.control)
         self.freeturn = FtPanel(self, FtControl(shell=shell))
+        self.debug = DebugPanel(self)
         self.updater = updater or Updater(shell=shell, state_dir=cfg.state_dir)
         self.update_info: dict[str, object] = {}
         self.update_result: dict[str, object] = {}
@@ -185,6 +189,7 @@ class Bot:
             busy=busy,
             lang=self.language,
             emoji_default=bool(getattr(self.cfg, "emoji_default", False)),
+            ft_clients=len(getattr(self.freeturn, "clients", []) or []),
         )
 
     def ban_view(self, notice: str = "", error: str = "") -> screens.View:
@@ -218,6 +223,10 @@ class Bot:
     async def run(self) -> None:
         await self.verify_update()
         app = await self.boot()
+        try:
+            await self.register_commands()
+        except Exception as exc:
+            log.warning("the command menu was skipped: %s", exc)
         await app.run()
 
     async def verify_update(self) -> None:
@@ -428,13 +437,17 @@ class Bot:
         if not cmd and text.startswith("/"):
             cmd = text.split()[0][1:].split("@")[0].lower()
         t = self.tr()
+        found = commands.known(cmd)
+        if found is not None:
+            await self.command_screen(chat_id, found, t)
+            return
         if cmd == "id":
             who = int(getattr(evt, "from_id", 0) or 0)
             rich = screen(
                 t("ID_TITLE"),
                 t("ID_SUBTITLE"),
                 [f"<p>{code(who)}</p>", quote(muted(t("ID_NOTE")))],
-                [row(button(t("UI_HOME"), "nav:home"))],
+                [row(button(t("UI_HOME"), "nav:home", icon="home"))],
             )
             await self.send(chat_id, rich)
             return
@@ -445,6 +458,30 @@ class Bot:
             await self.send(chat_id, screens.language_screen(self.view()))
             return
         await self.send(chat_id, screens.home(self.view()))
+
+    async def command_screen(self, chat_id: int, found: commands.Command, t: i18n.Translator) -> None:
+        cards = cores.snapshot(self.state, dict(self.xray.core), len(self.freeturn.clients))
+        if found.name == "start":
+            await self.send(chat_id, commands.start_screen(t, cards, self.language))
+            return
+        if found.name == "whitelist_bypass_wg_vk_call_raskur":
+            await self.send(chat_id, commands.whitelist_screen(t, cards))
+            return
+        await self.send(chat_id, commands.vless_screen(t, cards))
+
+    async def register_commands(self) -> bool:
+        if self.app is None:
+            return False
+        payload = commands.menu(self.tr())
+        for item in payload:
+            if not commands.MENU_RE.match(item["command"]):
+                return False
+        try:
+            await self.app.set_my_commands(payload)
+        except Exception as exc:
+            log.warning("the command menu was not set: %s", exc)
+            return False
+        return True
 
     async def on_marker(self, evt: object, text: str) -> None:
         chat_id = int(getattr(evt, "chat_id", 0) or 0)
@@ -474,6 +511,10 @@ class Bot:
                 return
             if ident.startswith("ft_"):
                 await self.freeturn.apply_input(chat_id, ident, ctx, value)
+                self.audit.note(actor, "input:%s" % ident, "ok")
+                return
+            if ident.startswith("dbg_"):
+                await self.debug.apply_input(chat_id, ident, ctx, value)
                 self.audit.note(actor, "input:%s" % ident, "ok")
                 return
             await self.xray.apply_input(chat_id, ident, ctx, value)
@@ -541,6 +582,11 @@ class Bot:
                 if self.quiet("busy", BUSY_QUIET):
                     await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
                 return
+        if self.slow_action(data):
+            try:
+                await self.render(chat_id, msg_id, screens.busy_screen(self.tr()("LOADING_BODY"), self.language, [self.tr()("LOADING_STEP")]))
+            except Exception as exc:
+                log.debug("the loading screen failed: %s", exc)
         try:
             await self.route(chat_id, msg_id, data)
         except (PanelError, ModelError, ConfigError, RpcError, ShellError, FtError) as exc:
@@ -552,6 +598,12 @@ class Bot:
         finally:
             if busy:
                 self.busy_end()
+
+    def slow_action(self, data: str) -> bool:
+        text = str(data or "")
+        if not text.startswith(LOADING_MARKS):
+            return False
+        return text not in LOADING_SKIP
 
     async def route(self, chat_id: int, msg_id: int, data: str) -> None:
         parts = data.split(":")
@@ -585,6 +637,9 @@ class Bot:
             return
         if head == "core":
             await self.core_action(chat_id, msg_id, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
+            return
+        if head == "dbg":
+            await self.debug.route(chat_id, msg_id, data)
             return
         await self.render(chat_id, msg_id, screens.home(self.view(notice=self.tr()("HOME_NOTICE_UNKNOWN"))))
 

@@ -1109,8 +1109,16 @@ def cmd_sub_sync(flags, rest):
     if os.path.islink(registry):
         raise ScriptError("bad_arg", "the registry path is a symbolic link", "sub")
     write_atomic(registry, json.dumps(body, ensure_ascii=False, sort_keys=True), 0o600)
-    write_sub_unit(server, registry, port)
     stop_sub()
+    deadline = time.time() + 6
+    while time.time() < deadline and port_open(port):
+        time.sleep(0.3)
+    if port_open(port):
+        raise ScriptError(
+            "port_busy",
+            "port %d is held by another service, the subscription server was not restarted, pick another port" % port,
+            "sub",
+        )
     write_sub_unit(server, registry, port)
     start_sub(port, registry)
     deadline = time.time() + 10

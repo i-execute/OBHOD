@@ -281,7 +281,9 @@ def test_ml_dsa_helpers_gate_security() -> None:
 def test_summary_rows_are_readable() -> None:
     inbound = new_inbound("vless", 443, "raw", "reality")
     rows = summary(inbound)
-    keys = [row[0] for row in rows]
+    keys = [row[1] for row in rows]
+    assert all(row[0] for row in rows)
+    assert all(len(row) == 3 for row in rows)
     assert "protocol" in keys
     assert "network" in keys
     assert "security" in keys

@@ -216,11 +216,14 @@ def test_every_field_has_a_handler() -> None:
     xray_src = (root / "panel.py").read_text(encoding="utf-8")
     ft_src = (root / "ftpanel.py").read_text(encoding="utf-8")
     app_src = (root / "app.py").read_text(encoding="utf-8")
+    debug_src = (root / "dbg.py").read_text(encoding="utf-8")
     for ident in FIELDS:
         if ident.startswith("ssh_"):
             pool = app_src
         elif ident.startswith("ft_"):
             pool = ft_src
+        elif ident.startswith("dbg_"):
+            pool = debug_src
         else:
             pool = xray_src
         assert '"%s"' % ident in pool, ident

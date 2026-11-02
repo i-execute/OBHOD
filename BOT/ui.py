@@ -76,15 +76,15 @@ def button(label: str, data: str, style: str = "", icon: str = "") -> Button:
     return Button(label=label, data=data, style=style, icon=icon)
 
 
-def copy_button(label: str, text: str) -> str:
-    return f'<tg-button type="copy_text" text="{esc(text)}">{esc(label)}</tg-button>'
+def copy_button(label: str, text: str, icon: str = "copy") -> str:
+    return f'<tg-button type="copy_text" text="{esc(text)}">{ico(icon, "")}{esc(label)}</tg-button>'
 
 
-def copy_row(label: str, text: str) -> str:
+def copy_row(label: str, text: str, icon: str = "copy") -> str:
     token = str(text or "")
     if not token or len(token) > COPY_TEXT_LIMIT:
         return ""
-    return row(copy_button(label, token))
+    return row(copy_button(label, token, icon))
 
 
 def long_payload(text: str, limit: int = 3500) -> str:
@@ -111,22 +111,22 @@ def fitted(label: str, text: str, lang: str = i18n.DEFAULT_LANGUAGE) -> tuple[st
     return "", block + f"<p>{muted(i18n.t('UI_LONG_HINT', lang))}</p>"
 
 
-def link_button(label: str, url: str) -> str:
-    return f'<tg-button type="url" url="{esc(url)}">{esc(label)}</tg-button>'
+def link_button(label: str, url: str, icon: str = "link") -> str:
+    return f'<tg-button type="url" url="{esc(url)}">{ico(icon, "")}{esc(label)}</tg-button>'
 
 
 def input_row(label: str, ident: str, ctx: object = "-", lang: str = "en") -> str:
     from . import i18n, inline
 
-    buttons = [inline_button(label, inline.prefill(ident, ctx))]
+    buttons = [inline_button(label, inline.prefill(ident, ctx), icon="tag")]
     if inline.has_options(ident):
-        buttons.append(inline_button(i18n.t("BTN_LIST", lang), inline.list_query(ident, ctx)))
+        buttons.append(inline_button(i18n.t("BTN_LIST", lang), inline.list_query(ident, ctx), icon="compass"))
     return row(*buttons)
 
 
-def inline_button(label: str, query: str, style: str = "") -> str:
+def inline_button(label: str, query: str, style: str = "", icon: str = "") -> str:
     attr = f' style="{esc(style)}"' if style else ""
-    return f'<tg-button type="switch_inline_query_current_chat"{attr} query="{esc(query)}">{esc(label)}</tg-button>'
+    return f'<tg-button type="switch_inline_query_current_chat"{attr} query="{esc(query)}">{ico(icon, "")}{esc(label)}</tg-button>'
 
 
 def inline_row(label: str, query: str, style: str = "", extra: Iterable[str] = ()) -> str:
@@ -174,6 +174,12 @@ def table(pairs: Iterable[object], headers: tuple[str, str] | None = None) -> st
         cells.append(f"<tr><td>{label}</td><td>{value}</td></tr>")
     body = "".join(cells)
     return f'<table bordered="false" striped="false">{head}{body}</table>'
+
+
+def loading(title: str, body: str, steps: Iterable[str] = (), icon: str = "loading") -> str:
+    items = "".join("<li>%s</li>" % esc(item) for item in steps)
+    listing = "<ul>%s</ul>" % items if items else ""
+    return screen(title, body, [f"<p>{muted(body)}</p>", listing], [], icon=icon)
 
 
 def bullet_list(items: Iterable[str]) -> str:

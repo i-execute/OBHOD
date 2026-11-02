@@ -421,6 +421,7 @@ class FtPanel:
         self.note("client-add", "ok", clean[:32])
         self.clients, self.share = await self._safe_list()
         self.link = self._finish_link(link)
+        self.remember_link(clean, self.link)
         self.conf = normalize_conf(_conf_text(conf))
         self.name = clean
         if not any(item.name == clean for item in self.clients):
@@ -443,6 +444,7 @@ class FtPanel:
             if not any(item.name == clean for item in self.clients):
                 self.clients.append(client)
             self.link = self._finish_link(link)
+            self.remember_link(clean, self.link)
             self.conf = normalize_conf(_conf_text(conf))
             self.name = clean
         elif not self.clients:
@@ -487,6 +489,7 @@ class FtPanel:
             await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
             return
         self.link = self._finish_link(link)
+        self.remember_link("owner", self.link)
         self.conf = normalize_conf(_conf_text(conf))
         self.name = "owner"
         if self.share is None:
@@ -532,9 +535,19 @@ class FtPanel:
         if not text:
             return ""
         try:
-            return complete_link(text, self.draft)
+            done = complete_link(text, self.draft)
         except FtError:
             return ""
+        return done
+
+    def remember_link(self, name: str, link: str) -> None:
+        if not link:
+            return
+        before = dict(self.state.links)
+        self.state.links = before
+        self.state.remember(name, link)
+        if self.state.links != before:
+            self.save()
 
     async def apply_input(self, chat_id: int, ident: str, ctx: str, value: str) -> None:
         text = (value or "").strip()

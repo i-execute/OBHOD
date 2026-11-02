@@ -276,3 +276,24 @@ def test_language_screen_lists_every_catalog() -> None:
     for item in i18n.LANGUAGES:
         assert f"lang:set:{item}" in html
         assert i18n.t("LANG_NAME", item) in html
+
+
+@pytest.mark.parametrize("lang", ("en", "ru", "zh"))
+def test_every_button_and_table_row_carries_emoji(lang: str) -> None:
+    from BOT import ui
+
+    ui.use_icons(True)
+    try:
+        items = render_all(lang)
+    finally:
+        ui.use_icons(False)
+    for name, rich in items:
+        html = rich.build()
+        buttons = re.findall(r"<tg-button type=\"[a-z_]+\"(?: [^>]*)?>(.*?)</tg-button>", html, re.S)
+        for body in buttons:
+            assert "<tg-emoji" in body or not body.strip(), "%s has a button without an emoji: %s" % (name, body[:40])
+        rows = re.findall(r"<tr>(.*?)</tr>", html, re.S)
+        for cell in rows:
+            if "<th>" in cell or not cell.strip():
+                continue
+            assert "<tg-emoji" in cell, "%s has a table row without an emoji: %s" % (name, cell[:60])

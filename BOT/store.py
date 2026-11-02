@@ -7,14 +7,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import i18n
+from . import cores, i18n
 from .models import SshSettings
 from .freeturn import FtState
 from .xray import SUB_PORT, XrayState
 
 DEFAULT_TAIL = 200
 SCHEMA = 7
-CORES = ("xray", "freeturn")
+
+CORES = cores.keys()
 
 
 class StoreError(Exception):

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -37,11 +38,19 @@ DEFAULT_URL = SCRIPT_URL % FALLBACK_VERSION
 DEFAULT_SHA256 = SCRIPT_SHA256[FALLBACK_VERSION]
 CACHE_DIR = "/var/lib/obhod/freeturn"
 MAX_SCRIPT_BYTES = 512 * 1024
+MAX_SCRIPTS = 64
+PROBE_TIMEOUT = 30.0
 FETCH_TIMEOUT = 120
 ALLOWED_HOSTS = ("github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com")
 COMMANDS = (
     "fw-guard",
     "wg-peers",
+    "scripts-list",
+    "scripts-probe",
+    "scripts-fetch",
+    "net-scan",
+    "net-trace",
+    "net-ports",
     "probe",
     "apply",
     "stop",
@@ -72,6 +81,12 @@ PORT_RE = re.compile(r"^[0-9]{1,5}$")
 TIMEOUTS = {
     "fw-guard": 180,
     "wg-peers": 60,
+    "scripts-list": 60,
+    "scripts-probe": 120,
+    "scripts-fetch": 180,
+    "net-scan": 240,
+    "net-trace": 180,
+    "net-ports": 60,
     "probe": 120,
     "apply": 900,
     "stop": 180,
@@ -562,6 +577,251 @@ def wg_main(flags):
     return 0
 
 
+def scripts_list(flags):
+    unknown = sorted(key for key in flags if key not in set())
+    if unknown:
+        raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "scripts_list")
+    found = []
+    try:
+        names = sorted(os.listdir(CACHE_DIR))[:MAX_SCRIPTS]
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".sh") or name.startswith("."):
+            continue
+        path = os.path.join(CACHE_DIR, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        try:
+            digest = digest_of_file(path)
+            stat = os.stat(path)
+        except OSError:
+            continue
+        found.append(
+            {
+                "key": "freeturn",
+                "name": "install.sh",
+                "file": name[:64],
+                "digest": digest,
+                "size": int(stat.st_size),
+                "at": int(stat.st_mtime),
+            }
+        )
+    found.sort(key=lambda item: item["at"], reverse=True)
+    return {
+        "cache": CACHE_DIR,
+        "files": found[:MAX_SCRIPTS],
+        "count": len(found),
+    }
+
+
+def scripts_probe(flags):
+    unknown = sorted(key for key in flags if key not in {"url", "sha256"})
+    if unknown:
+        raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "scripts_probe")
+    url = str(flags.get("url", "")).strip()
+    if not url:
+        raise AgentError("bad_arg", "the script address is required", "scripts_probe")
+    if not allowed_url(url):
+        raise AgentError("bad_arg", "the script address must be https on github", "scripts_probe")
+    request = urllib.request.Request(url, headers={"User-Agent": "obhod-freeturn/3"})
+    try:
+        with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT) as response:
+            final = response.geturl()
+            if not allowed_url(final):
+                raise AgentError("bad_arg", "the download ended outside github", "scripts_probe")
+            body = response.read(MAX_SCRIPT_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise AgentError("download_failed", "the script answered %s" % exc.code, "scripts_probe")
+    except urllib.error.URLError as exc:
+        raise AgentError("download_failed", "the script is not reachable: %s" % exc.reason, "scripts_probe")
+    except (OSError, ValueError) as exc:
+        raise AgentError("download_failed", "the script download failed: %s" % exc, "scripts_probe")
+    if len(body) > MAX_SCRIPT_BYTES:
+        raise AgentError("download_failed", "the script is larger than allowed", "scripts_probe")
+    return {"url": url, "digest": sha256_of(body), "size": len(body), "empty": not body}
+
+
+NET_HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+NET_CIDR_RE = re.compile(r"^([0-9]{1,3}(\.[0-9]{1,3}){3})/([0-9]{1,2})$")
+NET_MAX_HOSTS = 256
+NET_MAX_PORTS = 128
+NET_MIN_PREFIX = 24
+NET_CONNECT_TIMEOUT = 0.8
+NET_MAX_SECONDS = 120.0
+NET_MAX_HOPS = 20
+NET_TRACE_TIMEOUT = 90.0
+
+
+def net_target(flags):
+    raw = str(flags.get("target", "")).strip()
+    if not raw or len(raw) > 253:
+        raise AgentError("bad_arg", "the target is required", "net")
+    if any(char in raw for char in " \t;|&`$<>\"'\\"):
+        raise AgentError("bad_arg", "the target carries forbidden characters", "net")
+    if raw.count("/") == 1:
+        if not NET_CIDR_RE.match(raw):
+            raise AgentError("bad_arg", "the subnet must be an ipv4 cidr", "net")
+        try:
+            network = ipaddress.IPv4Network(raw, strict=False)
+        except ValueError:
+            raise AgentError("bad_arg", "the subnet is not a valid network", "net")
+        if network.prefixlen < NET_MIN_PREFIX:
+            raise AgentError("bad_arg", "the subnet is wider than /24", "net")
+        return "subnet", str(network), [str(item) for item in network.hosts()][:NET_MAX_HOSTS]
+    host = raw
+    if ":" in host and host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None:
+        if address.version != 4:
+            raise AgentError("bad_arg", "only ipv4 targets are supported", "net")
+        if address.is_multicast or address.is_unspecified:
+            raise AgentError("bad_arg", "that address is not routable", "net")
+        return "host", str(address), [str(address)]
+    if not NET_HOST_RE.match(host) or "." not in host:
+        raise AgentError("bad_arg", "that is not a host or an address", "net")
+    return "host", host, []
+
+
+def scan_ports(flags):
+    raw = str(flags.get("ports", "")).strip() or "22,80,443"
+    out = []
+    for chunk in raw.split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        if "-" in item:
+            left, _, right = item.partition("-")
+            if not left.isdigit() or not right.isdigit():
+                raise AgentError("bad_arg", "a port range must look like 20-25", "net")
+            start, end = int(left), int(right)
+            if not 1 <= start <= end <= 65535 or end - start > 1024:
+                raise AgentError("bad_arg", "the port range is out of bounds", "net")
+            out.extend(range(start, end + 1))
+            continue
+        if not item.isdigit() or not 1 <= int(item) <= 65535:
+            raise AgentError("bad_arg", "a port must be between 1 and 65535", "net")
+        out.append(int(item))
+    unique = sorted(set(out))
+    if not unique:
+        raise AgentError("bad_arg", "no ports given", "net")
+    if len(unique) > NET_MAX_PORTS:
+        raise AgentError("bad_arg", "too many ports, keep it under %d" % NET_MAX_PORTS, "net")
+    return unique
+
+
+def net_scan(flags):
+    unknown = sorted(key for key in flags if key not in {"target", "ports"})
+    if unknown:
+        raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "net")
+    kind, name, hosts = net_target(flags)
+    ports = scan_ports(flags)
+    if kind == "host" and not hosts:
+        try:
+            found = socket.getaddrinfo(name, None, socket.AF_INET, socket.SOCK_STREAM)
+        except (socket.gaierror, OSError):
+            raise AgentError("resolve_failed", "the host does not resolve", "net")
+        hosts = []
+        for item in found:
+            address = str(item[4][0])
+            if address not in hosts:
+                hosts.append(address)
+        hosts = hosts[:8]
+        if not hosts:
+            raise AgentError("resolve_failed", "the host does not resolve", "net")
+    started = time.time()
+    results = []
+    alive = 0
+    for host in hosts:
+        if time.time() - started > NET_MAX_SECONDS:
+            break
+        opened = []
+        for port in ports:
+            if time.time() - started > NET_MAX_SECONDS:
+                break
+            attempt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            attempt.settimeout(NET_CONNECT_TIMEOUT)
+            try:
+                attempt.connect((host, port))
+                opened.append(port)
+            except OSError:
+                continue
+            finally:
+                attempt.close()
+        if opened:
+            alive += 1
+        results.append({"host": host, "open": opened})
+    return {
+        "kind": kind,
+        "target": name,
+        "hosts": len(results),
+        "alive": alive,
+        "ports": ports,
+        "results": results[:NET_MAX_HOSTS],
+        "spent": round(time.time() - started, 2),
+    }
+
+
+def net_trace(flags):
+    unknown = sorted(key for key in flags if key not in {"target", "hops"})
+    if unknown:
+        raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "net")
+    kind, name, hosts = net_target(flags)
+    if kind == "subnet":
+        raise AgentError("bad_arg", "traceroute takes one host", "net")
+    raw_hops = str(flags.get("hops", "")).strip() or "12"
+    if not raw_hops.isdigit() or not 1 <= int(raw_hops) <= NET_MAX_HOPS:
+        raise AgentError("bad_arg", "the hop count must be between 1 and %d" % NET_MAX_HOPS, "net")
+    hops = int(raw_hops)
+    binary = shutil.which("traceroute") or shutil.which("tracepath")
+    if not binary:
+        raise AgentError("trace_missing", "traceroute is not installed on the server", "net")
+    argv = [binary, "-n", "-m", str(hops), "-w", "2", "-q", "1", name]
+    if binary.endswith("tracepath"):
+        argv = [binary, "-n", "-m", str(hops), name]
+    done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=NET_TRACE_TIMEOUT)
+    text = (done.stdout or b"").decode("utf-8", "replace")
+    parsed = []
+    for line in text.splitlines()[1:]:
+        parts = line.split()
+        if not parts or not parts[0].isdigit():
+            continue
+        address = ""
+        rtt = 0.0
+        for item in parts[1:]:
+            try:
+                candidate = ipaddress.ip_address(item.strip("()"))
+            except ValueError:
+                if item.endswith("ms") and item[:-2].replace(".", "", 1).isdigit():
+                    rtt = float(item[:-2])
+                continue
+            if candidate.version == 4:
+                address = str(candidate)
+                break
+        parsed.append({"index": int(parts[0]), "address": address, "rtt": rtt})
+    return {"kind": kind, "target": name, "hops": parsed[:NET_MAX_HOPS], "raw": text[-2000:]}
+
+
+def scripts_fetch(flags):
+    unknown = sorted(key for key in flags if key not in {"url", "sha256"})
+    if unknown:
+        raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "scripts_fetch")
+    url = str(flags.get("url", "")).strip()
+    if not url:
+        raise AgentError("bad_arg", "the script address is required", "scripts_fetch")
+    expected = str(flags.get("sha256", "")).strip().lower()
+    if expected and (len(expected) != 64 or not all(ch in "0123456789abcdef" for ch in expected)):
+        raise AgentError("bad_arg", "the script digest must be 64 hexadecimal characters", "scripts_fetch")
+    path = download(url, expected)
+    digest = digest_of_file(path)
+    if expected and digest != expected:
+        raise AgentError("digest_mismatch", "the script digest is %s instead of %s" % (digest, expected), "scripts_fetch")
+    return {"file": os.path.basename(path), "digest": digest, "size": os.path.getsize(path)}
+
 def guard_backend():
     if shutil.which("firewall-cmd") and "running" in tool_text(["firewall-cmd", "--state"]).lower():
         return "firewalld"
@@ -757,11 +1017,78 @@ def guard_status(backend, port, protos):
 
 
 def guard_flags(flags):
-    allowed = {"mode", "port", "cidrs", "proto"}
+    allowed = {"mode", "port", "cidrs", "proto", "keep"}
     unknown = sorted(key for key in flags if key not in allowed)
     if unknown:
         raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "fw_guard")
     return flags
+
+
+GUARD_KEEP_MAX = 64
+
+
+def guard_keep(flags):
+    raw = str(flags.get("keep", "")).strip()
+    out = []
+    for item in raw.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        if not text.isdigit() or not 1 <= int(text) <= 65535:
+            raise AgentError("bad_arg", "a kept port must be a number between 1 and 65535", "fw_guard")
+        out.append(int(text))
+    return sorted(set(out))[:GUARD_KEEP_MAX]
+
+
+def net_ports(flags):
+    unknown = sorted(key for key in flags if key != "keep")
+    if unknown:
+        raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "net_ports")
+    keep = set(guard_keep(flags))
+    binary = shutil.which("ss") or shutil.which("netstat")
+    if not binary:
+        raise AgentError("netstat_missing", "neither ss nor netstat is installed", "net_ports")
+    if binary.endswith("ss"):
+        argv = ["ss", "-lntupH"]
+    else:
+        argv = ["netstat", "-lntup"]
+    try:
+        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AgentError("internal", "the listener listing failed: %s" % exc, "net_ports")
+    text = (done.stdout or b"").decode("utf-8", "replace")
+    rows = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        proto = parts[0].lower()
+        if proto not in {"tcp", "udp"}:
+            continue
+        port = 0
+        address = ""
+        for part in parts[1:]:
+            found = re.match(r"^\[?[0-9a-fA-F.*:%]*\]?[:.](\d{1,5})$", part)
+            if found:
+                address = part
+                port = int(found.group(1))
+                break
+        if not port:
+            continue
+        match = re.search(r'users:\(\("([^"]{1,64})"', line) or re.search(r"\d+/([A-Za-z0-9_.-]{1,64})", line)
+        process = match.group(1) if match else ""
+        rows.append(
+            {
+                "port": port,
+                "proto": proto,
+                "address": address[:64],
+                "process": process[:64],
+                "protected": port in keep or port in {22, 2222},
+                "reason": "ssh" if port in {22, 2222} else ("module" if port in keep else ""),
+            }
+        )
+    rows.sort(key=lambda item: (item["port"], item["proto"]))
+    return {"ports": rows[:128], "count": len(rows), "keep": sorted(keep)}
 
 
 def guard_main(flags):
@@ -771,6 +1098,11 @@ def guard_main(flags):
     mode = str(flags.get("mode", "status")).strip().lower()
     if mode not in GUARD_MODES:
         raise AgentError("bad_arg", "the firewall mode %s is not known" % mode[:16], "fw_guard")
+    keep = guard_keep(flags)
+    if mode in {"closed", "vk"} and port in keep:
+        raise AgentError("port_protected", "port %d belongs to ssh or to another module, the guard will not touch it" % port, "fw_guard")
+    if mode == "closed" and port in {22, 2222}:
+        raise AgentError("port_protected", "port %d is never closed by the guard" % port, "fw_guard")
     backend = guard_backend()
     if not backend:
         raise AgentError("fw_unsupported", "there is no firewalld, ufw or iptables on this host", "fw_guard")
@@ -820,6 +1152,35 @@ def main(argv):
     if command == "wg-peers":
         try:
             return wg_main(flags)
+        except AgentError as exc:
+            emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
+            return 1
+    if command in {"net-scan", "net-trace", "net-ports"}:
+        try:
+            if command == "net-scan":
+                data = net_scan(flags)
+            elif command == "net-trace":
+                data = net_trace(flags)
+            else:
+                data = net_ports(flags)
+            emit("ok", data, stage=stage, logs=["%s done" % command])
+            return 0
+        except AgentError as exc:
+            emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
+            return 1
+        except subprocess.TimeoutExpired:
+            emit("err", {}, "timeout", "the network action ran out of time", stage)
+            return 1
+    if command in {"scripts-list", "scripts-probe", "scripts-fetch"}:
+        try:
+            if command == "scripts-list":
+                data = scripts_list(flags)
+            elif command == "scripts-probe":
+                data = scripts_probe(flags)
+            else:
+                data = scripts_fetch(flags)
+            emit("ok", data, stage=stage, logs=["%s done" % command])
+            return 0
         except AgentError as exc:
             emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
             return 1

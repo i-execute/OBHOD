@@ -215,6 +215,12 @@ class FakeFtControl:
         self.calls: list[list[str]] = []
         self.fail = ""
         self.key = "c" * 64
+        self.cache: list[dict[str, Any]] = []
+        self.remote: dict[str, dict[str, Any]] = {}
+        self.scan: dict[str, Any] = {}
+        self.trace: dict[str, Any] = {}
+        self.fetched: list[str] = []
+        self.ports: dict[str, Any] = {"ports": [], "count": 0}
 
     def _link(self, name: str) -> str:
         from BOT.freeturn import encode_link
@@ -236,6 +242,53 @@ class FakeFtControl:
 
         body = "[Interface]\nPrivateKey = abc\nMTU = 1420\n# note\n\n[Peer]\nPublicKey = def\n"
         return base64.b64encode(body.encode("utf-8")).decode("ascii")
+
+    async def scripts_list(self, timeout: float = 90.0) -> list[dict[str, Any]]:
+        self.calls.append(["scripts-list"])
+        return [dict(item) for item in self.cache]
+
+    async def scripts_probe(self, url: str, timeout: float = 120.0) -> dict[str, Any]:
+        self.calls.append(["scripts-probe", url])
+        for key, value in self.remote.items():
+            if value.get("url") == url:
+                return dict(value)
+        return {}
+
+    async def scripts_fetch(self, url: str, digest: str = "", timeout: float = 180.0) -> dict[str, Any]:
+        self.calls.append(["scripts-fetch", url])
+        self.fetched.append(url)
+        for key, value in self.remote.items():
+            if value.get("url") == url:
+                self.cache = [item for item in self.cache if item.get("name") != "install.sh"]
+                self.cache.append({"key": key, "name": "install.sh", "digest": value["digest"], "size": int(value.get("size", 0)), "at": 1.0})
+                return {"file": "install.sh", "digest": value["digest"]}
+        return {}
+
+    async def net_scan(self, target: str, ports: list[int], timeout: float = 240.0) -> dict[str, Any]:
+        self.calls.append(["net-scan", target, ",".join(str(item) for item in ports)])
+        if self.fail:
+            from BOT.freeturn import FtError
+
+            raise FtError(self.fail, "bad_arg")
+        return dict(self.scan)
+
+    async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 240.0, keep: str = "") -> Any:
+        from BOT.freeturn import FtGuard
+
+        self.calls.append(["firewall", mode, str(port), cidrs, keep])
+        return FtGuard(mode=mode, port=int(port), proto=proto, changed=True, cidrs=[item for item in cidrs.split(",") if item])
+
+    async def net_ports(self, keep: str = "", timeout: float = 60.0) -> dict[str, Any]:
+        self.calls.append(["net-ports", keep])
+        return dict(self.ports)
+
+    async def net_trace(self, target: str, hops: int = 12, timeout: float = 180.0) -> dict[str, Any]:
+        self.calls.append(["net-trace", target, str(hops)])
+        if self.fail:
+            from BOT.freeturn import FtError
+
+            raise FtError(self.fail, "bad_arg")
+        return dict(self.trace)
 
     async def probe(self) -> Any:
         from BOT.freeturn import FtState

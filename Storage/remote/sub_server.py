@@ -303,6 +303,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_plain(404, "not found\n")
             return
         parts = [item for item in path.split("/") if item]
+        want_json = len(parts) == 3 and parts[2] == "json"
+        if want_json:
+            parts = parts[:2]
         if len(parts) != 2 or not SEGMENT.match(parts[0]) or not SEGMENT.match(parts[1]):
             self.send_plain(404, "not found\n")
             return
@@ -323,6 +326,19 @@ class Handler(BaseHTTPRequestHandler):
         payload = payload_of(entry)
         if not payload:
             self.send_plain(404, "empty\n")
+            return
+        if want_json:
+            body = json.dumps(
+                {
+                    "title": str(entry.get("title") or "OBHOD")[:64],
+                    "count": len([item for item in entry.get("links") or [] if str(item).strip()]),
+                    "refresh": int(refresh_hours(entry)),
+                    "payload": payload,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+            self.send_plain(200, body + "\n", [("Content-Type", "application/json; charset=utf-8")])
             return
         filename = str(entry.get("filename") or "obhod")
         if not re.match(r"^[A-Za-z0-9_.-]{1,64}$", filename):
@@ -372,7 +388,17 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
-    server = Server((BIND, PORT), Handler)
+    try:
+        server = Server((BIND, PORT), Handler)
+    except OSError as exc:
+        code = getattr(exc, "errno", 0)
+        sys.stderr.write("obhod-sub: cannot listen on %s:%s: %s\n" % (BIND, PORT, exc))
+        if code == 98 or "in use" in str(exc).lower():
+            sys.stderr.write("obhod-sub: port %s is busy, another service (for example 3x-ui) holds it\n" % PORT)
+            sys.stderr.flush()
+            sys.exit(4)
+        sys.stderr.flush()
+        sys.exit(3)
 
     def stop(_signum, _frame):
         server.server_close()

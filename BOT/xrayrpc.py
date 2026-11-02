@@ -55,7 +55,7 @@ XRAY_ERROR_CODES = {
     "no_systemd": "systemd is missing on the server",
     "start_failed": "the core did not start",
     "not_installed": "the core is not installed",
-    "port_busy": "the port is busy on the server",
+    "port_busy": "the port is busy on the server, another service holds it, pick another port",
     "not_found": "not found",
     "internal": "internal error of the core script",
     "transport": "the transport to the server failed",

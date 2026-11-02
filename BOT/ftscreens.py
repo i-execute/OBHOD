@@ -186,7 +186,7 @@ def plan_screen(view: FtView) -> Any:
     buttons = [
         row(button(t("FT_FIELD_METHOD"), "ft:cyc:method", icon="tools"), button(t("FT_FIELD_BACKEND"), "ft:cyc:backend", icon="module")),
         row(button(t("FT_FIELD_MODE"), "ft:cyc:mode", icon="settings"), button(t("FT_FIELD_OBF"), "ft:cyc:obf_profile", icon="lock")),
-        row(button(t("FT_FIELD_VERSION"), "ft:cyc:version"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
+        row(button(t("FT_FIELD_VERSION"), "ft:cyc:version", icon="tag"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
         input_row(t("FT_PORT_INPUT"), "ft_port", "-", view.lang),
         input_row(t("FT_WG_PORT_INPUT"), "ft_wg_port", "-", view.lang),
         input_row(t("FT_WG_NET_INPUT"), "ft_wg_net", "-", view.lang),
