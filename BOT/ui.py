@@ -179,7 +179,10 @@ def table(pairs: Iterable[object], headers: tuple[str, str] | None = None) -> st
 def loading(title: str, body: str, steps: Iterable[str] = (), icon: str = "loading") -> str:
     items = "".join("<li>%s</li>" % esc(item) for item in steps)
     listing = "<ul>%s</ul>" % items if items else ""
-    return screen(title, body, [f"<p>{muted(body)}</p>", listing], [], icon=icon)
+    blocks = [f"<p>{muted(body)}</p>"] if body else []
+    if listing:
+        blocks.append(listing)
+    return screen(title, "", blocks, [], icon=icon)
 
 
 def bullet_list(items: Iterable[str]) -> str:

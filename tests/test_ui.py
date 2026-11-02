@@ -183,3 +183,17 @@ def test_input_row_adds_the_list_button_for_fixed_choices() -> None:
     manual = input_row("fingerprint", "xr_fingerprint", "1", "en")
     assert manual.count("switch_inline_query_current_chat") == 2
     assert i18n.t("BTN_LIST", "en") in manual
+
+
+def test_the_loading_screen_never_repeats_itself() -> None:
+    from BOT import screens, ui
+
+    for lang in i18n.LANGUAGES:
+        body = i18n.t("LOADING_BODY", lang)
+        step = i18n.t("LOADING_STEP", lang)
+        html = ui.loading(i18n.t("LOADING_TITLE", lang), body, [step]).to_html()
+        assert html.count(body) == 1
+        assert html.count(step) == 1
+        busy = screens.busy_screen(body, lang, [step]).to_html()
+        assert busy.count(body) == 1
+        assert busy.count(step) == 1
