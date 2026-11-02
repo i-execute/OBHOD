@@ -162,3 +162,26 @@ def test_refresh_interval_comes_from_the_registry() -> None:
     headers = dict(module.header_lines({"title": "t", "refresh": 6, "path": "/a/b"}, "obhod"))
     assert headers["Profile-Update-Interval"] == "6"
     assert headers["Content-Type"].startswith("text/plain")
+
+
+def test_the_real_client_is_read_behind_a_proxy() -> None:
+    from Storage.remote import sub_server
+
+    headers = {"X-Forwarded-For": "203.0.113.7", "CF-Connecting-IP": "198.51.100.9"}
+    assert sub_server.proxy_client_ip("127.0.0.1", headers) == "203.0.113.7"
+    assert sub_server.proxy_client_ip("::1", {"CF-Connecting-IP": "198.51.100.9"}) == "198.51.100.9"
+    assert sub_server.proxy_client_ip("100.101.2.3", headers) == "203.0.113.7"
+
+
+def test_a_remote_peer_cannot_choose_its_address() -> None:
+    from Storage.remote import sub_server
+
+    headers = {"X-Forwarded-For": "1.2.3.4", "CF-Connecting-IP": "5.6.7.8"}
+    assert sub_server.proxy_client_ip("198.51.100.20", headers) == "198.51.100.20"
+
+
+def test_a_broken_forwarded_header_falls_back() -> None:
+    from Storage.remote import sub_server
+
+    assert sub_server.proxy_client_ip("127.0.0.1", {"X-Forwarded-For": "not-an-ip"}) == "127.0.0.1"
+    assert sub_server.proxy_client_ip("127.0.0.1", {"X-Forwarded-For": "10.0.0.1, 203.0.113.9"}) == "203.0.113.9"

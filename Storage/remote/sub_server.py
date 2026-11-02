@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -181,6 +182,45 @@ def same(one, other):
     return hmac.compare_digest(str(one or "").encode("utf-8"), str(other or "").encode("utf-8"))
 
 
+PROXY_NETS = ("127.0.0.1", "::1", "100.64.0.0/10", "fd7a:115c:a1e0::/48", "::ffff:127.0.0.1")
+
+
+def is_proxy_peer(ip):
+    text = str(ip or "").strip()
+    if text in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}:
+        return True
+    try:
+        parsed = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    for item in PROXY_NETS:
+        try:
+            if parsed in ipaddress.ip_network(item, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def proxy_client_ip(peer, headers):
+    if not is_proxy_peer(peer):
+        return str(peer or "")
+    forward = str(headers.get("X-Forwarded-For", "") or "")
+    parts = [item.strip() for item in forward.split(",") if item.strip()]
+    if parts:
+        try:
+            return str(ipaddress.ip_address(parts[-1]))
+        except ValueError:
+            pass
+    direct = str(headers.get("CF-Connecting-IP", "") or "").strip()
+    if direct:
+        try:
+            return str(ipaddress.ip_address(direct))
+        except ValueError:
+            pass
+    return str(peer or "")
+
+
 def header_safe(value, limit=200):
     text = CLEAN.sub("", str(value or ""))
     return text[:limit]
@@ -337,6 +377,8 @@ def announce_lines(entry):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def client_ip(self):
+        return proxy_client_ip(self.client_address[0], getattr(self, "headers", None) or {})
     server_version = "obhod-sub/1"
     sys_version = ""
     protocol_version = "HTTP/1.1"
@@ -350,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
             self.requestline = ""
             self.request_version = ""
             self.command = ""
-            security_note(self.client_address[0], "sub_request", "deny", "request line too long")
+            security_note(self.client_ip(), "sub_request", "deny", "request line too long")
             self.send_error(414, "uri too long")
             return
         if not self.raw_requestline:
@@ -372,12 +414,12 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.flush()
 
     def send_plain(self, code, body, extra=None, content_type="text/plain; charset=utf-8"):
-        access_note(self.client_address[0], code)
+        access_note(self.client_ip(), code)
         if code in {403, 404}:
-            record_miss(self.client_address[0], True)
-            security_note(self.client_address[0], "sub_request", "deny", "unknown subscription")
+            record_miss(self.client_ip(), True)
+            security_note(self.client_ip(), "sub_request", "deny", "unknown subscription")
         elif code == 200:
-            record_miss(self.client_address[0], False)
+            record_miss(self.client_ip(), False)
         raw = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", content_type)
@@ -397,7 +439,7 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
-        if throttled(self.client_address[0]):
+        if throttled(self.client_ip()):
             self.send_plain(429, "slow down\n")
             return
         raw = self.path[:1024]
@@ -473,7 +515,7 @@ class Handler(BaseHTTPRequestHandler):
         if not re.match(r"^[A-Za-z0-9_.-]{1,64}$", filename):
             filename = "obhod"
         extra = header_lines(entry, filename, base_url(self.headers.get("Host")))
-        access_note(self.client_address[0], 200)
+        access_note(self.client_ip(), 200)
         raw = payload.encode("ascii")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")

@@ -338,3 +338,46 @@ def test_the_vless_encryption_refuses_empty_output(xray, monkeypatch) -> None:
     monkeypatch.setattr(xray, "run", lambda argv, timeout=60: (0, ""))
     with pytest.raises(xray.ScriptError):
         xray.cmd_vlessenc({}, [])
+
+
+def test_the_tunnel_refuses_a_bad_key_and_host(xray, monkeypatch) -> None:
+    monkeypatch.setattr(xray.shutil, "which", lambda name: "/usr/bin/tailscale")
+    for flags in (
+        {"key": "nope", "hostname": "obhod", "port": "2096"},
+        {"key": "tskey-auth-" + "a" * 20, "hostname": "-bad", "port": "2096"},
+        {"key": "tskey-auth-" + "a" * 20, "hostname": "obhod", "port": "0"},
+        {"key": "tskey-auth-" + "a" * 20, "hostname": "obhod", "port": "99999"},
+    ):
+        with pytest.raises(xray.ScriptError):
+            xray.cmd_tunnel_up(flags, [])
+
+
+def test_the_tunnel_up_runs_tailscale_and_the_funnel(xray, monkeypatch) -> None:
+    seen = []
+
+    def fake_run(argv, timeout=180, check=False):
+        seen.append(argv)
+        if argv[1] == "funnel" and "status" in argv:
+            return 0, "https://obhod.tail1234.ts.net"
+        if argv[1] == "status":
+            return 0, '{"BackendState": "Running", "Self": {"DNSName": "obhod.tail1234.ts.net."}}'
+        if argv[1] == "version":
+            return 0, "1.80.2"
+        return 0, ""
+
+    monkeypatch.setattr(xray.shutil, "which", lambda name: "/usr/bin/tailscale")
+    monkeypatch.setattr(xray, "run", fake_run)
+    state, error = xray.cmd_tunnel_up({"key": "tskey-auth-" + "a" * 20, "hostname": "obhod", "port": "2096"}, [])
+    assert error is None
+    assert state["url"] == "https://obhod.tail1234.ts.net"
+    assert state["funnel"] is True
+    assert any("--authkey=tskey-auth-" in item for item in seen[0])
+    assert any("http://127.0.0.1:2096" in item for item in seen[1])
+
+
+def test_the_tunnel_status_without_tailscale(xray, monkeypatch) -> None:
+    monkeypatch.setattr(xray.shutil, "which", lambda name: None)
+    state, error = xray.cmd_tunnel_status({}, [])
+    assert error is None
+    assert state["installed"] is False
+    assert state["funnel"] is False

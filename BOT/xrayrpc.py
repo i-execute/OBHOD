@@ -130,6 +130,41 @@ SUB_PORT = 2096
 
 
 @dataclass
+class TunnelState:
+    installed: bool = False
+    version: str = ""
+    backend: str = "absent"
+    hostname: str = ""
+    url: str = ""
+    funnel: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "installed": bool(self.installed),
+            "version": self.version[:32],
+            "backend": self.backend[:24],
+            "hostname": self.hostname[:64],
+            "url": self.url[:128],
+            "funnel": bool(self.funnel),
+        }
+
+    @staticmethod
+    def from_dict(raw: dict[str, Any] | None) -> "TunnelState":
+        data = raw or {}
+        return TunnelState(
+            installed=bool(data.get("installed", False)),
+            version=str(data.get("version", "") or "")[:32],
+            backend=str(data.get("backend", "") or "absent")[:24],
+            hostname=str(data.get("hostname", "") or "")[:64],
+            url=str(data.get("url", "") or "")[:128],
+            funnel=bool(data.get("funnel", False)),
+        )
+
+    def healthy(self) -> bool:
+        return bool(self.installed and self.funnel and self.url.startswith("https://"))
+
+
+@dataclass
 class SubState:
     installed: bool = False
     registry: str = ""
@@ -369,6 +404,26 @@ class XrayControl:
         response = await self.call(cfg, ["sub-sync", flag, f"--port={int(port)}"], timeout=180, stdin=stdin)
         response.raise_for_status()
         return SubState.from_dict(response.data)
+
+    async def tunnel_status(self, cfg: SshSettings) -> "TunnelState":
+        response = await self.call(cfg, ["tunnel-status"], timeout=90)
+        response.raise_for_status()
+        return TunnelState.from_dict(response.data)
+
+    async def tunnel_install(self, cfg: SshSettings) -> "TunnelState":
+        response = await self.call(cfg, ["tunnel-install"], timeout=900)
+        response.raise_for_status()
+        return TunnelState.from_dict(response.data)
+
+    async def tunnel_up(self, cfg: SshSettings, key: str, hostname: str, port: int = SUB_PORT) -> "TunnelState":
+        response = await self.call(cfg, ["tunnel-up", "--key=" + str(key)[:128], "--hostname=" + str(hostname)[:64], "--port=%d" % int(port)], timeout=600)
+        response.raise_for_status()
+        return TunnelState.from_dict(response.data)
+
+    async def tunnel_down(self, cfg: SshSettings) -> "TunnelState":
+        response = await self.call(cfg, ["tunnel-down"], timeout=180)
+        response.raise_for_status()
+        return TunnelState.from_dict(response.data)
 
     async def sub_status(self, cfg: SshSettings, port: int = SUB_PORT) -> SubState:
         response = await self.call(cfg, ["sub-status", f"--port={int(port)}"], timeout=90)

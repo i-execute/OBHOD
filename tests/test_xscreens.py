@@ -349,3 +349,32 @@ def test_the_encryption_screen_renders_in_every_language() -> None:
 def test_the_encryption_screen_without_an_inbound() -> None:
     html = xscreens.encryption_screen(xscreens.XrayView(state=XrayState(), lang="en"), None).to_html()
     assert i18n.t("XR_CHECK_MISSING") in html
+
+
+def test_the_domain_screen_renders_in_every_language() -> None:
+    from BOT.xrayrpc import TunnelState
+
+    st = XrayState()
+    st.add(new_inbound("vless", 443, "raw", "reality"))
+    tunnel = TunnelState(installed=True, version="1.80.2", backend="Running", hostname="obhod.tail1234.ts.net", url="https://obhod.tail1234.ts.net", funnel=True)
+    for language in ("en", "ru", "zh"):
+        html = xscreens.domain_screen(xscreens.XrayView(state=st, lang=language), tunnel).to_html()
+        assert i18n.t("DOM_TITLE", language) in html
+        assert "obhod.tail1234.ts.net" in html
+        assert "{" not in html
+
+
+def test_the_domain_screen_shows_the_https_url_once_the_tunnel_is_on() -> None:
+    st = XrayState(sub_address="203.0.113.10")
+    st.tunnel_host = "obhod.tail1234.ts.net"
+    st.tunnel_enabled = True
+    html = xscreens.domain_screen(xscreens.XrayView(state=st, lang="en"), None).to_html()
+    assert "https://obhod.tail1234.ts.net" in html
+    assert "xr:dom:up" in html
+    assert i18n.t("DOM_KEY_INPUT") in html
+    assert i18n.t("DOM_HOST_INPUT") in html
+
+
+def test_the_home_screen_has_a_domain_button() -> None:
+    html = xscreens.home(view()).to_html()
+    assert 'data="xr:dom"' in html

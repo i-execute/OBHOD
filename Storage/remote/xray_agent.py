@@ -1242,6 +1242,140 @@ def cmd_sub_stop(flags, rest):
     return sub_state(int(str(flags.get("port", "2096")))), None
 
 
+TUNNEL_KEY_RE = re.compile(r"^tskey-[a-z]{2,6}-[A-Za-z0-9]{4,64}(-[A-Za-z0-9]{4,64}){0,4}$")
+TUNNEL_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+TUNNEL_CODENAME_RE = re.compile(r"^[a-z]{2,16}$")
+TUNNEL_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+\.ts\.net")
+TUNNEL_PKG_KEY = "/usr/share/keyrings/tailscale-archive-keyring.gpg"
+
+
+def tunnel_codename():
+    release = ""
+    if os.path.isfile("/etc/os-release"):
+        with open("/etc/os-release", "r") as handle:
+            for line in handle:
+                token = line.strip()
+                if token.startswith("VERSION_CODENAME="):
+                    release = token.split("=", 1)[1].strip().strip('"')
+    if not release:
+        release = "bookworm"
+    if not TUNNEL_CODENAME_RE.match(release):
+        raise ScriptError("bad_arg", "the distribution codename is not usable", "tunnel")
+    return release
+
+
+def tunnel_binary():
+    return shutil.which("tailscale")
+
+
+def tunnel_state():
+    found = tunnel_binary()
+    out = {
+        "installed": bool(found),
+        "version": "",
+        "backend": "absent",
+        "hostname": "",
+        "url": "",
+        "funnel": False,
+    }
+    if not found:
+        return out
+    code, text = run([found, "version"], timeout=20)
+    if code == 0 and text:
+        out["version"] = text.split()[0][:32]
+    code, text = run([found, "status", "--json"], timeout=30)
+    if code == 0 and text:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = {}
+        if isinstance(data, dict):
+            out["backend"] = str(data.get("BackendState", "unknown"))[:24]
+            name = str((data.get("Self") or {}).get("DNSName", "") or "").rstrip(".")
+            if name:
+                out["hostname"] = name[:64]
+    code, text = run([found, "funnel", "status"], timeout=30)
+    if code == 0 and text:
+        match = TUNNEL_URL_RE.search(text)
+        if match:
+            out["url"] = match.group(0)[:128]
+            out["funnel"] = True
+    return out
+
+
+def cmd_tunnel_status(flags, rest):
+    return tunnel_state(), None
+
+
+def cmd_tunnel_install(flags, rest):
+    found = tunnel_binary()
+    if found:
+        return tunnel_state(), None
+    if not has_systemd():
+        raise ScriptError("unsupported", "the tunnel needs systemd", "tunnel")
+    release = tunnel_codename()
+    base = "https://pkgs.tailscale.com/stable/debian"
+    code, text = run(["apt-get", "install", "-y", "curl", "ca-certificates"], timeout=300)
+    if code != 0:
+        raise ScriptError("internal", "apt-get could not install curl: " + text[:300], "tunnel")
+    handler = urllib.request.build_opener()
+    try:
+        with handler.open(base + "/" + release + ".noarmor.gpg", timeout=60) as answer:
+            key = answer.read()
+    except (urllib.error.URLError, OSError) as exc:
+        raise ScriptError("internal", "the tailscale key could not be fetched: " + str(exc)[:200], "tunnel")
+    if len(key) < 100 or not key.startswith(b"-----BEGIN PGP PUBLIC KEY BLOCK-----"):
+        raise ScriptError("internal", "the tailscale key looks broken", "tunnel")
+    with open(TUNNEL_PKG_KEY, "wb") as handle:
+        handle.write(key)
+    os.chmod(TUNNEL_PKG_KEY, 0o644)
+    line = "deb [signed-by=%s] %s %s main\n" % (TUNNEL_PKG_KEY, base, release)
+    with open("/etc/apt/sources.list.d/tailscale.list", "w") as handle:
+        handle.write(line)
+    code, text = run(["apt-get", "update"], timeout=600)
+    if code != 0:
+        raise ScriptError("internal", "apt-get update failed: " + text[:300], "tunnel")
+    code, text = run(["apt-get", "install", "-y", "tailscale"], timeout=900)
+    if code != 0:
+        raise ScriptError("internal", "the tailscale package did not install: " + text[:300], "tunnel")
+    if not tunnel_binary():
+        raise ScriptError("internal", "tailscale is still missing after the install", "tunnel")
+    return tunnel_state(), None
+
+
+def cmd_tunnel_up(flags, rest):
+    key = str(flags.get("key", "") or "").strip()
+    hostname = str(flags.get("hostname", "") or "").strip().lower()
+    port = int(str(flags.get("port", "2096")))
+    if not TUNNEL_KEY_RE.match(key):
+        raise ScriptError("bad_arg", "the tailscale auth key is not valid", "tunnel")
+    if not TUNNEL_HOST_RE.match(hostname):
+        raise ScriptError("bad_arg", "the tunnel hostname is not valid", "tunnel")
+    if not 1 <= port <= 65535:
+        raise ScriptError("bad_arg", "the tunnel port is out of range", "tunnel")
+    found = tunnel_binary()
+    if not found:
+        raise ScriptError("not_installed", "tailscale is not installed", "tunnel")
+    code, text = run([found, "up", "--authkey=" + key, "--hostname=" + hostname, "--accept-dns=false", "--accept-routes=false", "--reset"], timeout=180)
+    if code != 0:
+        raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
+    code, text = run([found, "funnel", "--bg", "--https=443", "http://127.0.0.1:%d" % port], timeout=180)
+    if code != 0:
+        raise ScriptError("internal", "the funnel did not start: " + text[:300] + " enable funnel in the tailnet policy and turn on https certificates", "tunnel")
+    state = tunnel_state()
+    if not state["url"]:
+        raise ScriptError("internal", "the funnel is not answering with a ts.net name yet, dns may still be propagating", "tunnel")
+    return state, None
+
+
+def cmd_tunnel_down(flags, rest):
+    found = tunnel_binary()
+    if not found:
+        return tunnel_state(), None
+    run([found, "funnel", "reset"], timeout=60)
+    return tunnel_state(), None
+
+
 COMMANDS = {
     "probe": cmd_probe,
     "install-core": cmd_install,
@@ -1259,6 +1393,10 @@ COMMANDS = {
     "stats": cmd_stats,
     "sub-status": cmd_sub_status,
     "sub-stop": cmd_sub_stop,
+    "tunnel-status": cmd_tunnel_status,
+    "tunnel-install": cmd_tunnel_install,
+    "tunnel-up": cmd_tunnel_up,
+    "tunnel-down": cmd_tunnel_down,
     "uninstall": cmd_uninstall,
 }
 

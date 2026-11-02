@@ -95,6 +95,16 @@ owned by someone else is reported with the process name and the inbound is moved
 The vless encryption screen offers the six 3x-ui kinds, `mlkem768x25519plus.<native|xorpub|random>.<x25519|mlkem768>`,
 and the keys come from `xray vlessenc` on the server, so the auth half is real and not a label.
 
+## A permanent name
+
+The subscription can leave the bare ip behind. `Debug` is not needed for it: the Xray home screen has a `domain`
+button that installs tailscale from its signed repository, takes a `tskey-auth-` key and a hostname, and runs
+`tailscale funnel --bg --https=443 http://127.0.0.1:<sub port>`. The name is `<hostname>.<tailnet>.ts.net`, it
+survives reboots and ip changes, the certificate is real, the port stays on loopback and vless inbounds never go
+through the tunnel. While the tunnel is on the subscription url is `https://<hostname>/<64>/<64>` with no port.
+Behind any local proxy the server reads the visitor from `X-Forwarded-For`, falling back to `CF-Connecting-IP`
+only for a loopback peer, so one visitor cannot outrun the 60 a minute limit by faking a header.
+
 ## Firewall
 
 FreeTurn traffic arrives from the vk TURN relays, so the `Call relay firewall` screen offers `open`, `vk relays only`
@@ -158,7 +168,7 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2188 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2204 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, and the hardening suites in `tests/test_security.py` and

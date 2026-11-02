@@ -48,6 +48,12 @@ class Bundle:
         except SubError:
             return ""
 
+    def public_url(self, base: str) -> str:
+        return "%s%s" % (str(base or "").rstrip("/"), self.path())
+
+    def public_json_url(self, base: str) -> str:
+        return "%s%s" % (str(base or "").rstrip("/"), self.json_path())
+
     def safe_json_url(self, address: str, port: int) -> str:
         try:
             return self.json_url(address, port)
@@ -59,6 +65,18 @@ class Bundle:
 
     def size(self) -> int:
         return len(self.payload())
+
+
+def url_of(bundle: Bundle, address: str, port: int, base: str = "") -> str:
+    if base:
+        return bundle.public_url(base)
+    return bundle.safe_url(address, port)
+
+
+def json_url_of(bundle: Bundle, address: str, port: int, base: str = "") -> str:
+    if base:
+        return bundle.public_json_url(base)
+    return bundle.safe_json_url(address, port)
 
 
 def local_url(address: object, port: object) -> str:

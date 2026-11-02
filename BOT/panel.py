@@ -17,6 +17,7 @@ from .xray import (
     NETWORKS,
     SECURITIES,
     SUB_SEGMENT_LEN,
+    TUNNEL_HOST_RE,
     VERSION_CHOICES,
     VLESS_COMBOS,
     XRAY_VERSION,
@@ -44,6 +45,7 @@ from .xrayrpc import DEFAULT_VERSION, CoreState, SubState, XrayControl, XrayErro
 log = logging.getLogger("obhod.panel")
 
 DURATION = re.compile(r"^[1-9][0-9]{0,4}[smhdw]$")
+TUNNEL_KEY_RE = re.compile(r"^tskey-[a-z]{2,6}-[A-Za-z0-9]{4,64}(-[A-Za-z0-9]{4,64}){0,4}$")
 SCAN_LIMIT = 24
 CANDIDATE_LIMIT = 512
 FIELDS = frozenset(inline.FIELDS)
@@ -57,6 +59,8 @@ GLOBAL_FIELDS = frozenset(
         "xr_sub_refresh",
         "xr_sub_support",
         "xr_sub_announce",
+        "xr_tunnel_host",
+        "xr_tunnel_key",
         "xr_ban_ip",
         "xr_bantime",
         "xr_ssh_bantime",
@@ -86,6 +90,7 @@ class XrayPanel:
         self.draft: dict[str, str] = {}
         self.results: list[ScanResult] = [ScanResult.from_dict(item) for item in bot.state.xray.scan_results]
         self.sub_state: dict[str, Any] = {}
+        self.tunnel_key = str(getattr(bot, "tunnel_key", "") or "")
 
     @property
     def state(self) -> XrayState:
@@ -139,8 +144,7 @@ class XrayPanel:
         sub = self.state.subscription_of(email)
         if sub is None:
             return "", ""
-        host = self.state.address(self.address())
-        return sub.path(), sub.safe_url(host, self.state.sub_port)
+        return sub.path(), subs.url_of(sub, self.state.address(self.address()), self.state.sub_port, self.state.public_base())
 
     def next_port(self, extra: object = ()) -> int:
         used = set(self.state.ports()) | {int(item) for item in extra}
@@ -222,6 +226,9 @@ class XrayPanel:
             return
         if head == "keys":
             await self.regen_keys(chat_id, msg_id, arg1)
+            return
+        if head == "dom":
+            await self.tunnel_action(chat_id, msg_id, arg1)
             return
         if head == "enc":
             await self.encryption_action(chat_id, msg_id, arg1, arg2)
@@ -370,6 +377,52 @@ class XrayPanel:
         self.save()
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_KEYS_REGEN")), inbound))
 
+    async def tunnel_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        t = self.tr()
+        tunnel = None
+        if action == "install":
+            await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL"), self.bot.state.language))
+            try:
+                tunnel = await self.control.tunnel_install(self.bot.state.ssh)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=exc.message), None))
+                return
+        elif action == "up":
+            host = (self.state.tunnel_host or "").strip().lower()
+            if not TUNNEL_HOST_RE.match(host):
+                host = ""
+            if not host:
+                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=t("DOM_HOST_BAD")), None))
+                return
+            await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_UP"), self.bot.state.language))
+            try:
+                tunnel = await self.control.tunnel_up(self.bot.state.ssh, self.tunnel_key, host, self.state.sub_port)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=exc.message), None))
+                return
+            self.state.tunnel_enabled = True
+            self.state.tunnel_backend = tunnel.backend
+            self.save()
+        elif action == "off":
+            try:
+                tunnel = await self.control.tunnel_down(self.bot.state.ssh)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=exc.message), None))
+                return
+            self.state.tunnel_enabled = False
+            self.save()
+            await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(notice=t("DOM_OFF_DONE")), tunnel))
+            return
+        else:
+            await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_CHECK"), self.bot.state.language))
+            try:
+                tunnel = await self.control.tunnel_status(self.bot.state.ssh)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(error=exc.message), None))
+                return
+        notice = t("DOM_READY") if tunnel is not None and tunnel.healthy() else ""
+        await self.render(chat_id, msg_id, xscreens.domain_screen(self.view(notice=notice), tunnel))
+
     async def encryption_action(self, chat_id: int, msg_id: int, ident: str, combo: str) -> None:
         t = self.tr()
         inbound = self.state.inbound(ident) if ident else self.target_inbound()
@@ -483,7 +536,7 @@ class XrayPanel:
         host = self.state.address(self.address())
         bundle = self.sub_bundle(host)
         if bundle is not None:
-            out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), bundle.safe_url(host, self.state.sub_port)))
+            out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), subs.url_of(bundle, host, self.state.sub_port, self.state.public_base())))
         return out
 
     async def refresh_traffic(self) -> bool:
@@ -1120,6 +1173,21 @@ class XrayPanel:
                     raise PanelError(f"the port {port} is used by the inbound {inbound.remark}")
             self.state.api_port = port
             return t("NOTICE_API_PORT", port=port)
+        if ident == "xr_tunnel_host":
+            host = text.lower().rstrip(".")
+            if host and not TUNNEL_HOST_RE.match(host):
+                raise PanelError(t("DOM_HOST_BAD"))
+            self.state.tunnel_host = host
+            if not host:
+                self.state.tunnel_enabled = False
+            return t("NOTICE_TUNNEL_HOST", value=host or t("UI_NONE"))
+        if ident == "xr_tunnel_key":
+            if text and not TUNNEL_KEY_RE.match(text):
+                raise PanelError(t("DOM_KEY_BAD"))
+            if text:
+                self.tunnel_key = text
+                self.bot.tunnel_key = text
+            return t("NOTICE_TUNNEL_KEY")
         if ident == "xr_access_log":
             if not text.startswith("/") or "\n" in text or "\r" in text:
                 raise PanelError("the access log path must be an absolute path without newlines")

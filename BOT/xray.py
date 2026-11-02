@@ -63,6 +63,7 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHORT_ID_RE = re.compile(r"^[0-9a-f]{0,16}$")
 SUB_ALPHABET = string.ascii_letters + string.digits + "-_"
 SUB_PORT = 2096
+TUNNEL_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){2,4}$")
 XRAY_VERSION = "v26.10.31"
 LATEST_CHOICE = "latest"
 VERSION_CHOICES = (XRAY_VERSION, LATEST_CHOICE)
@@ -1074,6 +1075,9 @@ class XrayState:
     traffic: dict[str, dict[str, int]] = field(default_factory=dict)
     sub_support_url: str = ""
     sub_announce: str = ""
+    tunnel_host: str = ""
+    tunnel_enabled: bool = False
+    tunnel_backend: str = ""
     api_enabled: bool = True
     api_port: int = API_PORT
     metrics: str = DEFAULT_METRICS
@@ -1107,6 +1111,9 @@ class XrayState:
             "traffic": {str(key): {"up": int(value.get("up", 0) or 0), "down": int(value.get("down", 0) or 0)} for key, value in list(self.traffic.items())[:MAX_TRAFFIC]},
             "sub_support_url": self.sub_support_url,
             "sub_announce": self.sub_announce,
+            "tunnel_host": self.tunnel_host,
+            "tunnel_enabled": bool(self.tunnel_enabled),
+            "tunnel_backend": self.tunnel_backend,
             "api_enabled": bool(self.api_enabled),
             "api_port": int(self.api_port),
             "metrics": self.metrics,
@@ -1144,6 +1151,9 @@ class XrayState:
             traffic=traffic_map(data.get("traffic")),
             sub_support_url=str(data.get("sub_support_url", "") or "")[:200],
             sub_announce=str(data.get("sub_announce", "") or "")[:200],
+            tunnel_host=str(data.get("tunnel_host", "") or "")[:64],
+            tunnel_enabled=bool(data.get("tunnel_enabled", False)),
+            tunnel_backend=str(data.get("tunnel_backend", "") or "")[:24],
             api_enabled=bool(data.get("api_enabled", True)),
             api_port=int(data.get("api_port", API_PORT) or API_PORT),
             metrics=str(data.get("metrics", DEFAULT_METRICS) or ""),
@@ -1354,6 +1364,20 @@ class XrayState:
                 if client.email == email:
                     return client
         return None
+
+    def tunnel_base(self) -> str:
+        host = (self.tunnel_host or "").strip().lower()
+        if not self.tunnel_enabled or not host:
+            return ""
+        if not TUNNEL_HOST_RE.match(host):
+            return ""
+        return "https://" + host
+
+    def public_base(self) -> str:
+        return self.tunnel_base()
+
+    def sub_url_host(self, fallback: str = "") -> str:
+        return self.public_base() or self.address(fallback)
 
     def metric_parts(self) -> tuple[str, int]:
         text = str(self.metrics or "").strip()

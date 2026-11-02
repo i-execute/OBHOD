@@ -123,6 +123,30 @@ class FakeControl:
         ]
         return {"decryption": items[0]["decryption"], "encryption": items[0]["encryption"], "items": items}
 
+    async def tunnel_status(self, cfg: Any) -> Any:
+        from BOT.xrayrpc import TunnelState
+
+        self.calls.append(["tunnel-status"])
+        return TunnelState(installed=True, version="1.80.2", backend="Running", hostname="obhod.tail1234.ts.net", url="https://obhod.tail1234.ts.net", funnel=True)
+
+    async def tunnel_install(self, cfg: Any) -> Any:
+        from BOT.xrayrpc import TunnelState
+
+        self.calls.append(["tunnel-install"])
+        return TunnelState(installed=True, version="1.80.2", backend="NeedsLogin")
+
+    async def tunnel_up(self, cfg: Any, key: str, hostname: str, port: int = 2096) -> Any:
+        from BOT.xrayrpc import TunnelState
+
+        self.calls.append(["tunnel-up", key, hostname, str(port)])
+        return TunnelState(installed=True, version="1.80.2", backend="Running", hostname=hostname, url="https://" + hostname, funnel=True)
+
+    async def tunnel_down(self, cfg: Any) -> Any:
+        from BOT.xrayrpc import TunnelState
+
+        self.calls.append(["tunnel-down"])
+        return TunnelState(installed=True, version="1.80.2", backend="Running")
+
     async def uninstall(self, cfg: Any, purge: bool = True) -> Any:
         from BOT.xrayrpc import XrayResponse
 

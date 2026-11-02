@@ -90,6 +90,8 @@ FIELDS: dict[str, Field] = {
     "xr_dns_servers": Field("xr_dns_servers", "FLD_XR_DNS_SERVERS", "FLH_XR_DNS_SERVERS", "1.1.1.1, 8.8.8.8"),
     "xr_api_port": Field("xr_api_port", "FLD_XR_API_PORT", "FLH_XR_API_PORT", "62789"),
     "xr_access_log": Field("xr_access_log", "FLD_XR_ACCESS_LOG", "FLH_XR_ACCESS_LOG", "/var/log/xray/access.log"),
+    "xr_tunnel_host": Field("xr_tunnel_host", "FLD_XR_TUNNEL_HOST", "FLH_XR_TUNNEL_HOST", "obhod"),
+    "xr_tunnel_key": Field("xr_tunnel_key", "FLD_XR_TUNNEL_KEY", "FLH_XR_TUNNEL_KEY", "tskey-auth-xxxx", True),
     "ft_port": Field("ft_port", "FLD_FT_PORT", "FLH_FT_PORT", "56000"),
     "ft_wg_port": Field("ft_wg_port", "FLD_FT_WG_PORT", "FLH_FT_WG_PORT", "51820"),
     "ft_wg_net": Field("ft_wg_net", "FLD_FT_WG_NET", "FLH_FT_WG_NET", "10.13.13.0/24"),

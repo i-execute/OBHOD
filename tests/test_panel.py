@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -829,3 +830,71 @@ def test_the_encryption_screen_without_an_inbound(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     run(item.encryption_action(1, 0, "", ""))
     assert i18n.t("XR_CHECK_MISSING") in bot.rendered[-1].to_html()
+
+
+def test_the_tunnel_check_reports_the_funnel(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    run(item.tunnel_action(1, 0, "status"))
+    html = bot.rendered[-1].to_html()
+    assert "obhod.tail1234.ts.net" in html
+    assert i18n.t("DOM_READY") in html
+
+
+def test_a_bad_hostname_stops_the_tunnel(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.tunnel_host = "not a host"
+    run(item.tunnel_action(1, 0, "up"))
+    assert i18n.t("DOM_HOST_BAD") in bot.rendered[-1].to_html()
+    assert ["tunnel-up"] not in [[call[0]] for call in bot.control.calls]
+
+
+def test_the_tunnel_up_takes_the_name_and_the_port(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    item.tunnel_key = "tskey-auth-abc123-def456"
+    bot.state.xray.tunnel_host = "obhod.tail1234.ts.net"
+    bot.state.xray.sub_port = 9443
+    run(item.tunnel_action(1, 0, "up"))
+    call = [item for item in bot.control.calls if item[0] == "tunnel-up"][0]
+    assert call[2] == "obhod.tail1234.ts.net"
+    assert call[3] == "9443"
+    assert bot.state.xray.tunnel_enabled is True
+
+
+def test_the_tunnel_off_clears_the_flag(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.tunnel_enabled = True
+    bot.state.xray.tunnel_host = "obhod.tail1234.ts.net"
+    run(item.tunnel_action(1, 0, "off"))
+    assert bot.state.xray.tunnel_enabled is False
+    assert i18n.t("DOM_OFF_DONE") in bot.rendered[-1].to_html()
+
+
+def test_the_host_input_is_validated(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    with pytest.raises(PanelError):
+        item.set_field("xr_tunnel_host", "-", "obhod; rm -rf /")
+    note = item.set_field("xr_tunnel_host", "-", "obhod.tail1234.ts.net")
+    assert bot.state.xray.tunnel_host == "obhod.tail1234.ts.net"
+    assert "obhod.tail1234.ts.net" in note
+
+
+def test_the_key_input_is_validated_and_kept_out_of_the_state(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    with pytest.raises(PanelError):
+        item.set_field("xr_tunnel_key", "-", "nope")
+    item.set_field("xr_tunnel_key", "-", "tskey-auth-abc123-def456")
+    assert item.tunnel_key == "tskey-auth-abc123-def456"
+    assert "tskey" not in json.dumps(bot.state.to_dict())
+
+
+def test_the_subscription_url_switches_to_the_tunnel(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(make_inbound("reality", "raw", 443))
+    bot.state.xray.sub_address = "203.0.113.10"
+    direct = item.sub_rows()[0][2]
+    assert direct.startswith("http://203.0.113.10:")
+    bot.state.xray.tunnel_host = "obhod.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = True
+    through = item.sub_rows()[0][2]
+    assert through.startswith("https://obhod.tail1234.ts.net/")
+    assert ":2096" not in through
