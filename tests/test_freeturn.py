@@ -851,3 +851,36 @@ def test_the_agent_refuses_a_script_without_a_published_digest(monkeypatch: pyte
     with pytest.raises(module.AgentError) as caught:
         module.script_source({"version": "latest"}, lookup=lambda repo: ("v4.2.0", ""))
     assert caught.value.code == "not_pinned"
+
+
+def test_more_than_five_hundred_links_survive() -> None:
+    from BOT.freeturn import LINKS_MAX
+
+    state = FtState.from_dict({"installed": True, "running": True})
+    for index in range(2040):
+        state.remember("peer%04d" % index, "freeturn://%040d" % index)
+    assert len(state.links) == 2040
+    assert len(state.link_values()) == 2040
+    assert LINKS_MAX >= 2040
+    back = FtState.from_dict(state.to_dict())
+    assert len(back.links) == 2040
+    assert back.links["peer2039"] == state.links["peer2039"]
+
+
+def test_a_long_name_is_refused_instead_of_being_cut() -> None:
+    state = FtState.from_dict({"installed": True, "running": True})
+    first = "a" * 40 + "-one"
+    second = "a" * 40 + "-two"
+    state.remember(first, "freeturn://" + "1" * 40)
+    state.remember(second, "freeturn://" + "2" * 40)
+    assert state.links == {}
+    state.remember("ok-name", "freeturn://" + "3" * 40)
+    assert list(state.links) == ["ok-name"]
+
+
+def test_a_bytes_answer_is_parsed_too() -> None:
+    answer = freeturn.parse_response(b'{"proto": 3, "result": "ok", "data": {"running": true}}')
+    assert answer.result == "ok"
+    assert answer.data["running"] is True
+    with pytest.raises(FtError):
+        freeturn.parse_response(None)

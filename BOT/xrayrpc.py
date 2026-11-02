@@ -82,8 +82,18 @@ def sub_server_code() -> str:
     return _load_remote("subscription server", SUB_SERVER_PATH)
 
 
+ARG_LIMIT = 65536
+
+
 def b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
+
+
+def payload_arg(flag: str, payload: bytes) -> tuple[str, bytes]:
+    encoded = b64(payload)
+    if len(encoded) + len(flag) + 4 > ARG_LIMIT:
+        return "--%s=-" % flag, encoded.encode("ascii")
+    return "--%s=%s" % (flag, encoded), b""
 
 
 @dataclass
@@ -238,10 +248,12 @@ class XrayControl:
         argv: list[str],
         timeout: float | None = None,
         source: str = "",
+        stdin: bytes | None = None,
     ) -> XrayResponse:
         try:
             out: ShellOutput = await self.shell.run_argv(
                 agent_argv(argv, source or agent_code()),
+                stdin=stdin,
                 timeout=timeout or self.timeout,
             )
         except ShellError as exc:
@@ -274,16 +286,18 @@ class XrayControl:
 
     async def apply(self, cfg: SshSettings, config: str, version: str = DEFAULT_VERSION, restart: bool = True) -> CoreState:
         payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
-        argv = ["apply", f"--config-b64={b64(payload)}", f"--version={version}"]
+        flag, stdin = payload_arg("config-b64", payload)
+        argv = ["apply", flag, f"--version={version}"]
         if not restart:
             argv.append("--no-restart")
-        response = await self.call(cfg, argv, timeout=max(self.timeout, 600.0))
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 600.0), stdin=stdin)
         response.raise_for_status()
         return CoreState.from_dict(response.data)
 
     async def test_config(self, cfg: SshSettings, config: str) -> tuple[bool, str]:
         payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
-        response = await self.call(cfg, ["test-config", f"--config-b64={b64(payload)}"], timeout=120)
+        flag, stdin = payload_arg("config-b64", payload)
+        response = await self.call(cfg, ["test-config", flag], timeout=120, stdin=stdin)
         response.raise_for_status()
         return bool(response.data.get("valid", False)), str(response.data.get("output", "") or "")
 
@@ -324,13 +338,15 @@ class XrayControl:
 
     async def sub_install(self, cfg: SshSettings, port: int = SUB_PORT) -> SubState:
         payload = sub_server_code().encode("utf-8")
-        response = await self.call(cfg, ["sub-install", f"--server-b64={b64(payload)}", f"--port={int(port)}"], timeout=180)
+        flag, stdin = payload_arg("server-b64", payload)
+        response = await self.call(cfg, ["sub-install", flag, f"--port={int(port)}"], timeout=180, stdin=stdin)
         response.raise_for_status()
         return SubState.from_dict(response.data)
 
     async def sub_sync(self, cfg: SshSettings, registry: dict[str, Any], port: int = SUB_PORT) -> SubState:
         payload = json.dumps(registry, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        response = await self.call(cfg, ["sub-sync", f"--registry-b64={b64(payload)}", f"--port={int(port)}"], timeout=180)
+        flag, stdin = payload_arg("registry-b64", payload)
+        response = await self.call(cfg, ["sub-sync", flag, f"--port={int(port)}"], timeout=180, stdin=stdin)
         response.raise_for_status()
         return SubState.from_dict(response.data)
 

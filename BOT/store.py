@@ -13,6 +13,7 @@ from .freeturn import FtState
 from .xray import SUB_PORT, XrayState
 
 DEFAULT_TAIL = 200
+TRAFFIC_NAME = 64
 SCHEMA = 7
 
 CORES = cores.keys()
@@ -47,7 +48,7 @@ class State:
             "last_probe": dict(self.last_probe),
             "language": i18n.normalize(self.language),
             "emoji": self.emoji,
-            "traffic": {str(key)[:32]: dict(value) for key, value in list(self.traffic.items())[:4096] if isinstance(value, dict)},
+            "traffic": {str(key)[:TRAFFIC_NAME]: dict(value) for key, value in list(self.traffic.items())[:4096] if isinstance(value, dict)},
             "xray": self.xray.to_dict(),
             "freeturn": self.freeturn.to_dict(),
             "core": self.core if self.core in CORES else "xray",
@@ -65,7 +66,7 @@ class State:
             last_probe=dict(data.get("last_probe") or {}),
             language=i18n.normalize(data.get("language", i18n.DEFAULT_LANGUAGE)),
             emoji=bool(data["emoji"]) if isinstance(data.get("emoji"), bool) else None,
-            traffic={str(key)[:32]: dict(value) for key, value in list((data.get("traffic") or {}).items())[:4096] if isinstance(value, dict)} if isinstance(data.get("traffic"), dict) else {},
+            traffic={str(key)[:TRAFFIC_NAME]: dict(value) for key, value in list((data.get("traffic") or {}).items())[:4096] if isinstance(value, dict)} if isinstance(data.get("traffic"), dict) else {},
             xray=XrayState.from_dict(data.get("xray")),
             freeturn=FtState.from_dict(data.get("freeturn")),
             core=str(data.get("core", "xray") or "xray"),

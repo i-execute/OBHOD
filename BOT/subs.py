@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 MAX_LINKS = 4096
-MAX_BODY = 512 * 1024
+MAX_BODY = 8 * 1024 * 1024
+MAX_LINK = 4096
+ALL_EMAIL = "*"
+ALL_TITLE = "OBHOD all"
 LOCAL_PREFIXES = ("http://", "https://")
 
 
@@ -63,10 +66,19 @@ def local_url(address: object, port: object) -> str:
 
 
 def clean_links(links: Any) -> list[str]:
+    if isinstance(links, str):
+        links = [links]
+    elif isinstance(links, (bytes, bytearray)):
+        links = [bytes(links).decode("utf-8", "replace")]
+    elif not isinstance(links, (list, tuple, set, frozenset)):
+        try:
+            links = list(links or [])
+        except TypeError:
+            return []
     out: list[str] = []
     for item in links or []:
         text = str(item or "").strip()
-        if not text or len(text) > 4096:
+        if not text or len(text) > MAX_LINK:
             continue
         if any(char in text for char in "\r\n\t"):
             continue
@@ -78,13 +90,35 @@ def clean_links(links: Any) -> list[str]:
     return out
 
 
-def payload_of(links: Any) -> str:
+def raw_budget() -> int:
+    return (MAX_BODY // 4) * 3
+
+
+def keep_links(links: Any) -> list[str]:
     found = clean_links(links)
-    if not found:
+    budget = raw_budget()
+    kept: list[str] = []
+    size = 0
+    for item in found:
+        chunk = len(item.encode("utf-8")) + 1
+        if kept and size + chunk > budget:
+            break
+        kept.append(item)
+        size += chunk
+    return kept
+
+
+def payload_of(links: Any) -> str:
+    kept = keep_links(links)
+    if not kept:
         return ""
-    body = "\n".join(found) + "\n"
-    raw = base64.b64encode(body.encode("utf-8")).decode("ascii")
-    return raw[:MAX_BODY]
+    body = "\n".join(kept) + "\n"
+    encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
+    return encoded if len(encoded) <= MAX_BODY else ""
+
+
+def dropped(links: Any) -> int:
+    return len(clean_links(links)) - len(keep_links(links))
 
 
 def json_body(bundle: Bundle, address: str = "", port: int = 0) -> str:
@@ -106,7 +140,7 @@ def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port:
     bundle = Bundle()
     if xray_state is not None:
         bundle.id, bundle.key = xray_state.ensure_sub_all()
-        bundle.title = "OBHOD all"
+        bundle.title = ALL_TITLE
         for item in xray_state.subscriptions(address):
             bundle.links.extend(item.links)
     bundle.links.extend(clean_links(extra_links))
@@ -117,7 +151,7 @@ def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port:
 def entry_of(bundle: Bundle, refresh: int = 12, title: str = "") -> dict[str, Any]:
     return {
         "key": bundle.key,
-        "email": "all",
+        "email": ALL_EMAIL,
         "inbound": 0,
         "title": (title or bundle.title)[:64],
         "refresh": int(refresh),

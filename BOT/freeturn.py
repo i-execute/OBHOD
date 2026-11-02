@@ -29,6 +29,9 @@ VERSION_CHOICES = ("latest", FALLBACK_VERSION)
 CHECKSUMS_ASSET = "checksums.txt"
 CHECKSUMS_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 CHECKSUMS_MAX = 512 * 1024
+NAME_MAX = 32
+LINK_MAX = 4096
+LINKS_MAX = 4096
 CHECKSUMS_TIMEOUT = 8.0
 CHECKSUMS_OK_TTL = 3600.0
 CHECKSUMS_FAIL_TTL = 300.0
@@ -59,7 +62,6 @@ INSTALL_DIR = "/opt/free-turn-proxy"
 UNIT_NAME = "free-turn-proxy.service"
 CONTAINER_NAME = "free-turn-proxy"
 CLIENTS_FILE = INSTALL_DIR + "/auth/clients.json"
-NAME_MAX = 32
 OWNER_NAME = "owner"
 KCP_DEFAULTS = {
     "nodelay": 1,
@@ -351,6 +353,12 @@ class FtResponse:
 
 
 def parse_response(text: str) -> FtResponse:
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8", "replace")
+    if text is None:
+        text = ""
+    else:
+        text = str(text)
     payload = ""
     for line in (text or "").splitlines():
         token = line.strip()
@@ -553,14 +561,14 @@ class FtState:
     links: dict[str, str] = field(default_factory=dict)
 
     def remember(self, name: str, link: str) -> None:
-        key = str(name or "").strip()[:32]
-        if key and not valid_name(key):
+        key = str(name or "").strip()
+        if not key or len(key) > NAME_MAX or not valid_name(key):
             return
         text = str(link or "").strip()
         if not key or not text or not text.startswith("freeturn://"):
             return
-        self.links[key] = text[:4096]
-        while len(self.links) > 512:
+        self.links[key] = text[:LINK_MAX]
+        while len(self.links) > LINKS_MAX:
             self.links.pop(next(iter(self.links)))
 
     def link_values(self) -> list[str]:
@@ -576,7 +584,7 @@ class FtState:
             "version": self.version,
             "config": self.config.to_dict(),
             "key_present": bool(self.key_present),
-            "links": {str(key)[:32]: str(value)[:4096] for key, value in list(self.links.items())[:512]},
+            "links": {str(key)[:NAME_MAX]: str(value)[:LINK_MAX] for key, value in list(self.links.items())[:LINKS_MAX]},
         }
 
     @property
@@ -603,8 +611,8 @@ class FtState:
             key_present=valid_hex64(key) or bool(data.get("key_present", False)),
             configured=bool((data.get("config") or {}) and data.get("config")),
             links={
-                str(name)[:32]: str(value)[:4096]
-                for name, value in list((data.get("links") or {}).items())[:512]
+                str(name)[:NAME_MAX]: str(value)[:LINK_MAX]
+                for name, value in list((data.get("links") or {}).items())[:LINKS_MAX]
                 if str(value).startswith("freeturn://")
             }
             if isinstance(data.get("links"), dict)

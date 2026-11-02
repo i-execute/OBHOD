@@ -39,6 +39,7 @@ RATE_WINDOW = 60.0
 MAX_CLIENTS = env_int("OBHOD_SUB_MAX_CLIENTS", 64, 4, 512)
 SOCKET_TIMEOUT = 15.0
 MAX_LINE = 4096
+MAX_BODY = env_int("OBHOD_SUB_MAX_BODY", 8 * 1024 * 1024, 65536, 64 * 1024 * 1024)
 BLOCK_STEP = 60.0
 BLOCK_MAX = 3600.0
 NOT_FOUND_STEP = 10
@@ -204,11 +205,23 @@ def payload_of(entry):
     links = entry.get("links")
     if not isinstance(links, list):
         return ""
-    lines = [str(item) for item in links if str(item).strip()]
-    if not lines:
+    budget = (MAX_BODY // 4) * 3
+    kept = []
+    size = 0
+    for item in links:
+        text = str(item).strip()
+        if not text:
+            continue
+        chunk = len(text.encode("utf-8")) + 1
+        if kept and size + chunk > budget:
+            break
+        kept.append(text)
+        size += chunk
+    if not kept:
         return ""
-    text = "\n".join(lines) + "\n"
-    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+    body = "\n".join(kept) + "\n"
+    encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
+    return encoded if len(encoded) <= MAX_BODY else ""
 
 
 def refresh_hours(entry):

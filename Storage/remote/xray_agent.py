@@ -652,10 +652,22 @@ def parse_flags(tokens):
     return flags, rest
 
 
+STDIN_MARK = "-"
+STDIN_MAX = 16 * 1024 * 1024
+
+
 def payload_of(flags, name):
     value = flags.get(name, "")
     if not value:
         return b""
+    if value == STDIN_MARK:
+        raw = sys.stdin.buffer.read(STDIN_MAX + 1)
+        if len(raw) > STDIN_MAX:
+            raise ScriptError("bad_arg", "the field %s is too large" % name, "args")
+        try:
+            return base64.b64decode(raw.strip())
+        except (ValueError, TypeError):
+            raise ScriptError("bad_arg", "the field %s is not decodable" % name, "args")
     try:
         return base64.b64decode(value)
     except (ValueError, TypeError):

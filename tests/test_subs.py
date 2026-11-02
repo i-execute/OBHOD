@@ -320,8 +320,8 @@ def test_every_client_key_reaches_the_aggregate_bundle_once() -> None:
         assert sum(1 for item in links if item.rsplit("#", 1)[-1].endswith("-%s" % name) or "-%s-" % name in item.rsplit("#", 1)[-1] or item.rsplit("#", 1)[-1].startswith("%s-" % name)) == 2
     registry = state.sub_registry("203.0.113.10", extra)
     entries = list(registry["entries"].values())
-    owners = [item for item in entries if item["email"] != "all"]
-    aggregate_entry = [item for item in entries if item["email"] == "all"]
+    owners = [item for item in entries if item["email"] != subs.ALL_EMAIL]
+    aggregate_entry = [item for item in entries if item["email"] == subs.ALL_EMAIL]
     assert len(owners) == 3
     assert all(len(item["links"]) == 2 for item in owners)
     assert len(aggregate_entry) == 1
@@ -340,3 +340,110 @@ def test_a_client_with_no_links_is_never_silently_dropped() -> None:
     bundle = subs.aggregate(state, [], "203.0.113.10", 2096)
     assert bundle.links
     assert all("8443" not in item for item in bundle.links)
+
+
+def test_a_large_bundle_is_never_cut_in_the_middle_of_a_link() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    for index in range(2040):
+        inbound.make_client("peer%04d" % index)
+    state.add(inbound)
+    links = subs.aggregate(state, [], "203.0.113.10", 2096).links
+    assert len(links) == 2040
+    payload = subs.payload_of(links)
+    assert len(payload) <= subs.MAX_BODY
+    decoded = base64.b64decode(payload).decode("utf-8").strip().split("\n")
+    assert decoded == links
+    assert subs.dropped(links) == 0
+
+
+def test_a_bundle_over_the_cap_drops_whole_links_only() -> None:
+    long_link = "vless://" + "a" * (subs.MAX_LINK - 40)
+    links = [long_link + "-%04d" % index for index in range(subs.MAX_LINKS)]
+    payload = subs.payload_of(links)
+    decoded = base64.b64decode(payload).decode("utf-8").strip().split("\n")
+    assert len(payload) <= subs.MAX_BODY
+    assert decoded == links[: len(decoded)]
+    assert subs.dropped(links) == len(links) - len(decoded)
+    assert subs.dropped(links) > 0
+
+
+def test_a_client_named_all_never_collides_with_the_aggregate() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("all")
+    inbound.make_client("owner")
+    state.add(inbound)
+    registry = state.sub_registry("203.0.113.10", [])
+    emails = [item["email"] for item in registry["entries"].values()]
+    assert emails.count(subs.ALL_EMAIL) == 1
+    assert emails.count("all") == 1
+    aggregate = [item for item in registry["entries"].values() if item["email"] == subs.ALL_EMAIL]
+    assert aggregate[0]["title"] == subs.ALL_TITLE
+    assert len(aggregate[0]["links"]) == 2
+    human = [item for item in registry["entries"].values() if item["email"] == "all"]
+    assert len(human[0]["links"]) == 1
+
+
+def test_a_hostile_address_never_reaches_a_link() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    state.add(inbound)
+    hostile = "\u043d\u0435-\u0430\u0434\u0440\u0435\u0441"
+    for bad in (hostile, "host with space", "a" * 300, "../etc", "-bad.example"):
+        links = state.subscriptions(bad)[0].links
+        assert hostile not in links[0]
+        assert " " not in links[0].split("@")[1].split(":")[0]
+        assert links[0].count("@") == 1
+    assert state.address("203.0.113.10") == "203.0.113.10"
+    assert state.address("vpn.example.com") == "vpn.example.com"
+    state.sub_address = "2001:db8::1"
+    assert state.address("") == "2001:db8::1"
+    state.sub_address = hostile
+    assert state.address("203.0.113.10") == "203.0.113.10"
+
+
+def test_the_agent_takes_a_large_registry_over_stdin(tmp_path: Path) -> None:
+    from BOT.xrayrpc import ARG_LIMIT, payload_arg
+
+    small_flag, small_stdin = payload_arg("registry-b64", b"x" * 32)
+    assert small_stdin == b""
+    assert small_flag.startswith("--registry-b64=")
+    assert len(small_flag) < ARG_LIMIT
+    big = b"y" * (ARG_LIMIT * 4)
+    big_flag, big_stdin = payload_arg("registry-b64", big)
+    assert big_flag == "--registry-b64=-"
+    assert len(big_stdin) > ARG_LIMIT
+    assert base64.b64decode(big_stdin) == big
+
+
+def test_the_agent_reads_the_stdin_payload_and_reports_a_bad_one(tmp_path: Path) -> None:
+    server = tmp_path / "obhod-sub"
+    good = base64.b64encode(json.dumps({"entries": {}, "port": 2096}).encode())
+    done = subprocess.run(
+        [sys.executable, str(AGENT), "sub-sync", "--registry-b64=-", "--port=2096"],
+        input=good,
+        capture_output=True,
+        timeout=60,
+    )
+    text = done.stdout.decode("utf-8", "replace")
+    assert "not_installed" in text
+    assert "bad_arg" not in text
+    bad = subprocess.run(
+        [sys.executable, str(AGENT), "sub-sync", "--registry-b64=-", "--port=2096"],
+        input=b"not-base64!!",
+        capture_output=True,
+        timeout=60,
+    )
+    assert "bad_arg" in bad.stdout.decode("utf-8", "replace")
+    assert server.name in "obhod-sub"
+
+
+def test_a_non_iterable_link_list_is_refused_quietly() -> None:
+    assert subs.clean_links(1.5) == []
+    assert subs.clean_links(None) == []
+    assert subs.clean_links({"vless://one"}) == ["vless://one"]
+    assert subs.clean_links("vless://two") == ["vless://two"]
+    assert subs.clean_links(b"vless://three") == ["vless://three"]
+    assert subs.payload_of(1.5) == ""

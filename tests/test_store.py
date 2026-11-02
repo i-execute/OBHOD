@@ -172,3 +172,26 @@ def test_language_survives_a_roundtrip(tmp_path: Path) -> None:
     state.language = "ZH-hans"
     store.save(state)
     assert Store(path).load().language == "zh"
+
+
+def test_a_long_client_name_keeps_its_traffic_baseline(tmp_path: Path) -> None:
+    store = Store(tmp_path / "state.json")
+    state = State(xray=XrayState())
+    name = "a" * 30 + "-tail-one"
+    state.traffic = {name: {"rx": 10, "tx": 20, "%s" % name: 1}}
+    store.save(state)
+    again = store.load()
+    assert name in again.traffic
+    assert again.traffic[name]["rx"] == 10
+
+
+def test_two_names_with_the_same_prefix_never_merge(tmp_path: Path) -> None:
+    store = Store(tmp_path / "state.json")
+    state = State(xray=XrayState())
+    prefix = "b" * 32
+    state.traffic = {prefix + "-one": {"rx": 1}, prefix + "-two": {"rx": 2}}
+    store.save(state)
+    again = store.load()
+    assert len(again.traffic) == 2
+    assert again.traffic[prefix + "-one"]["rx"] == 1
+    assert again.traffic[prefix + "-two"]["rx"] == 2

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import re
 import secrets
@@ -183,6 +184,19 @@ PATH_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,200}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 ALPN_RE = re.compile(r"^[a-z0-9./-]{1,20}$")
 FILE_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,200}$")
+
+
+def is_host_like(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text or len(text) > 253:
+        return False
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        return bool(HOST_RE.match(text)) and ".." not in text
 
 
 def valid_host_name(value: object, label: str = "the server name") -> str:
@@ -1187,7 +1201,10 @@ class XrayState:
         return "/<%d>/<%d>" % (SUB_SEGMENT_LEN, SUB_SEGMENT_LEN)
 
     def address(self, fallback: str = "") -> str:
-        return (self.sub_address or fallback or "").strip()
+        for candidate in (str(self.sub_address or "").strip(), str(fallback or "").strip()):
+            if is_host_like(candidate):
+                return candidate
+        return ""
 
     def canonical_subscription(self, email: str, skip: Any = None) -> tuple[str, str] | None:
         for inbound in self.inbounds:
