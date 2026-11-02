@@ -38,14 +38,32 @@ carry an `ML-DSA-65` signature. No `vmess`, `trojan`, `shadowsocks`, `ws`, `http
 
 ## Commands
 
-`/start` shows the core summary plus the guides below. Telegram caps a command at 32 characters, so a longer
-name is registered through its menu alias while the bot still accepts the long form.
+`/start` shows the core summary plus both guides. Two long commands do the heavy lifting, each one opens
+straight into its own transport and its own set of clients.
 
-| Command | Menu alias | Screen |
+**WG RASKUR** - `/whitelist_bypass_wg_vk_call_raskur`
+
+wireguard inside a vk call: the provider sees a voice stream, not a tunnel. The screen walks through the
+peer, the turn relay, the rtpopus obfuscation and the firewall that keeps only the fresh vk prefixes, then
+hands you the client for your phone: [free turn for android](https://github.com/hackdiaz-dev/turn-proxy-android)
+and [free turn for ios](https://github.com/anton48/vk-turn-proxy-ios).
+
+**VLESS RASKUR** - `/vless_rkn_raw_tcp_xhttp_ws_raskur`
+
+vless over reality against the rkn: the handshake is a real tls handshake of someone else's site, with
+post quantum ml-kem and the ml-dsa-65 signature on top. Clients are the
+[INCY ones](https://github.com/INCY-DEV/incy-platforms), one builds for every platform.
+
+### Clients
+
+| Kind | Platform | Client |
 | --- | --- | --- |
-| `/start` | same | core summary, one button per core |
-| `/whitelist_bypass_wg_vk_call_raskur` | `/whitelist_bypass_wg_vk_call` | wireguard over the vk call, steps, both cores |
-| `/vless_rkn_bypass_raskur` | same | vless with REALITY against RKN, steps, both cores |
+| FreeTurn | android | [turn-proxy-android](https://github.com/hackdiaz-dev/turn-proxy-android) |
+| FreeTurn | ios | [vk-turn-proxy-ios](https://github.com/anton48/vk-turn-proxy-ios) |
+| VLESS | all platforms | [INCY](https://github.com/INCY-DEV/incy-platforms) |
+
+The bot menu registers `/whitelist_bypass_wg_vk_call` (a 32 character Telegram limit) and keeps accepting the
+full names, plus the old `/vless_rkn_bypass_raskur` as an alias.
 
 ## Subscriptions
 
@@ -130,7 +148,7 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2140 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2147 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, and the hardening suites in `tests/test_security.py` and

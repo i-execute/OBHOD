@@ -66,7 +66,7 @@ ui_init() {
 }
 
 hr() {
-  printf '%s%s%s\n' "$C_DIM" "+----------------------------------------------------------+" "$C_RESET"
+  printf '\n'
 }
 
 banner() {
@@ -74,14 +74,14 @@ banner() {
   if [ "$DEV" = "1" ]; then
     mode="dev install, no root, no systemd"
   fi
-  printf '\n%s+----------------------------------------------------------+%s\n' "$C_HEAD" "$C_RESET"
-  printf '%s|%s  %sOBHOD%s  %s-  telegram control bot over xray-core%s\n' "$C_HEAD" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
-  printf '%s|%s  %s%s%s\n' "$C_HEAD" "$C_RESET" "$C_DIM" "$mode" "$C_RESET"
-  printf '%s+----------------------------------------------------------+%s\n\n' "$C_HEAD" "$C_RESET"
+  printf '\n'
+  printf '  %s%sOBHOD%s\n' "$C_HEAD" "$C_BOLD" "$C_RESET"
+  printf '  %stelegram control bot over xray-core%s\n' "$C_DIM" "$C_RESET"
+  printf '  %s%s%s\n\n' "$C_ACC" "$mode" "$C_RESET"
 }
 
 kv() {
-  printf '  %s%-8s%s %s\n' "$C_DIM" "$1" "$C_RESET" "$2"
+  printf '    %s%-9s%s %s\n' "$C_DIM" "$1" "$C_RESET" "$2"
 }
 
 step() {
@@ -117,21 +117,19 @@ summary_box() {
     service_state="$(systemctl is-active obhod.service 2>/dev/null || true)"
     [ -n "$service_state" ] || service_state="unknown"
   fi
-  printf '\n%s+----------------------------------------------------------+%s\n' "$C_OK" "$C_RESET"
-  printf '%s|%s  %sdone%s\n' "$C_OK" "$C_RESET" "$C_BOLD" "$C_RESET"
-  printf '%s|%s\n' "$C_OK" "$C_RESET"
-  printf '%s|%s  %s%-9s%s %s\n' "$C_OK" "$C_RESET" "$C_DIM" "payload" "$C_RESET" "$PREFIX"
-  printf '%s|%s  %s%-9s%s %s\n' "$C_OK" "$C_RESET" "$C_DIM" "config" "$C_RESET" "$ENV_FILE"
-  printf '%s|%s  %s%-9s%s %s\n' "$C_OK" "$C_RESET" "$C_DIM" "state" "$C_RESET" "$STATE_DIR"
-  printf '%s|%s  %s%-9s%s %s\n' "$C_OK" "$C_RESET" "$C_DIM" "service" "$C_RESET" "$service_state"
-  printf '%s|%s\n' "$C_OK" "$C_RESET"
+  printf '\n  %s%sdone%s\n\n' "$C_OK" "$C_BOLD" "$C_RESET"
+  kv "payload" "$PREFIX"
+  kv "config" "$ENV_FILE"
+  kv "state" "$STATE_DIR"
+  kv "service" "$service_state"
+  printf '\n'
   if [ "$DEV" = "1" ]; then
-    printf '%s|%s  %srun it:%s OBHOD_ENV=%s %s/venv/bin/python -m BOT\n' "$C_OK" "$C_RESET" "$C_DIM" "$C_RESET" "$ENV_FILE" "$PREFIX"
+    kv "run it" "OBHOD_ENV=$ENV_FILE $PREFIX/venv/bin/python -m BOT"
   else
-    printf '%s|%s  %slogs:%s journalctl -u obhod -f\n' "$C_OK" "$C_RESET" "$C_DIM" "$C_RESET"
-    printf '%s|%s  %sopen:%s /help in the bot from the admin account\n' "$C_OK" "$C_RESET" "$C_DIM" "$C_RESET"
+    kv "logs" "journalctl -u obhod -f"
+    kv "open" "/help in the bot from the admin account"
   fi
-  printf '%s+----------------------------------------------------------+%s\n' "$C_OK" "$C_RESET"
+  printf '\n'
 }
 
 count_files() {

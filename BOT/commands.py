@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .ui import bold, bullet_list, button, heading, muted, row, screen
+from .ui import bold, bullet_list, button, code, heading, link_button, muted, row, screen, table
 
 MAX_COMMAND = 32
 MAX_NAME = 64
@@ -30,9 +30,12 @@ class Command:
 COMMANDS: tuple[Command, ...] = (
     Command("start", "CMD_START_DESC"),
     Command("whitelist_bypass_wg_vk_call_raskur", "CMD_WHITELIST_DESC", "whitelist_bypass_wg_vk_call"),
-    Command("vless_rkn_bypass_raskur", "CMD_VLESS_DESC"),
+    Command("vless_rkn_raw_tcp_xhttp_ws_raskur", "CMD_VLESS_DESC"),
 )
-ALIASES = {"whitelist_bypass_wg_vk_call": "whitelist_bypass_wg_vk_call_raskur"}
+ALIASES = {
+    "whitelist_bypass_wg_vk_call": "whitelist_bypass_wg_vk_call_raskur",
+    "vless_rkn_bypass_raskur": "vless_rkn_raw_tcp_xhttp_ws_raskur",
+}
 
 
 def canonical(raw: object) -> str:
@@ -71,22 +74,46 @@ def start_screen(t, cards, lang: str = "en"):
     return screen(t("CMD_START_TITLE"), t("CMD_START_DESC"), blocks, buttons, icon="bot")
 
 
-def transport_screen(t, title_key: str, body_key: str, steps: list[str], cards, icon: str = "tunnel"):
+CLIENTS = {
+    "CMD_WHITELIST_TITLE": (
+        ("phone", "android", "free turn for android", "https://github.com/hackdiaz-dev/turn-proxy-android"),
+        ("phone", "ios", "free turn for ios", "https://github.com/anton48/vk-turn-proxy-ios"),
+    ),
+    "CMD_VLESS_TITLE": (
+        ("world", "all platforms", "incy clients", "https://github.com/INCY-DEV/incy-platforms"),
+    ),
+}
+
+
+def clients_table(t, title_key: str):
+    rows = [(icon, name, code(url)) for icon, name, _label, url in CLIENTS.get(title_key, ())]
+    return table(rows, (t("CMD_CLIENTS"), t("CMD_CLIENTS_LINK"))) if rows else ""
+
+
+def clients_buttons(t, title_key: str) -> list[str]:
+    rows = [link_button(label, url, icon=icon) for icon, _name, label, url in CLIENTS.get(title_key, ())]
+    return [row(*rows)] if rows else []
+
+
+def transport_screen(t, title_key: str, body_key: str, steps: list[str], cards, icon: str = "tunnel", command: str = ""):
     blocks = [
         f"<p>{bold(t(body_key))}</p>",
         heading(t("CMD_TRANSPORT_HOW"), 3, icon="idea"),
         bullet_list([muted(item) for item in steps]),
+        clients_table(t, title_key),
     ]
     buttons = [row(button("%s %s" % (t("CMD_TRANSPORT_CORES"), card.label(t)), card.route, icon=card.icon)) for card in cards]
+    buttons.extend(clients_buttons(t, title_key))
     buttons.append(row(button(t("NAV_HELP"), "nav:help", icon="docs"), button(t("UI_HOME"), "nav:home", icon="home")))
-    return screen(t(title_key), t("CMD_TRANSPORT_CORES"), blocks, buttons, icon=icon)
+    subtitle = "/%s" % command if command else t("CMD_TRANSPORT_CORES")
+    return screen(t(title_key), subtitle, [item for item in blocks if item], buttons, icon=icon)
 
 
 def whitelist_screen(t, cards):
     steps = [t("CMD_WL_STEP_PEER"), t("CMD_WL_STEP_TURN"), t("CMD_WL_STEP_OBF"), t("CMD_WL_STEP_FW")]
-    return transport_screen(t, "CMD_WHITELIST_TITLE", "CMD_WHITELIST_BODY", steps, cards, icon="calls")
+    return transport_screen(t, "CMD_WHITELIST_TITLE", "CMD_WHITELIST_BODY", steps, cards, icon="calls", command="whitelist_bypass_wg_vk_call_raskur")
 
 
 def vless_screen(t, cards):
     steps = [t("CMD_VLESS_STEP_TLS"), t("CMD_VLESS_STEP_PQ"), t("CMD_VLESS_STEP_TRANSPORT"), t("CMD_VLESS_STEP_FALLBACK")]
-    return transport_screen(t, "CMD_VLESS_TITLE", "CMD_VLESS_BODY", steps, cards, icon="xray")
+    return transport_screen(t, "CMD_VLESS_TITLE", "CMD_VLESS_BODY", steps, cards, icon="xray", command="vless_rkn_raw_tcp_xhttp_ws_raskur")
