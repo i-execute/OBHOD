@@ -713,3 +713,119 @@ def test_a_subnet_scan_fills_the_config(tmp_path: Path, monkeypatch: pytest.Monk
     assert inbound.dest == "104.16.132.5:443"
     config = config_json(bot.state.xray.inbounds)
     assert inbound.to_json() in config["inbounds"]
+
+
+class Ports:
+    def __init__(self, ports: list[int], process: str = "nginx") -> None:
+        self.payload = {"ports": [{"port": port, "proto": "tcp", "process": process, "address": "0.0.0.0:%d" % port} for port in ports], "count": len(ports)}
+
+    async def net_ports(self, keep: str = "", timeout: float = 60.0) -> dict[str, object]:
+        return dict(self.payload)
+
+
+def with_ports(bot: object, ports: list[int]) -> None:
+    bot.freeturn.control = Ports(ports)
+
+
+def test_a_busy_port_moves_the_new_inbound(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    with_ports(bot, [443])
+    run(item.create_quick(1, 0, "reality", "raw", "443"))
+    inbound = bot.state.xray.inbounds[0]
+    assert inbound.port == 444
+    assert "443" in bot.rendered[-1].to_html()
+
+
+def test_a_busy_port_says_who_holds_it(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    with_ports(bot, [8443])
+    run(item.create_custom(1, 0))
+    item.draft = {"network": "raw", "security": "reality", "port": "8443"}
+    run(item.create_custom(1, 0))
+    inbound = bot.state.xray.inbounds[0]
+    assert inbound.port == 443
+    assert "nginx" in bot.rendered[-1].to_html()
+
+
+def test_an_own_port_is_never_moved(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(new_inbound("vless", 443, "raw", "reality"))
+    with_ports(bot, [443])
+    run(item.create_quick(1, 0, "reality", "raw", "8443"))
+    assert bot.state.xray.inbounds[0].port == 443
+    assert bot.state.xray.inbounds[1].port == 8443
+
+
+def test_apply_moves_the_api_and_the_subscription_port(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    item.state.add(new_inbound("vless", 443, "raw", "reality"))
+    with_ports(bot, [2096, 62789])
+    run(item.apply(1, 0))
+    assert bot.state.xray.sub_port != 2096
+    assert bot.state.xray.api_port != 62789
+    assert "2096" in bot.rendered[-1].to_html()
+    assert "62789" in bot.rendered[-1].to_html()
+
+
+def test_apply_refuses_an_inbound_port_of_a_stranger(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    item.state.add(new_inbound("vless", 443, "raw", "reality"))
+    with_ports(bot, [443])
+    run(item.apply(1, 0))
+    html = bot.rendered[-1].to_html()
+    assert "443" in html
+    assert "nginx" in html
+    assert bot.control.calls == [] or "apply" not in [call[0] for call in bot.control.calls]
+
+
+def test_apply_keeps_the_ports_when_they_are_free(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    item.state.add(new_inbound("vless", 443, "raw", "reality"))
+    with_ports(bot, [])
+    before = (bot.state.xray.sub_port, bot.state.xray.api_port)
+    run(item.apply(1, 0))
+    assert (bot.state.xray.sub_port, bot.state.xray.api_port) == before
+
+
+def test_the_encryption_screen_lists_the_six_kinds(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(make_inbound("reality", "raw", 443))
+    run(item.encryption_action(1, 0, "1", ""))
+    html = bot.rendered[-1].to_html()
+    for combo in ("native/x25519", "native/mlkem768", "xorpub/x25519", "xorpub/mlkem768", "random/x25519", "random/mlkem768"):
+        assert combo in html
+    assert i18n.t("XR_ENC_ACTIVE") in html
+
+
+def test_switching_to_mlkem768_takes_the_core_pair(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(make_inbound("reality", "raw", 443))
+    run(item.encryption_action(1, 0, "1", "xorpub/mlkem768"))
+    inbound = bot.state.xray.inbounds[0]
+    assert inbound.encryption.mode == "xorpub"
+    assert inbound.encryption.auth_kind() == "mlkem768"
+    assert len(inbound.encryption.private_key) > 300
+    assert "xorpub/mlkem768" in bot.rendered[-1].to_html()
+
+
+def test_switching_to_x25519_takes_the_short_pair(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(make_inbound("reality", "raw", 443))
+    run(item.encryption_action(1, 0, "1", "native/x25519"))
+    inbound = bot.state.xray.inbounds[0]
+    assert inbound.encryption.auth_kind() == "x25519"
+    assert inbound.encryption.mode == "native"
+
+
+def test_a_foreign_combo_is_refused(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(make_inbound("reality", "raw", 443))
+    run(item.encryption_action(1, 0, "1", "rc4/mlkem768"))
+    assert i18n.t("XR_ENC_COMBO_BAD") in bot.rendered[-1].to_html()
+    assert bot.state.xray.inbounds[0].encryption.mode == "native"
+
+
+def test_the_encryption_screen_without_an_inbound(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    run(item.encryption_action(1, 0, "", ""))
+    assert i18n.t("XR_CHECK_MISSING") in bot.rendered[-1].to_html()

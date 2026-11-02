@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,8 +10,8 @@ from BOT import i18n, inline, screens, xscreens
 from BOT.config import ConfigError
 from BOT.guard import SshState
 from BOT.models import ModelError
-from BOT.xray import new_inbound
-from tests.fakes import FakeEvent, FakeFtControl, make_bot
+from BOT.xray import API_PORT, SUB_PORT, new_inbound
+from tests.fakes import FakeEvent, FakeFtControl, make_bot, make_config
 
 
 def run(coro: object) -> None:
@@ -501,3 +502,37 @@ def test_the_subscription_push_is_off_until_it_is_enabled(tmp_path: Path) -> Non
     before = len(bot.control.calls)
     assert asyncio.run(bot.subs_sync()) is False
     assert len(bot.control.calls) == before
+
+
+def make_ports_config(state_dir: Path, sub_port: int, api_port: int) -> SimpleNamespace:
+    cfg = make_config(state_dir)
+    cfg.sub_port = sub_port
+    cfg.api_port = api_port
+    return cfg
+
+
+def test_the_env_ports_seed_the_state(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.cfg = make_ports_config(tmp_path, 2097, 62790)
+    bot.seed_ports()
+    assert bot.state.sub_port == 2097
+    assert bot.state.xray.sub_port == 2097
+    assert bot.state.xray.api_port == 62790
+
+
+def test_the_seed_never_overwrites_a_choice(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.sub_port = 9443
+    bot.state.xray.sub_port = 9443
+    bot.state.xray.api_port = 40000
+    bot.cfg = make_ports_config(tmp_path, 2097, 62790)
+    bot.seed_ports()
+    assert bot.state.sub_port == 9443
+    assert bot.state.xray.api_port == 40000
+
+
+def test_without_env_ports_the_defaults_stay(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.seed_ports()
+    assert bot.state.sub_port == SUB_PORT
+    assert bot.state.xray.api_port == API_PORT

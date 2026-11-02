@@ -331,10 +331,18 @@ class XrayControl:
         response.raise_for_status()
         return str(response.data.get("seed", "") or ""), str(response.data.get("verify", "") or "")
 
-    async def vlessenc(self, cfg: SshSettings) -> dict[str, str]:
+    async def vlessenc(self, cfg: SshSettings) -> dict[str, Any]:
         response = await self.call(cfg, ["vlessenc"], timeout=90)
         response.raise_for_status()
-        return {str(key): str(value) for key, value in response.data.items()}
+        data = response.data if isinstance(response.data, dict) else {}
+        out: dict[str, Any] = {str(key): value for key, value in data.items() if not isinstance(value, list)}
+        items = []
+        for item in data.get("items") or []:
+            if isinstance(item, dict):
+                items.append({str(key): str(value) for key, value in item.items()})
+        if items:
+            out["items"] = items
+        return out
 
     async def stats(self, cfg: SshSettings, pattern: str = "user>>>") -> dict[str, int]:
         response = await self.call(cfg, ["stats", "--pattern=" + str(pattern)[:64]], timeout=90)

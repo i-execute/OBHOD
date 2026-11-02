@@ -115,9 +115,13 @@ class FakeControl:
         self.calls.append(["mldsa65"])
         return "SEEDVALUE", "VERIFYVALUE"
 
-    async def vlessenc(self, cfg: Any) -> dict[str, str]:
+    async def vlessenc(self, cfg: Any) -> dict[str, Any]:
         self.calls.append(["vlessenc"])
-        return {"decryption": "mlkem768x25519plus.native.600s.key", "encryption": "mlkem768x25519plus.native.0rtt.verify"}
+        items = [
+            {"auth": "X25519", "decryption": "mlkem768x25519plus.native.600s." + "a" * 43, "encryption": "mlkem768x25519plus.native.0rtt." + "b" * 43},
+            {"auth": "ML-KEM-768", "decryption": "mlkem768x25519plus.xorpub.600s." + "c" * 400, "encryption": "mlkem768x25519plus.xorpub.0rtt." + "d" * 400},
+        ]
+        return {"decryption": items[0]["decryption"], "encryption": items[0]["encryption"], "items": items}
 
     async def uninstall(self, cfg: Any, purge: bool = True) -> Any:
         from BOT.xrayrpc import XrayResponse

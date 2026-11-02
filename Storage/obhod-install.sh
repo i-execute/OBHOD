@@ -260,8 +260,70 @@ ADMIN_ID=$admin_id
 OBHOD_STATE_DIR=$STATE_DIR
 OBHOD_LOG_LEVEL=INFO
 OBHOD_EMOJI=0
+OBHOD_SUB_PORT=${SUB_PORT:-2096}
+OBHOD_API_PORT=${API_PORT:-62789}
 EOF
   chmod 600 "$ENV_FILE"
+}
+
+port_listening() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lntu 2>/dev/null | awk -v want="$port" 'NR > 1 { n = split($5, parts, ":"); if (parts[n] == want) { found = 1 } } END { exit(found ? 0 : 1) }'
+    return $?
+  fi
+  if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ] || [ -r /proc/net/udp ] || [ -r /proc/net/udp6 ]; then
+    local hex
+    hex="$(printf '%04X' "$port")"
+    awk -v want="$hex" 'FNR > 1 { split($2, parts, ":"); if (parts[2] == want) { found = 1 } } END { exit(found ? 0 : 1) }' \
+      /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6 2>/dev/null
+    return $?
+  fi
+  return 1
+}
+
+pick_port() {
+  local preferred="$1" candidate="$1" limit
+  limit=$((preferred + 400))
+  while [ "$candidate" -le "$limit" ] && [ "$candidate" -le 65535 ]; do
+    if [ "$candidate" -gt 1023 ] && ! port_listening "$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+  done
+  return 1
+}
+
+resolve_ports() {
+  SUB_PORT="${OBHOD_SUB_PORT:-2096}"
+  API_PORT="${OBHOD_API_PORT:-62789}"
+  PORT_NOTES=""
+  if port_listening "$SUB_PORT"; then
+    local free
+    free="$(pick_port "$((SUB_PORT + 1))" || true)"
+    if [ -n "$free" ]; then
+      PORT_NOTES="$PORT_NOTES subscription:$SUB_PORT->$free"
+      warn_line "port $SUB_PORT is already listening, the subscription takes $free, that service is left alone"
+      SUB_PORT="$free"
+    else
+      PORT_NOTES="$PORT_NOTES subscription:$SUB_PORT-busy"
+      warn_line "port $SUB_PORT is already listening and no free neighbour was found, set it later in the bot"
+    fi
+  fi
+  if port_listening "$API_PORT"; then
+    local free
+    free="$(pick_port "$((API_PORT + 1))" || true)"
+    if [ -n "$free" ]; then
+      PORT_NOTES="$PORT_NOTES api:$API_PORT->$free"
+      warn_line "port $API_PORT is already listening, the xray api takes $free, nothing is stopped or killed"
+      API_PORT="$free"
+    else
+      PORT_NOTES="$PORT_NOTES api:$API_PORT-busy"
+      warn_line "port $API_PORT is already listening and no free neighbour was found, set it later in the bot"
+    fi
+  fi
+  [ -n "$PORT_NOTES" ] || ok_line "$SUB_PORT and $API_PORT are free"
 }
 
 check_python() {
@@ -439,9 +501,12 @@ cmd_install() {
     warn_line "requirements.txt is missing, the runtime is not prepared"
   fi
 
+  step "checking the ports"
+  resolve_ports
+
   step "writing the config and the unit"
   write_env "$token" "$api_id" "$api_hash" "$admin_id"
-  ok_line "config $ENV_FILE, mode 600"
+  ok_line "config $ENV_FILE, mode 600, subscription $SUB_PORT, api $API_PORT"
   write_service
 
   summary_box

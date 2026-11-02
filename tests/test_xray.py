@@ -22,6 +22,7 @@ from BOT.xray import (
     SUB_ALPHABET,
     SUB_SEGMENT_LEN,
     VLESS_CLIENT_MODES,
+    VLESS_COMBOS,
     VLESS_HANDSHAKE,
     VLESS_MODES,
     VlessEncryption,
@@ -431,3 +432,85 @@ def test_every_created_inbound_lands_in_the_config() -> None:
     assert set(config) == {"log", "inbounds", "outbounds", "routing", "policy", "stats", "api", "metrics", "dns"}
     assert config["dns"]["servers"] == ["1.1.1.1", "8.8.8.8"]
     assert json.loads(config_text([raw, grpc, xhttp]))["inbounds"] == inbounds[:1] + [item for item in inbounds[1:4]]
+
+
+def test_resolve_ports_moves_the_busy_api_and_sub_ports() -> None:
+    st = XrayState()
+    st.add(new_inbound("vless", 443, "raw", "reality"))
+    moves = st.resolve_ports([2096, 62789])
+    assert moves == [("api", 62789, 62790), ("sub", 2096, 2097)]
+    assert st.api_port == 62790
+    assert st.sub_port == 2097
+
+
+def test_resolve_ports_is_idempotent() -> None:
+    st = XrayState()
+    st.add(new_inbound("vless", 443, "raw", "reality"))
+    st.resolve_ports([2096, 62789])
+    assert st.resolve_ports([2096, 62789]) == []
+
+
+def test_resolve_ports_keeps_free_ports() -> None:
+    st = XrayState()
+    st.add(new_inbound("vless", 443, "raw", "reality"))
+    assert st.resolve_ports([8080]) == []
+    assert st.api_port == 62789
+    assert st.sub_port == 2096
+
+
+def test_resolve_ports_never_lands_on_an_inbound_port() -> None:
+    st = XrayState()
+    st.add(new_inbound("vless", 2097, "raw", "reality"))
+    st.add(new_inbound("vless", 62790, "raw", "reality"))
+    moves = st.resolve_ports([2096, 62789])
+    assert [item[2] for item in moves] == [62791, 2098]
+
+
+def test_the_vless_encryption_has_six_kinds() -> None:
+    assert VLESS_COMBOS == ("native/x25519", "native/mlkem768", "xorpub/x25519", "xorpub/mlkem768", "random/x25519", "random/mlkem768")
+
+
+def test_the_auth_kind_follows_the_key_length() -> None:
+    short = VlessEncryption(private_key="k" * 43)
+    long = VlessEncryption(private_key="k" * 400)
+    assert short.auth_kind() == "x25519"
+    assert long.auth_kind() == "mlkem768"
+    assert VlessEncryption(private_key="k" * 43, auth="mlkem768").auth_kind() == "mlkem768"
+
+
+def test_set_pair_reads_a_decryption_line() -> None:
+    item = VlessEncryption().set_pair({"decryption": "mlkem768x25519plus.random.300-600s.100-111-1111." + "z" * 400, "encryption": "mlkem768x25519plus.random.0rtt.x"})
+    assert item.mode == "random"
+    assert item.ticket == "300-600s"
+    assert item.padding == "100-111-1111"
+    assert item.private_key == "z" * 400
+    assert item.auth_kind() == "mlkem768"
+    assert item.label() == "mlkem768x25519plus.random.mlkem768"
+
+
+def test_every_kind_shows_up_in_the_label() -> None:
+    labels = set()
+    for combo in VLESS_COMBOS:
+        mode, auth = combo.split("/")
+        labels.add(VlessEncryption(mode=mode, auth=auth, private_key="k" * 400).label())
+    assert labels == {"mlkem768x25519plus.%s.%s" % (mode, auth) for mode in VLESS_MODES for auth in ("x25519", "mlkem768")}
+
+
+def test_the_whole_subnet_lands_in_the_config() -> None:
+    from BOT import scan
+
+    hosts = scan.enumerate_cidr("203.0.113.0/29")
+    assert len(hosts) == 8
+    st = XrayState()
+    for index, host in enumerate(hosts):
+        inbound = new_inbound("vless", 20000 + index, "raw", "reality")
+        inbound.make_client("owner")
+        st.add(inbound)
+        st.adopt_scan(inbound.id, host, "www.cloudflare.com", 443)
+    config = json.loads(st.to_config())
+    assert len(config["inbounds"]) >= 8
+    ports = sorted(item["port"] for item in config["inbounds"] if item["protocol"] == "vless")
+    assert ports == [20000 + index for index in range(8)]
+    for inbound in st.inbounds:
+        assert inbound.dest == "203.0.113.%d:443" % (inbound.port - 20000)
+        assert inbound.sni == "www.cloudflare.com"

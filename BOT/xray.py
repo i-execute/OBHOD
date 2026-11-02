@@ -10,6 +10,8 @@ import uuid as uuidlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import portguard
+
 from . import i18n, subs
 from .scan import DEFAULT_CANDIDATES
 
@@ -44,6 +46,8 @@ PQ_MODES = ("x25519mlkem768", "p256mlkem768")
 PQ_HYBRID = "x25519mlkem768"
 VLESS_AUTH_MLKEM_MIN = 300
 VLESS_MODES = ("native", "xorpub", "random")
+VLESS_AUTHS = ("x25519", "mlkem768")
+VLESS_COMBOS = tuple("%s/%s" % (mode, auth) for mode in VLESS_MODES for auth in VLESS_AUTHS)
 VLESS_TICKETS = ("600s", "0s", "300-600s")
 VLESS_CLIENT_MODES = ("0rtt", "1rtt")
 XHTTP_MODES = ("auto", "packet-up", "stream-up", "stream-one")
@@ -319,6 +323,7 @@ class VlessEncryption:
     padding: str = ""
     private_key: str = ""
     public_key: str = ""
+    auth: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -327,6 +332,7 @@ class VlessEncryption:
             "padding": self.padding,
             "private_key": self.private_key,
             "public_key": self.public_key,
+            "auth": self.auth_kind(),
         }
 
     @staticmethod
@@ -338,6 +344,7 @@ class VlessEncryption:
             padding=str(data.get("padding", "") or ""),
             private_key=str(data.get("private_key", "") or ""),
             public_key=str(data.get("public_key", "") or ""),
+            auth=str(data.get("auth", "") or ""),
         )
 
     def generate(self) -> "VlessEncryption":
@@ -349,10 +356,36 @@ class VlessEncryption:
         return self
 
     def auth_kind(self) -> str:
+        if self.auth in VLESS_AUTHS:
+            return self.auth
         return "mlkem768" if len(self.private_key or "") > VLESS_AUTH_MLKEM_MIN else "x25519"
 
     def label(self) -> str:
         return "%s.%s.%s" % (VLESS_HANDSHAKE, self.mode, self.auth_kind())
+
+    def key_bits(self) -> int:
+        return 0 if self.auth_kind() == "mlkem768" else 256
+
+    def set_pair(self, pair: dict[str, Any], auth: str = "") -> "VlessEncryption":
+        decryption = str(pair.get("decryption", "") or "").strip()
+        encryption = str(pair.get("encryption", "") or "").strip()
+        parts = decryption.split(".")
+        if parts and parts[0] == VLESS_HANDSHAKE and len(parts) >= 4:
+            self.mode = parts[1] if parts[1] in VLESS_MODES else self.mode
+            self.ticket = valid_ticket(parts[2])
+            key = parts[-1]
+            tail = ".".join(parts[3:-1])
+            self.padding = tail if tail and PADDING_RE.match(tail) else ""
+            self.private_key = key
+        self.public_key = encryption.split(".")[-1] if encryption else self.public_key
+        wanted = str(auth or pair.get("auth", "") or "").strip().lower()
+        if wanted in VLESS_AUTHS:
+            self.auth = wanted
+        elif len(self.private_key) > VLESS_AUTH_MLKEM_MIN:
+            self.auth = "mlkem768"
+        else:
+            self.auth = "x25519"
+        return self
 
     def decryption(self) -> str:
         parts = [VLESS_HANDSHAKE, self.mode, self.ticket]
@@ -1321,6 +1354,40 @@ class XrayState:
                 if client.email == email:
                     return client
         return None
+
+    def metric_parts(self) -> tuple[str, int]:
+        text = str(self.metrics or "").strip()
+        host, _, port = text.rpartition(":")
+        if not port.isdigit():
+            return "", 0
+        return host, int(port)
+
+    def resolve_ports(self, used: object) -> list[tuple[str, int, int]]:
+        taken = {int(item) for item in used if str(item).strip().lstrip("-").isdigit()}
+        own = set(int(item) for item in self.ports())
+        moves: list[tuple[str, int, int]] = []
+        host, metric_port = self.metric_parts()
+        if metric_port and (metric_port in taken or metric_port in own):
+            found = portguard.free_port(metric_port + 1, own | taken)
+            if found and found != metric_port:
+                self.metrics = "%s:%d" % (host or "127.0.0.1", found)
+                moves.append(("metrics", metric_port, found))
+                taken.add(found)
+                own.add(found)
+        for label, name in (("api", "api_port"), ("sub", "sub_port")):
+            value = int(getattr(self, name) or 0)
+            if value not in taken and value not in own:
+                continue
+            found = portguard.free_port(value + 1, own | taken)
+            if not found or found == value:
+                continue
+            setattr(self, name, found)
+            if name == "sub_port":
+                self.sub_port = found
+            moves.append((label, value, found))
+            taken.add(found)
+            own.add(found)
+        return moves
 
     def subscriptions(self, address: str = "") -> list[Subscription]:
         host = self.address(address)

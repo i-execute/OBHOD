@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any
 
-from . import i18n, inline, screens, subs, xscreens
+from . import i18n, inline, portguard, screens, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
 from .scan import CONCURRENCY, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit
@@ -18,9 +18,11 @@ from .xray import (
     SECURITIES,
     SUB_SEGMENT_LEN,
     VERSION_CHOICES,
+    VLESS_COMBOS,
     XRAY_VERSION,
     XrayError,
     XrayInbound,
+    VlessEncryption,
     XrayState,
     gen_short_id,
     link_for,
@@ -140,15 +142,46 @@ class XrayPanel:
         host = self.state.address(self.address())
         return sub.path(), sub.safe_url(host, self.state.sub_port)
 
-    def next_port(self) -> int:
-        used = set(self.state.ports())
+    def next_port(self, extra: object = ()) -> int:
+        used = set(self.state.ports()) | {int(item) for item in extra}
+        used.add(int(self.state.sub_port))
+        used.add(int(self.state.api_port))
         for port in (443, 8443, 2053, 2083, 2087, 2096, 24443, 30443):
             if port not in used:
                 return port
-        port = 30000
-        while port in used:
-            port += 1
-        return port
+        return portguard.free_port(30000, used)
+
+    def own_ports(self) -> list[int]:
+        out = [int(item) for item in (self.core.get("listening") or []) if str(item).isdigit()]
+        if self.state.sub_enabled:
+            out.append(int(self.state.sub_port))
+        return out
+
+    async def live_owners(self) -> list[portguard.Owner]:
+        control = getattr(getattr(self.bot, "freeturn", None), "control", None)
+        if control is None:
+            return []
+        keep = portguard.protected_ports(self.bot.state)
+        try:
+            raw = await control.net_ports(portguard.join(keep))
+        except Exception:
+            return []
+        data = raw if isinstance(raw, dict) else {}
+        return [portguard.Owner.from_dict(item) for item in data.get("ports") or []]
+
+    async def free_of_strangers(self) -> tuple[list[int], list[portguard.Owner]]:
+        owners = await self.live_owners()
+        return portguard.foreign_ports(owners, self.own_ports()), owners
+
+    async def guard_port(self, port: int) -> tuple[int, str]:
+        foreign, owners = await self.free_of_strangers()
+        if int(port) not in foreign:
+            return int(port), ""
+        owner = portguard.owner_label(port, owners)
+        free = portguard.free_port(int(port) + 1, set(foreign) | set(self.own_ports()))
+        if not free:
+            raise PanelError(self.tr()("XR_PORT_BUSY", port=int(port), owner=owner))
+        return free, self.tr()("XR_PORT_MOVED", port=int(port), owner=owner, free=free)
 
     async def route(self, chat_id: int, msg_id: int, data: str) -> None:
         parts = data.split(":")
@@ -189,6 +222,9 @@ class XrayPanel:
             return
         if head == "keys":
             await self.regen_keys(chat_id, msg_id, arg1)
+            return
+        if head == "enc":
+            await self.encryption_action(chat_id, msg_id, arg1, arg2)
             return
         if head == "mldsa":
             await self.mldsa_action(chat_id, msg_id, arg1, arg2)
@@ -264,7 +300,9 @@ class XrayPanel:
             raise PanelError(f"the network {network} is not supported")
         if security not in SECURITIES:
             raise PanelError(f"the security {security} is not supported")
-        number = int(port) if port.isdigit() else self.next_port()
+        foreign, _owners = await self.free_of_strangers()
+        number = int(port) if port.isdigit() else self.next_port(foreign)
+        number, moved = await self.guard_port(number)
         try:
             inbound = new_inbound("vless", number, network, security)
         except (XrayError, ValueError) as exc:
@@ -273,13 +311,16 @@ class XrayPanel:
         self.state.add(inbound)
         inbound.make_client("owner")
         self.save()
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_INBOUND_CREATED")), inbound))
+        notice = self.tr()("NOTICE_INBOUND_CREATED")
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
 
     async def create_custom(self, chat_id: int, msg_id: int) -> None:
         draft = dict(self.draft)
         network = draft.get("network", "raw")
         security = draft.get("security", "reality")
-        port = int(draft.get("port") or self.next_port())
+        foreign, _owners = await self.free_of_strangers()
+        port = int(draft.get("port") or self.next_port(foreign))
+        port, moved = await self.guard_port(port)
         try:
             inbound = new_inbound("vless", port, network, security)
         except (XrayError, ValueError) as exc:
@@ -289,7 +330,8 @@ class XrayPanel:
         inbound.make_client("owner")
         self.draft = {}
         self.save()
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_INBOUND_CREATED")), inbound))
+        notice = self.tr()("NOTICE_INBOUND_CREATED")
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
 
     def get(self, ident: str) -> XrayInbound:
         item = self.state.inbound(ident)
@@ -327,6 +369,39 @@ class XrayPanel:
         inbound.short_ids = [gen_short_id()]
         self.save()
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_KEYS_REGEN")), inbound))
+
+    async def encryption_action(self, chat_id: int, msg_id: int, ident: str, combo: str) -> None:
+        t = self.tr()
+        inbound = self.state.inbound(ident) if ident else self.target_inbound()
+        if inbound is None:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=t("XR_CHECK_MISSING")), None))
+            return
+        wanted = combo if "/" in combo else ""
+        if wanted and wanted not in VLESS_COMBOS:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=t("XR_ENC_COMBO_BAD")), inbound))
+            return
+        if not wanted:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(), inbound))
+            return
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_KEYS"), self.bot.state.language))
+        try:
+            data = await self.control.vlessenc(self.bot.state.ssh)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=exc.message), inbound))
+            return
+        items = [item for item in data.get("items") or [] if isinstance(item, dict)]
+        chosen = None
+        for item in items:
+            candidate = VlessEncryption().set_pair(item, str(item.get("auth", "")))
+            if "%s/%s" % (candidate.mode, candidate.auth_kind()) == wanted:
+                chosen = candidate
+                break
+        if chosen is None:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=t("XR_ENC_NO_PAIR", combo=wanted)), inbound))
+            return
+        inbound.encryption = chosen
+        self.save()
+        await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(notice=t("XR_ENC_APPLIED", combo=wanted)), inbound))
 
     async def mldsa_action(self, chat_id: int, msg_id: int, ident: str, action: str) -> None:
         inbound = self.get(ident)
@@ -597,6 +672,12 @@ class XrayPanel:
         if not self.state.inbounds:
             await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error="there are no inbounds to apply")))
             return
+        moves, clashes = await self.check_ports()
+        if clashes:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error="; ".join(clashes))))
+            return
+        if moves:
+            self.save()
         try:
             config = self.state.to_config()
         except XrayError as exc:
@@ -617,7 +698,30 @@ class XrayPanel:
         self.save()
         ports = ", ".join(str(item) for item in self.core.get("listening") or [])
         notice = t("NOTICE_CORE_APPLIED_PORTS", ports=ports) if ports else t("NOTICE_CORE_APPLIED")
+        if moves:
+            notice = "%s %s" % (notice, self.moved_text(moves))
         await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=notice)))
+
+    async def check_ports(self) -> tuple[list[tuple[str, int, int]], list[str]]:
+        t = self.tr()
+        foreign, owners = await self.free_of_strangers()
+        self.state.sub_port = int(self.bot.state.sub_port)
+        moves = self.state.resolve_ports(foreign)
+        self.bot.state.sub_port = int(self.state.sub_port)
+        clashes = [
+            t("XR_PORT_BUSY", port=inbound.port, owner=portguard.owner_label(inbound.port, owners))
+            for inbound in self.state.inbounds
+            if int(inbound.port) in foreign
+        ]
+        return moves, clashes
+
+    def moved_text(self, moves: list[tuple[str, int, int]]) -> str:
+        t = self.tr()
+        parts = []
+        for label, old, new in moves:
+            key = {"api": "NOTICE_API_MOVED", "sub": "NOTICE_SUB_MOVED"}.get(label, "NOTICE_METRICS_MOVED")
+            parts.append(t(key, old=old, new=new))
+        return " ".join(parts)
 
     async def run_core(self, chat_id: int, msg_id: int, title: str, action: Any) -> None:
         await self.render(chat_id, msg_id, xscreens.busy_screen(title, self.bot.state.language))

@@ -79,3 +79,29 @@ def test_env_overrides_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 def test_missing_file_is_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError):
         Config.load(tmp_path / "absent.env")
+
+
+def test_the_ports_come_from_the_env(tmp_path: Path) -> None:
+    path = tmp_path / "obhod.env"
+    path.write_text("BOT_TOKEN=123456:ABCDEF\nAPI_ID=12345678\nAPI_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nOBHOD_SUB_PORT=2097\nOBHOD_API_PORT=62790\n", encoding="utf-8")
+    cfg = Config.load(path)
+    assert cfg.sub_port == 2097
+    assert cfg.api_port == 62790
+
+
+def test_the_ports_are_unset_by_default(tmp_path: Path) -> None:
+    path = tmp_path / "obhod.env"
+    path.write_text("BOT_TOKEN=123456:ABCDEF\nAPI_ID=12345678\nAPI_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n", encoding="utf-8")
+    cfg = Config.load(path)
+    assert cfg.sub_port == 0
+    assert cfg.api_port == 0
+
+
+def test_a_broken_port_stops_the_start(tmp_path: Path) -> None:
+    path = tmp_path / "obhod.env"
+    path.write_text("BOT_TOKEN=123456:ABCDEF\nAPI_ID=12345678\nAPI_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nOBHOD_SUB_PORT=70000\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        Config.load(path)
+    path.write_text("BOT_TOKEN=123456:ABCDEF\nAPI_ID=12345678\nAPI_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nOBHOD_API_PORT=abc\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        Config.load(path)

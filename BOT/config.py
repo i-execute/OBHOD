@@ -42,6 +42,16 @@ def _float(name: str, raw: str, low: float, high: float) -> float:
     return value
 
 
+def _port(name: str, raw: object) -> int:
+    text = str(raw or "").strip()
+    if not text:
+        return 0
+    value = _int(name, text)
+    if not 1 <= value <= 65535:
+        raise ConfigError(f"{name} must be between 1 and 65535")
+    return value
+
+
 def _int(name: str, raw: str) -> int:
     try:
         return int(str(raw).strip())
@@ -65,6 +75,8 @@ class Config:
     env_path: Path | None = None
     log_level: str = "INFO"
     emoji_default: bool = False
+    sub_port: int = 0
+    api_port: int = 0
     extra: dict[str, str] = field(default_factory=dict)
 
     @staticmethod
@@ -121,6 +133,8 @@ class Config:
             env_path=path,
             log_level=level,
             emoji_default=str(values.get("OBHOD_EMOJI", "")).strip().lower() in {"1", "on", "yes", "true"},
+            sub_port=_port("OBHOD_SUB_PORT", values.get("OBHOD_SUB_PORT", "")),
+            api_port=_port("OBHOD_API_PORT", values.get("OBHOD_API_PORT", "")),
             extra=values,
         )
 

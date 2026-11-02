@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from BOT import commands, cores, i18n
+from BOT import commands, cores, i18n, strings, ui
 from tests.fakes import make_bot
 
 TOKEN = ""
@@ -203,13 +203,13 @@ def test_the_titles_are_caps(tmp_path: Path) -> None:
             assert i18n.t(key, language=language) == i18n.t(key, language=language).upper()
 
 
-def test_the_wg_screen_lists_the_free_turn_clients(tmp_path: Path) -> None:
+def test_the_wg_screen_has_a_button_for_every_client(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
     html = last(bot)
-    assert "turn-proxy-android" in html
-    assert "vk-turn-proxy-ios" in html
-    assert i18n.t("CMD_CLIENTS") in html
+    for url in ("https://github.com/hackdiaz-dev/turn-proxy-android", "https://github.com/anton48/vk-turn-proxy-ios"):
+        assert 'type="url" url="%s"' % url in html
+        assert i18n.t("CMD_CLIENT_FT_ANDROID") in html or i18n.t("CMD_CLIENT_FT_IOS") in html
 
 
 def test_the_vless_screen_lists_the_incy_clients(tmp_path: Path) -> None:
@@ -219,16 +219,29 @@ def test_the_vless_screen_lists_the_incy_clients(tmp_path: Path) -> None:
     assert "INCY-DEV/incy-platforms" in html
 
 
-def test_the_clients_table_sits_above_the_buttons(tmp_path: Path) -> None:
+def test_the_clients_are_buttons_and_not_a_table(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    for name, link in (
-        ("/whitelist_bypass_wg_vk_call_raskur", "turn-proxy-android"),
-        ("/vless_rkn_raw_tcp_xhttp_ws_raskur", "INCY-DEV/incy-platforms"),
-    ):
+    for name in ("/whitelist_bypass_wg_vk_call_raskur", "/vless_rkn_raw_tcp_xhttp_ws_raskur"):
         run(bot.on_command(FakeEvt(name)))
         html = last(bot)
-        assert html.index("<table") < html.index(link)
-        assert html.index("<table") < html.index("<tg-button-row")
+        assert "<table" not in html
+        assert 'type="url"' in html
+
+
+def test_the_client_buttons_carry_emoji_only_when_it_is_on(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    ui.use_icons(True)
+    run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
+    assert "<tg-emoji" in last(bot)
+    ui.use_icons(False)
+    run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
+    assert "<tg-emoji" not in last(bot)
+
+
+def test_the_clients_table_keys_are_gone(tmp_path: Path) -> None:
+    for catalog in (strings.EN, strings.RU, strings.ZH):
+        assert not hasattr(catalog, "CMD_CLIENTS")
+        assert not hasattr(catalog, "CMD_CLIENTS_LINK")
 
 
 def test_every_command_screen_shows_its_own_name(tmp_path: Path) -> None:

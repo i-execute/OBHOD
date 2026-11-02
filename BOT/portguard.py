@@ -147,3 +147,40 @@ def parse_ss(text: str, keep: list[int]) -> list[Owner]:
 
 def untouched(owners: list[Owner]) -> list[Owner]:
     return [item for item in owners if item.protected]
+
+
+def busy_ports(owners: list[Owner]) -> list[int]:
+    return sorted({int(item.port) for item in owners if int(item.port)})
+
+
+def foreign_ports(owners: list[Owner], own: list[int]) -> list[int]:
+    mine = {int(item) for item in own}
+    return sorted({int(item.port) for item in owners if int(item.port) and int(item.port) not in mine})
+
+
+def owner_label(port: int, owners: list[Owner]) -> str:
+    for item in owners:
+        if int(item.port) == int(port):
+            return item.process or item.proto or "unknown"
+    return "unknown"
+
+
+def free_port(preferred: int, used: object, span: int = 512) -> int:
+    taken = {int(item) for item in used if str(item).strip().lstrip("-").isdigit()}
+    start = int(preferred)
+    if not 1 <= start <= 65535:
+        start = RESERVED_LOW + 1
+    for step in range(max(1, int(span))):
+        candidate = start + step
+        if candidate > 65535:
+            break
+        if candidate in CRITICAL:
+            continue
+        if candidate in taken:
+            continue
+        return candidate
+    for candidate in range(RESERVED_LOW + 1, 65535):
+        if candidate in CRITICAL or candidate in taken:
+            continue
+        return candidate
+    return 0

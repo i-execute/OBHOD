@@ -331,3 +331,21 @@ def test_the_config_settings_show_the_target_check() -> None:
     assert "www.cloudflare.com:443" in html
     assert xscreens.security_label("reality-x25519mlkem768", "en") in html
     assert "xr:fit:" + str(inbound.id) in html
+
+
+def test_the_encryption_screen_renders_in_every_language() -> None:
+    st = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    st.add(inbound)
+    for language in ("en", "ru", "zh"):
+        html = xscreens.encryption_screen(xscreens.XrayView(state=st, lang=language), inbound).to_html()
+        assert "<table" in html
+        assert "mlkem768" in html
+        assert "{" not in html
+        assert html.count('type="callback_data"') >= 7
+
+
+def test_the_encryption_screen_without_an_inbound() -> None:
+    html = xscreens.encryption_screen(xscreens.XrayView(state=XrayState(), lang="en"), None).to_html()
+    assert i18n.t("XR_CHECK_MISSING") in html

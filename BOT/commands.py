@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .ui import bold, bullet_list, button, code, heading, link_button, muted, row, screen, table
+from .ui import bold, bullet_list, button, heading, link_button, muted, row, screen
 
 MAX_COMMAND = 32
 MAX_NAME = 64
@@ -76,22 +76,17 @@ def start_screen(t, cards, lang: str = "en"):
 
 CLIENTS = {
     "CMD_WHITELIST_TITLE": (
-        ("phone", "android", "free turn for android", "https://github.com/hackdiaz-dev/turn-proxy-android"),
-        ("phone", "ios", "free turn for ios", "https://github.com/anton48/vk-turn-proxy-ios"),
+        ("calls", "CMD_CLIENT_FT_ANDROID", "https://github.com/hackdiaz-dev/turn-proxy-android"),
+        ("calls", "CMD_CLIENT_FT_IOS", "https://github.com/anton48/vk-turn-proxy-ios"),
     ),
     "CMD_VLESS_TITLE": (
-        ("world", "all platforms", "incy clients", "https://github.com/INCY-DEV/incy-platforms"),
+        ("world", "CMD_CLIENT_INCY", "https://github.com/INCY-DEV/incy-platforms"),
     ),
 }
 
 
-def clients_table(t, title_key: str):
-    rows = [(icon, name, code(url)) for icon, name, _label, url in CLIENTS.get(title_key, ())]
-    return table(rows, (t("CMD_CLIENTS"), t("CMD_CLIENTS_LINK"))) if rows else ""
-
-
 def clients_buttons(t, title_key: str) -> list[str]:
-    rows = [link_button(label, url, icon=icon) for icon, _name, label, url in CLIENTS.get(title_key, ())]
+    rows = [link_button(t(key), url, icon=icon) for icon, key, url in CLIENTS.get(title_key, ())]
     return [row(*rows)] if rows else []
 
 
@@ -100,7 +95,6 @@ def transport_screen(t, title_key: str, body_key: str, steps: list[str], cards, 
         f"<p>{bold(t(body_key))}</p>",
         heading(t("CMD_TRANSPORT_HOW"), 3, icon="idea"),
         bullet_list([muted(item) for item in steps]),
-        clients_table(t, title_key),
     ]
     buttons = [row(button("%s %s" % (t("CMD_TRANSPORT_CORES"), card.label(t)), card.route, icon=card.icon)) for card in cards]
     buttons.extend(clients_buttons(t, title_key))

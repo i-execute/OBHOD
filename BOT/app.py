@@ -26,6 +26,7 @@ from .store import State, Store
 from .ui import button, code, muted, quote, row, screen
 from .update import UpdateError, Updater
 from .xrayrpc import XrayControl, XrayError as RpcError
+from .xray import API_PORT, SUB_PORT
 
 log = logging.getLogger("obhod.app")
 
@@ -108,6 +109,21 @@ class Bot:
         self.subs_digest = ""
         self.subs_failed = 0.0
         ui.use_icons(self.emoji_enabled)
+        self.seed_ports()
+
+    def seed_ports(self) -> None:
+        sub = int(getattr(self.cfg, "sub_port", 0) or 0)
+        api = int(getattr(self.cfg, "api_port", 0) or 0)
+        changed = False
+        if 1 <= sub <= 65535 and int(self.state.sub_port) == SUB_PORT and sub != SUB_PORT:
+            self.state.sub_port = sub
+            self.state.xray.sub_port = sub
+            changed = True
+        if 1 <= api <= 65535 and int(self.state.xray.api_port) == API_PORT and api != API_PORT:
+            self.state.xray.api_port = api
+            changed = True
+        if changed:
+            self.save()
 
     def is_busy(self) -> bool:
         if not self.busy:

@@ -85,6 +85,16 @@ against its pinned `sha256` on every read, so a changed upstream file can never 
 `Debug` then `Scripts` probes the upstream copy, lists every file that a fetch would replace and warns that the
 cache resets, and only a second tap downloads: `https` and github hosts only, redirect hops included.
 
+## Ports
+
+Nothing on the server is killed to make room. The installer checks `ss` (or `/proc/net`) for the subscription
+port `2096` and the api port `62789` before it writes the env, and when one is taken it walks forward to the
+first free neighbour and stores it as `OBHOD_SUB_PORT` / `OBHOD_API_PORT`; the same walk happens in the panel
+before every apply, so the metrics listener moves off `11111` when a 3x-ui install already holds it. A port
+owned by someone else is reported with the process name and the inbound is moved instead of the owner.
+The vless encryption screen offers the six 3x-ui kinds, `mlkem768x25519plus.<native|xorpub|random>.<x25519|mlkem768>`,
+and the keys come from `xray vlessenc` on the server, so the auth half is real and not a label.
+
 ## Firewall
 
 FreeTurn traffic arrives from the vk TURN relays, so the `Call relay firewall` screen offers `open`, `vk relays only`
@@ -148,7 +158,7 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2147 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2188 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, and the hardening suites in `tests/test_security.py` and

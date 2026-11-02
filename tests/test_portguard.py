@@ -146,3 +146,36 @@ def test_the_engine_port_is_never_in_the_keep_list() -> None:
     st.freeturn = type("Ft", (), {"config": FtConfig(listen_port=56000)})()
     keep = portguard.protected_ports(st)
     assert 56000 not in keep
+
+
+def test_free_port_keeps_the_preferred_one() -> None:
+    assert portguard.free_port(444, set()) == 444
+
+
+def test_free_port_skips_a_busy_one() -> None:
+    assert portguard.free_port(2096, {2096}) == 2097
+    assert portguard.free_port(2096, {2096, 2097, 2098}) == 2099
+
+
+def test_free_port_never_hands_out_the_ssh_ports() -> None:
+    assert portguard.free_port(22, set()) == 23
+    assert portguard.free_port(2222, set()) == 2223
+
+
+def test_free_port_handles_a_zero_preference() -> None:
+    assert portguard.free_port(0, set()) == 1025
+
+
+def test_free_port_skips_the_protected_list() -> None:
+    assert portguard.free_port(8080, {"8080", "8081"}) == 8082
+
+
+def test_foreign_ports_leave_our_own_alone() -> None:
+    owners = [portguard.Owner(port=443), portguard.Owner(port=8443)]
+    assert portguard.foreign_ports(owners, [443]) == [8443]
+
+
+def test_owner_label_names_the_process() -> None:
+    owners = [portguard.Owner(port=2096, proto="tcp", process="nginx")]
+    assert portguard.owner_label(2096, owners) == "nginx"
+    assert portguard.owner_label(1, owners) == "unknown"

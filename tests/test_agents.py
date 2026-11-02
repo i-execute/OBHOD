@@ -310,3 +310,31 @@ def test_the_freeturn_cidr_list_is_bounded(freeturn) -> None:
     for bad in ("0.0.0.0/0", "not-an-ip", "203.0.113.0/33", "::/0", "203.0.113.0/24; rm -rf /"):
         with pytest.raises(freeturn.AgentError):
             freeturn.guard_cidrs({"cidrs": bad})
+
+
+def test_the_vless_encryption_lists_every_pair(xray, monkeypatch) -> None:
+    monkeypatch.setattr(xray.os.path, "isfile", lambda path: True)
+    text = "\n".join(
+        [
+            "Authentication: X25519",
+            "Decryption: mlkem768x25519plus.native.600s." + "a" * 43,
+            "Encryption: mlkem768x25519plus.native.0rtt." + "b" * 43,
+            "",
+            "Authentication: ML-KEM-768",
+            "Decryption: mlkem768x25519plus.random.600s." + "c" * 400,
+            "Encryption: mlkem768x25519plus.random.0rtt." + "d" * 400,
+        ]
+    )
+    monkeypatch.setattr(xray, "run", lambda argv, timeout=60: (0, text))
+    out, error = xray.cmd_vlessenc({}, [])
+    assert error is None
+    assert len(out["items"]) == 2
+    assert out["items"][1]["auth"] == "ML-KEM-768"
+    assert out["decryption"] == out["items"][0]["decryption"]
+
+
+def test_the_vless_encryption_refuses_empty_output(xray, monkeypatch) -> None:
+    monkeypatch.setattr(xray.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(xray, "run", lambda argv, timeout=60: (0, ""))
+    with pytest.raises(xray.ScriptError):
+        xray.cmd_vlessenc({}, [])

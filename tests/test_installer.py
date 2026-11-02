@@ -432,3 +432,20 @@ def test_the_token_and_the_hash_are_not_echoed(tmp_path: Path) -> None:
     assert "hidden" in seen
     assert HASH not in seen
     assert "ABC-DEF" not in seen
+
+
+def test_the_installer_picks_another_port_when_one_is_busy(tmp_path: Path) -> None:
+    text = INSTALLER.read_text(encoding="utf-8")
+    assert "port_listening()" in text
+    assert "pick_port()" in text
+    assert "resolve_ports" in text
+    assert "OBHOD_SUB_PORT=" in text
+    assert "OBHOD_API_PORT=" in text
+
+
+def test_the_installer_never_kills_a_foreign_service(tmp_path: Path) -> None:
+    text = INSTALLER.read_text(encoding="utf-8")
+    for word in ("kill -9", "fuser -k", "pkill -f", "killall"):
+        assert word not in text
+    assert "left alone" in text
+    assert "nothing is stopped or killed" in text

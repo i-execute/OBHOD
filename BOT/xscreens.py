@@ -28,6 +28,7 @@ from .xray import (
     NETWORKS,
     SECURITIES,
     SUB_SEGMENT_LEN,
+    VLESS_COMBOS,
     XrayInbound,
     XrayState,
     relevant_fields,
@@ -271,6 +272,7 @@ def inbound_screen(view: XrayView, inbound: XrayInbound) -> Any:
         row(button(t("XR_BTN_PORT"), f"xr:edit:{inbound.id}:xr_port", icon="plug"), button(t("XR_BTN_NAME"), f"xr:edit:{inbound.id}:xr_remark", icon="tag")),
         field_row(inbound, view.lang),
         row(button(t("XR_BTN_REALITY_KEYS"), f"xr:keys:{inbound.id}", icon="key"), button(t("XR_BTN_MLDSA"), f"xr:mldsa:{inbound.id}", icon="shield")),
+        row(button(t("XR_ENC_TITLE"), f"xr:enc:{inbound.id}", icon="lock")),
         row(button(t("XR_BTN_TOGGLE"), f"xr:toggle:{inbound.id}", icon="update"), button(t("UI_DELETE"), f"xr:del:{inbound.id}", icon="delete")),
         back_row("xr:home"),
     ]
@@ -584,6 +586,40 @@ def scan_mismatch_screen(view: XrayView, result: ScanResult, inbound: XrayInboun
         blocks.append(quote(muted(t("XR_SCAN_SEC_NOTHING"))))
     buttons.append(row(button(t("XR_SCAN_KEEP"), "xr:scan", icon="back"), button(t("UI_HOME"), "nav:home", icon="home")))
     return screen(t("XR_SCAN_MISMATCH_TITLE"), t("XR_SCAN_MISMATCH_SUBTITLE"), blocks, buttons, icon="warn")
+
+
+def encryption_screen(view: XrayView, inbound: XrayInbound | None) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    if inbound is None:
+        blocks.append(quote(muted(t("XR_CHECK_MISSING"))))
+        buttons = [back_row("xr:home")]
+        return screen(t("XR_ENC_TITLE"), t("XR_ENC_SUBTITLE"), blocks, buttons, icon="lock")
+    enc = inbound.encryption
+    active = "%s/%s" % (enc.mode, enc.auth_kind())
+    pairs = [
+        ("lock", t("XR_ENC_HANDSHAKE"), code(enc.label())),
+        ("key", t("XR_ENC_AUTH"), code(enc.auth_kind())),
+        ("tag", t("XR_ENC_MODE"), code(enc.mode)),
+        ("clock", t("XR_ENC_TICKET"), code(enc.ticket)),
+        ("shield", t("XR_ENC_PADDING"), code(enc.padding or t("UI_NONE"))),
+        ("save", t("XR_ENC_PRIVATE"), code("%d chars" % len(enc.private_key or ""))),
+        ("world", t("XR_ENC_PUBLIC"), code("%d chars" % len(enc.public_key or ""))),
+    ]
+    blocks.append(table(pairs, (t("XR_ENC_TITLE"), t("UI_VALUE"))))
+    rows = []
+    for combo in VLESS_COMBOS:
+        mark = "ok" if combo == active else "info"
+        rows.append((mark, combo.split("/")[0], code(combo if combo != active else combo + " " + t("XR_ENC_ACTIVE"))))
+    blocks.append(table(rows, (t("XR_ENC_COMBO"), t("XR_ENC_KIND"))))
+    blocks.append(quote(muted(t("XR_ENC_NOTE"))))
+    buttons = []
+    for combo in VLESS_COMBOS:
+        mode, auth = combo.split("/")
+        buttons.append(button("%s" % combo, "xr:enc:%s:%s/%s" % (inbound.id, mode, auth), icon="key" if combo == active else ""))
+    rows_out = [row(buttons[index], buttons[index + 1]) for index in range(0, len(buttons), 2)]
+    rows_out.append(back_row(f"xr:in:{inbound.id}"))
+    return screen(t("XR_ENC_TITLE"), t("XR_ENC_SUBTITLE"), blocks, rows_out, icon="lock")
 
 
 def target_check_screen(view: XrayView, inbound: XrayInbound, result: ScanResult | None = None) -> Any:

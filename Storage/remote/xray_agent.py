@@ -994,17 +994,31 @@ def cmd_vlessenc(flags, rest):
     code, text = run([CORE, "vlessenc"], timeout=60)
     if code != 0:
         raise ScriptError("internal", "the core returned no vless encryption: " + text[:200], "keys")
-    out = {}
+    items = []
+    current = {"auth": "", "decryption": "", "encryption": ""}
     for line in text.splitlines():
         token = line.strip()
         if not token:
             continue
         lower = token.lower()
         value = token.split(":", 1)[1].strip() if ":" in token else token.split()[-1]
-        if lower.startswith("decryption"):
-            out["decryption"] = value
+        if lower.startswith("authentication"):
+            if current["decryption"] or current["encryption"]:
+                items.append(current)
+                current = {"auth": "", "decryption": "", "encryption": ""}
+            current["auth"] = value
+        elif lower.startswith("decryption"):
+            current["decryption"] = value
         elif lower.startswith("encryption") or lower.startswith("password"):
-            out.setdefault("encryption", value)
+            if not current["encryption"]:
+                current["encryption"] = value
+    if current["decryption"] or current["encryption"]:
+        items.append(current)
+    out = {"items": [item for item in items if item["decryption"] or item["encryption"]]}
+    out["decryption"] = out["items"][0]["decryption"] if out["items"] else ""
+    out["encryption"] = out["items"][0]["encryption"] if out["items"] else ""
+    if not out["items"]:
+        raise ScriptError("internal", "the core returned no vless encryption: " + text[:200], "keys")
     return out, None
 
 
