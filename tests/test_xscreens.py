@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from BOT import i18n, xscreens
-from BOT.scan import ScanResult
+from BOT import i18n, screens, xscreens
+from BOT.store import State
+from BOT.scan import ScanResult, security_fits
 from BOT.ui import MAX_BUTTONS, count_buttons
 from BOT.xray import NETWORKS, SECURITIES, SUB_SEGMENT_LEN, XrayState, new_inbound
 
@@ -217,9 +218,11 @@ def test_the_scan_screen_reports_what_the_target_fits() -> None:
     ]
     view = xscreens.XrayView(state=state, lang="en")
     html = xscreens.scan_screen(view).build()
-    for kind in ("reality", "reality-pq", "reality-mldsa", "tls"):
+    stored = ScanResult.from_dict(state.scan_results[0])
+    kinds = [kind for kind, ok, _ in security_fits(stored) if ok]
+    for kind in ("reality", "reality-x25519mlkem768", "reality-mldsa65", "tls"):
         assert xscreens.security_label(kind, "en") in html
-    assert html.count(i18n.t("XR_SCAN_FIT_YES", "en")) == 4
+    assert len(kinds) == html.count(i18n.t("XR_SCAN_FIT_YES", "en"))
 
 
 def test_the_mismatch_screen_offers_another_encryption() -> None:
@@ -248,7 +251,7 @@ def test_the_mismatch_screen_offers_another_encryption() -> None:
     html = xscreens.scan_mismatch_screen(view, legacy, inbound, 0).to_html()
     assert i18n.t("XR_SCAN_MISMATCH_TITLE", "en") in html
     assert "xr:scan:sec:tls:0" in html
-    assert "xr:scan:sec:reality-pq:0" not in html
+    assert "xr:scan:sec:reality-x25519mlkem768:0" not in html
     assert i18n.t("XR_SCAN_MISMATCH_BODY", "en", target="legacy.example.com:443", security="reality, x25519").replace("<code>", "").replace("</code>", "") in html.replace("<code>", "").replace("</code>", "")
 
 
@@ -264,5 +267,50 @@ def test_the_mismatch_screen_explains_a_short_chain() -> None:
     html = xscreens.scan_mismatch_screen(view, short, inbound, 1).to_html()
     assert "1800" in html
     assert "3500" in html
-    assert "xr:scan:sec:reality-pq:1" in html
+    assert "xr:scan:sec:reality-x25519mlkem768:1" in html
     assert "xr:scan:sec:reality:1" in html
+
+
+def test_the_target_check_screen_is_minimal() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.dest = "www.apple.com:443"
+    inland = ScanResult(
+        target="www.apple.com:443",
+        tls13=True,
+        h2=True,
+        x25519=True,
+        pq_hybrid=True,
+        pq_group="X25519MLKEM768",
+        groups={"X25519MLKEM768": "yes", "P256MLKEM768": "no"},
+        cert_valid=True,
+        days_left=44,
+        cert_chain_bytes=3231,
+    )
+    state.add(inbound)
+    view = xscreens.XrayView(state=state, lang="en")
+    html = xscreens.target_check_screen(view, inbound, inland).to_html()
+    assert i18n.t("XR_CHECK_TITLE", "en") in html
+    assert "3231" in html
+    assert "3500" in html
+    assert xscreens.security_label("reality", "en") in html
+    assert "x25519mlkem768" in html
+    assert "xr:fit:" + str(inbound.id) in html
+    empty = xscreens.target_check_screen(view, None, None).to_html()
+    assert i18n.t("XR_CHECK_MISSING", "en") in empty
+
+
+def test_the_config_settings_show_the_target_check() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.dest = "www.cloudflare.com:443"
+    inbound.pq_mode = "x25519mlkem768"
+    state.add(inbound)
+    view = screens.View(state=State(xray=state), core={"installed": True}, ft_clients=1, lang="en")
+    html = screens.settings(view).to_html()
+    assert i18n.t("SET_CHECK_TARGET", "en") in html
+    assert "www.cloudflare.com:443" in html
+    assert xscreens.security_label("reality-x25519mlkem768", "en") in html
+    assert "xr:fit:" + str(inbound.id) in html

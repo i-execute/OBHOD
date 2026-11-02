@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import cores, i18n
+from . import cores, i18n, xscreens
 from .guard import BanState, SshState
 from .store import State
 from .ui import (
@@ -216,6 +216,17 @@ def settings(view: View) -> Any:
         ]
     )
     blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
+    target = next((item for item in xray.inbounds if item.security in {"reality", "tls"}), None)
+    blocks.append(
+        table(
+            [
+                ("target", t("SET_CHECK_TARGET"), code(target.dest if target else t("UI_NOT_SET"))),
+                ("shield", t("XR_SEC_CURRENT"), code(xscreens.security_label(target.security_kind(), view.lang) if target else t("UI_NONE"))),
+            ],
+            (t("UI_FIELD"), t("UI_VALUE")),
+        )
+    )
+    blocks.append(quote(muted(t("XR_CHECK_NOTE"))))
     blocks.append(quote(muted(t("SET_NOTE_SUB_PATH"))))
     blocks.append(quote(muted(t("SET_EMOJI_NOTE"))))
     buttons = [
@@ -224,6 +235,7 @@ def settings(view: View) -> Any:
         input_row(t("SET_SUB_PORT"), "xr_sub_port", "-", view.lang),
         input_row(t("SET_SUB_ADDRESS"), "xr_sub_address", "-", view.lang),
         input_row(t("SET_CANDIDATES"), "xr_scan_candidates", "-", view.lang),
+        row(button(t("XR_CHECK_BTN"), "xr:fit:" + str(target.id if target else ""), icon="scan")),
         input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
         input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
         input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),

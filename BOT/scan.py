@@ -5,6 +5,7 @@ import base64
 import calendar
 import ipaddress
 import os
+import re
 import socket
 import ssl
 import struct
@@ -37,6 +38,14 @@ X25519_KEY_SIZE = 32
 HYBRID_SHARE_SIZE = MLKEM768_EK_SIZE + X25519_KEY_SIZE
 HELLO_RETRY_RANDOM = bytes.fromhex("cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c")
 ML_DSA65_CHAIN_MIN = 3500
+GROUP_YES = "yes"
+GROUP_RETRY = "retry"
+GROUP_NO = "no"
+GROUP_LABELS = {
+    "X25519MLKEM768": "x25519mlkem768",
+    "P256MLKEM768": "p256mlkem768",
+    "X25519Kyber768Draft00": "x25519kyber768draft00",
+}
 
 MLKEM768_EK_B64 = (
     "1gFKdZs0j6SClKVb+KIZcyRbwRk1EpOZBSlqD+e09bBpmoMiN0tn9fauXwGajZiUrhsONia0GbiV"
@@ -208,36 +217,129 @@ async def resolve_public(host: str, port: int, allow_private: bool = False) -> t
     return str(addresses[0]), False
 
 
+INVISIBLE = "\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad"
+SCHEMES = ("vless://", "https://", "http://", "tls://", "h2://", "h3://", "reality://", "quic://")
+DEFAULT_TARGET_PORT = 443
+HOST_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def clean_target_text(value: object) -> str:
+    text = str(value or "")
+    for char in INVISIBLE:
+        text = text.replace(char, "")
+    text = text.strip().strip("\"'`<>(),;").strip()
+    low = text.lower()
+    for scheme in SCHEMES:
+        if low.startswith(scheme):
+            text = text[len(scheme):]
+            break
+    else:
+        if "://" in text:
+            text = text.split("://", 1)[1]
+    text = text.split("#", 1)[0].split("?", 1)[0]
+    if "/" in text and not re.search(r"\d+\.\d+\.\d+\.\d+/\d+$", text):
+        text = text.split("/", 1)[0]
+    if "@" in text:
+        text = text.rsplit("@", 1)[1]
+    return text.strip().strip("/").strip()
+
+
 def normalize_host(value: object) -> str:
-    text = str(value or "").strip().strip("[]")
+    text = clean_target_text(value).strip("[]").strip()
     if not text:
         raise ScanError("a host or address is required")
     if any(char.isspace() for char in text):
         raise ScanError("a host must not contain spaces")
     if len(text) > 253:
         raise ScanError("a host is too long")
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        pass
+    text = text.rstrip(".").lower()
+    if not text:
+        raise ScanError("a host or address is required")
+    try:
+        text = text.encode("idna").decode("ascii")
+    except (UnicodeError, ValueError):
+        raise ScanError("a host has characters that are not allowed") from None
+    for label in text.split("."):
+        if not label:
+            raise ScanError("a host must not have empty labels")
+        if not HOST_LABEL.match(label):
+            raise ScanError("a host label is not valid: " + label[:63])
     return text
 
 
+def is_subnet(value: object) -> bool:
+    text = clean_target_text(value)
+    if "/" not in text:
+        return False
+    try:
+        ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
 def split_target(target: str) -> tuple[str, int]:
-    text = (target or "").strip()
+    text = clean_target_text(target)
     if not text:
         raise ScanError("a target in host:port form is required")
+    text = text.rstrip(".")
     if text.startswith("["):
         host, _, rest = text[1:].partition("]")
         port_text = rest.lstrip(":")
-    elif text.count(":") == 1:
+    elif text.count(":") > 1:
+        host, port_text = text, ""
+    elif ":" in text:
         host, port_text = text.split(":", 1)
     else:
-        host, port_text = text, "443"
+        host, port_text = text, ""
     host = normalize_host(host)
-    try:
-        port = int(port_text or 443)
-    except ValueError:
-        raise ScanError("a port must be a number") from None
+    port_text = str(port_text or "").strip()
+    if not port_text:
+        port = DEFAULT_TARGET_PORT
+    else:
+        try:
+            port = int(port_text)
+        except ValueError:
+            raise ScanError("a port must be a number") from None
     if not 1 <= port <= 65535:
         raise ScanError("a port must be between 1 and 65535")
     return host, port
+
+
+def normalize_target(target: object) -> str:
+    text = clean_target_text(target)
+    if not text:
+        raise ScanError("a target is required")
+    if is_subnet(text):
+        net = ipaddress.ip_network(text, strict=False)
+        return str(net)
+    host, port = split_target(text)
+    if ":" in host:
+        return "[%s]:%d" % (host, port)
+    return "%s:%d" % (host, port)
+
+
+def normalize_targets(text: object, limit: int = SCAN_MAX_TOTAL) -> tuple[list[str], list[str]]:
+    raw = str(text or "")
+    for char in ",;\n\r\t|":
+        raw = raw.replace(char, " ")
+    out: list[str] = []
+    bad: list[str] = []
+    for token in raw.split():
+        try:
+            item = normalize_target(token)
+        except ScanError as exc:
+            bad.append("%s: %s" % (clean_target_text(token)[:64] or "empty", str(exc)))
+            continue
+        if item not in out:
+            out.append(item)
+        if len(out) >= limit:
+            break
+    return out, bad
 
 
 def enumerate_cidr(cidr: str, limit: int = DISCOVER_MAX_IPS) -> list[str]:
@@ -504,6 +606,7 @@ class ScanResult:
     pq_hybrid: bool = False
     pq_group: str = ""
     pq_draft: bool = False
+    groups: dict[str, str] = field(default_factory=dict)
     cert_valid: bool = False
     cert_chain_valid: bool = False
     cert_chain_bytes: int = 0
@@ -537,6 +640,7 @@ class ScanResult:
             "pq_hybrid": bool(self.pq_hybrid),
             "pq_group": self.pq_group,
             "pq_draft": bool(self.pq_draft),
+            "groups": dict(self.groups),
             "cert_valid": bool(self.cert_valid),
             "cert_chain_valid": bool(self.cert_chain_valid),
             "cert_chain_bytes": int(self.cert_chain_bytes),
@@ -573,6 +677,7 @@ class ScanResult:
             pq_hybrid=bool(data.get("pq_hybrid", False)),
             pq_group=str(data.get("pq_group", "")),
             pq_draft=bool(data.get("pq_draft", False)),
+            groups={str(key): str(value) for key, value in (data.get("groups") or {}).items()},
             cert_valid=bool(data.get("cert_valid", False)),
             cert_chain_valid=bool(data.get("cert_chain_valid", False)),
             cert_chain_bytes=int(data.get("cert_chain_bytes", 0) or 0),
@@ -607,6 +712,30 @@ class ScanResult:
             bits.append(self.reason)
         return " ".join(bits)
 
+    def pq_group_names(self) -> list[str]:
+        names = [GROUP_LABELS.get(name, name.lower()) for name, answer in (self.groups or {}).items() if answer in {GROUP_YES, GROUP_RETRY}]
+        if not names and self.pq_hybrid and self.pq_group:
+            names = [GROUP_LABELS.get(self.pq_group, self.pq_group.lower())]
+        return names
+
+    def group_state(self, group: str) -> str:
+        if not group:
+            return GROUP_YES
+        wanted = group.lower()
+        if self.groups:
+            for name, answer in self.groups.items():
+                if GROUP_LABELS.get(name, name.lower()).lower() == wanted:
+                    return answer
+            return GROUP_NO
+        if self.pq_hybrid and GROUP_LABELS.get(self.pq_group, self.pq_group.lower()).lower() == wanted:
+            return GROUP_YES
+        if self.pq_hybrid and not self.pq_group and wanted == GROUP_LABELS["X25519MLKEM768"]:
+            return GROUP_YES
+        return GROUP_NO
+
+    def supports_group(self, group: str) -> bool:
+        return self.group_state(group) in {GROUP_YES, GROUP_RETRY}
+
     def missing(self) -> list[str]:
         gaps: list[str] = []
         if not self.tls13:
@@ -615,10 +744,10 @@ class ScanResult:
             gaps.append("http/2")
         if not self.x25519:
             gaps.append("x25519")
-        if not self.pq_hybrid:
-            gaps.append("x25519mlkem768")
         if not self.cert_valid:
             gaps.append("certificate")
+        if self.days_left < 0:
+            gaps.append("expiry")
         return gaps
 
 
@@ -636,7 +765,6 @@ def feasible_of(result: ScanResult) -> bool:
         result.tls13
         and result.h2
         and result.x25519
-        and result.pq_hybrid
         and result.cert_valid
         and result.days_left >= 0
     )
@@ -667,11 +795,57 @@ def tls_fit(result: ScanResult) -> tuple[bool, str]:
     return True, "a tls 1.3 target with the hybrid post quantum group"
 
 
-SECURITY_KINDS = ("reality", "reality-pq", "reality-mldsa", "tls")
-SECURITY_TLS = "tls"
-SECURITY_REALITY = "reality"
-SECURITY_PQ = "reality-pq"
-SECURITY_MLDSA = "reality-mldsa"
+KIND_ALIASES = {
+    "reality-pq": "reality-x25519mlkem768",
+    "reality-mldsa": "reality-mldsa65",
+    "reality-mldsa-pq": "reality-mldsa65-x25519mlkem768",
+    "tls-pq": "tls-x25519mlkem768",
+}
+REALITY_KINDS = {
+    "reality": "",
+    "reality-x25519mlkem768": "x25519mlkem768",
+    "reality-p256mlkem768": "p256mlkem768",
+    "reality-x25519kyber768draft00": "x25519kyber768draft00",
+    "reality-mldsa65": "",
+    "reality-mldsa65-x25519mlkem768": "x25519mlkem768",
+}
+TLS_KINDS = {
+    "tls": "",
+    "tls-x25519mlkem768": "x25519mlkem768",
+    "tls-p256mlkem768": "p256mlkem768",
+}
+SECURITY_KINDS = tuple(REALITY_KINDS) + tuple(TLS_KINDS)
+STRONGEST_FIRST = (
+    "reality-mldsa65-x25519mlkem768",
+    "reality-mldsa65",
+    "reality-x25519mlkem768",
+    "reality-p256mlkem768",
+    "reality-x25519kyber768draft00",
+    "reality",
+    "tls-x25519mlkem768",
+    "tls-p256mlkem768",
+    "tls",
+)
+
+
+def canonical_kind(kind: str) -> str:
+    name = KIND_ALIASES.get(str(kind or ""), str(kind or ""))
+    if name not in SECURITY_KINDS:
+        raise ValueError("security must be one of " + ", ".join(SECURITY_KINDS))
+    return name
+
+
+def kind_group(kind: str) -> str:
+    name = canonical_kind(kind)
+    return REALITY_KINDS[name] if name in REALITY_KINDS else TLS_KINDS[name]
+
+
+def kind_is_tls(kind: str) -> bool:
+    return canonical_kind(kind) in TLS_KINDS
+
+
+def kind_has_mldsa(kind: str) -> bool:
+    return "mldsa65" in canonical_kind(kind)
 
 
 def reality_gaps(result: ScanResult) -> list[str]:
@@ -690,29 +864,42 @@ def reality_gaps(result: ScanResult) -> list[str]:
 
 
 def security_fit(result: ScanResult, kind: str) -> tuple[bool, str]:
-    if kind not in SECURITY_KINDS:
-        raise ValueError("security must be one of " + ", ".join(SECURITY_KINDS))
+    name = canonical_kind(kind)
+    group = kind_group(name)
+    if name == "tls":
+        if not result.tls13:
+            return False, "the target does not negotiate tls 1.3"
+        return True, "a tls 1.3 handshake, the certificate stays on our side"
+    if kind_is_tls(name):
+        if not result.tls13:
+            return False, "the target does not negotiate tls 1.3"
+        if not result.supports_group(group):
+            return False, "the target does not negotiate " + group
+        if result.group_state(group) == GROUP_RETRY:
+            return True, "tls 1.3, the target asks for a hello retry on %s, the certificate stays on our side" % group
+        return True, "tls 1.3 with the %s group, the certificate stays on our side" % group
     gaps = reality_gaps(result)
-    if kind in {SECURITY_REALITY, SECURITY_PQ, SECURITY_MLDSA} and gaps:
+    if gaps:
         return False, "missing " + ", ".join(gaps)
-    if kind == SECURITY_PQ and not result.pq_hybrid:
-        return False, "the target does not negotiate x25519mlkem768"
-    if kind == SECURITY_MLDSA:
-        if not result.pq_hybrid:
-            return False, "the target does not negotiate x25519mlkem768"
+    if group and not result.supports_group(group):
+        return False, "the target does not negotiate " + group
+    retry = group and result.group_state(group) == GROUP_RETRY
+    if kind_has_mldsa(name):
         if not result.ml_dsa_ready:
             return False, "the chain is %d bytes, %d bytes short of the %d byte minimum" % (
                 result.cert_chain_bytes,
                 max(ML_DSA65_CHAIN_MIN - result.cert_chain_bytes, 0),
                 ML_DSA65_CHAIN_MIN,
             )
-        return True, "a long chain of %d bytes carries the ml-dsa-65 signature" % result.cert_chain_bytes
-    if kind == SECURITY_TLS:
-        if not result.tls13:
-            return False, "the target does not negotiate tls 1.3"
-        return True, "a tls 1.3 handshake, the certificate stays on our side"
-    if kind == SECURITY_PQ:
-        return True, "tls 1.3, http/2, x25519mlkem768 and a valid chain"
+        if retry:
+            return True, "a chain of %d bytes carries the ml-dsa-65 signature, the target asks for a hello retry on %s" % (result.cert_chain_bytes, group)
+        if group:
+            return True, "a chain of %d bytes carries the ml-dsa-65 signature, the %s group fits" % (result.cert_chain_bytes, group)
+        return True, "a chain of %d bytes carries the ml-dsa-65 signature" % result.cert_chain_bytes
+    if retry:
+        return True, "tls 1.3, http/2, the target asks for a hello retry on %s and a valid chain" % group
+    if group:
+        return True, "tls 1.3, http/2, %s and a valid chain" % group
     return True, "tls 1.3, http/2, x25519 and a valid chain"
 
 
@@ -721,13 +908,11 @@ def security_fits(result: ScanResult) -> list[tuple[str, bool, str]]:
 
 
 def recommended_security(result: ScanResult) -> str:
-    fits = [kind for kind, ok, _ in security_fits(result) if ok]
-    if not fits:
-        return SECURITY_TLS if result.tls13 else ""
-    for kind in (SECURITY_MLDSA, SECURITY_PQ, SECURITY_REALITY, SECURITY_TLS):
+    fits = {kind for kind, ok, _ in security_fits(result) if ok}
+    for kind in STRONGEST_FIRST:
         if kind in fits:
             return kind
-    return fits[0]
+    return ""
 
 
 def proxy_header(kind: int, local: tuple[str, int], remote: tuple[str, int]) -> bytes:
@@ -785,16 +970,23 @@ def _extension(kind: int, body: bytes) -> bytes:
     return struct.pack("!HH", kind, len(body)) + body
 
 
-def client_hello(host: str, key_share: bytes, extra_share: bytes) -> bytes:
+def client_hello(host: str, key_share: bytes, extra_share: bytes, group: int = GROUP_X25519_MLKEM768, offered: list[int] | None = None) -> bytes:
     random = os.urandom(32)
     session = os.urandom(32)
-    name = host.encode("ascii", errors="ignore")
+    try:
+        name = host.encode("idna") if host else b""
+    except (UnicodeError, ValueError):
+        name = host.encode("ascii", "ignore") if host else b""
     server_name = b"\x00" + struct.pack("!H", len(name)) + name
-    groups = [GROUP_X25519_MLKEM768, GROUP_X25519]
-    shares = [(GROUP_X25519_MLKEM768, key_share), (GROUP_X25519, extra_share)]
+    shares: list[tuple[int, bytes]] = []
+    if key_share:
+        shares.append((group, key_share))
+    if extra_share:
+        shares.append((GROUP_X25519, extra_share))
+    groups = list(offered) if offered else [item for item, _ in shares]
     share_body = struct.pack("!H", sum(4 + len(item) for _, item in shares))
-    for group, item in shares:
-        share_body += struct.pack("!HH", group, len(item)) + item
+    for item_group, item in shares:
+        share_body += struct.pack("!HH", item_group, len(item)) + item
     extensions = (
         _extension(0x0000, struct.pack("!H", len(server_name)) + server_name)
         + _extension(0x000A, struct.pack("!H", 2 * len(groups)) + b"".join(struct.pack("!H", item) for item in groups))
@@ -843,6 +1035,53 @@ def parse_server_hello(message: bytes) -> tuple[int, bool]:
     return 0, retry
 
 
+async def pq_group_probe(host: str, port: int = 443, group: int = GROUP_X25519_MLKEM768, timeout: float = SCAN_TIMEOUT, sni: str = "") -> str:
+    name = sni or host
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+    except (asyncio.TimeoutError, OSError):
+        return GROUP_NO
+    try:
+        key_share = mlkem768_public_key() + os.urandom(X25519_KEY_SIZE)
+        offered = [group, GROUP_X25519]
+        payload = client_hello(name, key_share, os.urandom(X25519_KEY_SIZE), group=group, offered=offered)
+        writer.write(payload)
+        await writer.drain()
+        buffer = b""
+        deadline = time.monotonic() + timeout
+        while len(buffer) < 5:
+            if time.monotonic() > deadline:
+                return GROUP_NO
+            chunk = await asyncio.wait_for(reader.read(65536), timeout=max(0.1, deadline - time.monotonic()))
+            if not chunk:
+                return GROUP_NO
+            buffer += chunk
+        if buffer[0] != 0x16:
+            return GROUP_NO
+        need = 5 + struct.unpack("!H", buffer[3:5])[0]
+        while len(buffer) < need:
+            if time.monotonic() > deadline:
+                return GROUP_NO
+            chunk = await asyncio.wait_for(reader.read(65536), timeout=max(0.1, deadline - time.monotonic()))
+            if not chunk:
+                break
+            buffer += chunk
+        chosen, retry = parse_server_hello(buffer[5:need])
+        if chosen == group and not retry:
+            return GROUP_YES
+        if chosen == group and retry:
+            return GROUP_RETRY
+        return GROUP_NO
+    except (asyncio.TimeoutError, OSError, ssl.SSLError, ScanError):
+        return GROUP_NO
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (OSError, ssl.SSLError):
+            pass
+
+
 async def pq_probe(host: str, port: int = 443, timeout: float = SCAN_TIMEOUT, sni: str = "") -> tuple[bool, str, bool]:
     name = sni or host
     try:
@@ -886,6 +1125,19 @@ async def pq_probe(host: str, port: int = 443, timeout: float = SCAN_TIMEOUT, sn
             pass
 
 
+async def probe_groups(host: str, port: int = 443, sni: str = "", timeout: float = SCAN_TIMEOUT) -> dict[str, str]:
+    names = [PQ_GROUPS[group] for group in (GROUP_X25519_MLKEM768, GROUP_P256_MLKEM768, GROUP_X25519_KYBER768_DRAFT)]
+    answers = await asyncio.gather(
+        pq_group_probe(host, port, GROUP_X25519_MLKEM768, timeout, sni),
+        pq_group_probe(host, port, GROUP_P256_MLKEM768, timeout, sni),
+        pq_group_probe(host, port, GROUP_X25519_KYBER768_DRAFT, timeout, sni),
+    )
+    out = {}
+    for name, answer in zip(names, answers):
+        out[name] = answer
+    return out
+
+
 async def probe(
     host: str,
     port: int = 443,
@@ -895,7 +1147,7 @@ async def probe(
     allow_private: bool = False,
     bulk: bool = False,
 ) -> ScanResult:
-    result = ScanResult(target="%s:%d" % (host, port), host=sni or host, port=port)
+    result = ScanResult(target=format_target(host, port), host=sni or host, port=port)
     try:
         address = ipaddress.ip_address(host)
         result.ip = str(address)
@@ -948,9 +1200,9 @@ async def probe(
         result.days_left = cert.days_left
         result.ml_dsa_ready = cert.chain_bytes >= ML_DSA65_CHAIN_MIN
         result.server_names = [name for name in cert.dns_names if name and not name.startswith("*.")]
-        if not sni and result.server_names:
+        if not sni and result.server_names and _is_ip(host):
             result.host = result.server_names[0]
-            result.target = "%s:%d" % (result.host, port)
+            result.target = format_target(result.host, port)
     elif info.get("cert_error"):
         result.reason = "the certificate is not readable: " + str(info.get("cert_error"))
     else:
@@ -959,6 +1211,10 @@ async def probe(
         return result
     result.x25519 = await _supports_x25519(host, port, result.host, timeout, xver)
     result.curve_id = "X25519" if result.x25519 else ""
+    try:
+        result.groups = await probe_groups(host, port, result.host or sni, timeout)
+    except (OSError, asyncio.TimeoutError, ScanError):
+        result.groups = {}
     pq_ok, pq_group, pq_draft = await pq_probe(host, port, timeout, result.host or sni)
     result.pq_hybrid = pq_ok
     result.pq_group = pq_group
@@ -1205,7 +1461,7 @@ async def scan_targets(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                item = ScanResult(target="%s:%d" % (host, port), host=name or host, port=port, reason="probe failed: " + type(exc).__name__ + ": " + str(exc))
+                item = ScanResult(target=format_target(host, port), host=name or host, port=port, reason="probe failed: " + type(exc).__name__ + ": " + str(exc))
             if bulk and not item.tls_version:
                 results[index] = None
             else:
@@ -1214,6 +1470,10 @@ async def scan_targets(
     await asyncio.gather(*(run_one(i, *task) for i, task in enumerate(tasks)))
     clean = [item for item in results if item is not None]
     return rank(clean + invalid)
+
+
+def format_target(host: str, port: int) -> str:
+    return "[%s]:%d" % (host, port) if ":" in host else "%s:%d" % (host, port)
 
 
 def _is_ip(text: str) -> bool:

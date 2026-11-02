@@ -8,7 +8,7 @@ from typing import Any
 from . import i18n, inline, screens, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
-from .scan import CONCURRENCY, SECURITY_KINDS, ScanResult, parse_candidates, scan_targets, security_fit
+from .scan import CONCURRENCY, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit
 from .ui import button, code, copy_row, muted, pre, quote, row, screen
 from .xray import (
     DEFAULT_IGNOREIP,
@@ -241,6 +241,9 @@ class XrayPanel:
             return
         if head == "logs":
             await self.logs(chat_id, msg_id, arg1)
+            return
+        if head == "fit":
+            await self.check_target(chat_id, msg_id, arg1)
             return
         if head == "scan":
             await self.scan_action(chat_id, msg_id, arg1, arg2, parts[4] if len(parts) > 4 else "")
@@ -743,6 +746,19 @@ class XrayPanel:
         notice = self.tr()("NOTICE_TARGET_APPLIED", target=result.target, remark=inbound.remark)
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
 
+    async def check_target(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.inbound_of_ctx(ident) if ident else self.target_inbound()
+        if inbound is None or inbound.security not in {"reality", "tls"}:
+            await self.render(chat_id, msg_id, xscreens.target_check_screen(self.view(error=self.tr()("XR_CHECK_MISSING")), self.target_inbound(), None))
+            return
+        host, port = host_port(inbound.dest)
+        try:
+            result = await probe(host, port, inbound.sni or host)
+        except (ScanError, OSError) as exc:
+            await self.render(chat_id, msg_id, xscreens.target_check_screen(self.view(error=str(exc)), inbound, None))
+            return
+        await self.render(chat_id, msg_id, xscreens.target_check_screen(self.view(), inbound, result))
+
     async def show_mismatch(self, chat_id: int, msg_id: int, index: str) -> None:
         position, result = self.result_at(index)
         inbound = self.target_inbound()
@@ -753,8 +769,10 @@ class XrayPanel:
 
     async def switch_and_use(self, chat_id: int, msg_id: int, kind: str, index: str) -> None:
         position, result = self.result_at(index)
-        if kind not in SECURITY_KINDS:
-            raise PanelError("the encryption is not supported")
+        try:
+            kind = canonical_kind(kind)
+        except ValueError:
+            raise PanelError("the encryption is not supported") from None
         inbound = self.target_inbound()
         if inbound is None:
             await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error="create a reality inbound first"), self.results))
@@ -769,7 +787,7 @@ class XrayPanel:
         except XrayError as exc:
             await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(error=str(exc)), result, inbound, position))
             return
-        if kind == "reality-mldsa" and not (inbound.mldsa65_seed and inbound.mldsa65_verify):
+        if kind_has_mldsa(kind) and not (inbound.mldsa65_seed and inbound.mldsa65_verify):
             try:
                 seed, verify = await self.control.mldsa65(self.bot.state.ssh)
             except RpcError as exc:
@@ -900,16 +918,19 @@ class XrayPanel:
         t = self.tr()
         text = (value or "").strip()
         if ident == "xr_scan_targets":
-            targets = [item.strip() for item in text.replace(";", ",").split(",") if item.strip()]
-            if not targets:
+            targets, bad = normalize_targets(text, SCAN_LIMIT)
+            if not targets and not bad:
                 raise PanelError("the scan list is empty")
-            if len(targets) > SCAN_LIMIT:
-                raise PanelError(f"no more than {SCAN_LIMIT} targets are allowed")
+            if not targets:
+                raise PanelError(bad[0])
             self.state.scan_targets = targets
-            return t("NOTICE_TARGETS_COUNT", count=len(targets))
+            note = t("NOTICE_TARGETS_COUNT", count=len(targets))
+            return note + (" " + t("NOTICE_TARGETS_SKIPPED", count=len(bad)) if bad else "")
         if ident == "xr_scan_manual":
             target = manual_target(text)
             if target not in self.state.scan_targets:
+                if len(self.state.scan_targets) >= SCAN_LIMIT:
+                    raise PanelError(f"no more than {SCAN_LIMIT} targets are allowed")
                 self.state.scan_targets.append(target)
             return t("NOTICE_TARGET_ADDED", target=target)
         if ident == "xr_log_level":
@@ -968,6 +989,10 @@ class XrayPanel:
             return t("NOTICE_ADDRESS", value=text)
         if ident == "xr_scan_candidates":
             values = parse_candidates(text)
+            if values:
+                clean, bad = normalize_targets(text, CANDIDATE_LIMIT)
+                if clean:
+                    values = clean
             if len(values) > CANDIDATE_LIMIT:
                 raise PanelError(f"no more than {CANDIDATE_LIMIT} candidates are allowed")
             self.state.scan_candidates = values
@@ -1051,11 +1076,10 @@ class XrayPanel:
 
 
 def manual_target(text: str) -> str:
-    body = (text or "").strip()
-    if "/" in body:
-        return body
-    host, port = host_port(body)
-    return f"{host}:{port}"
+    try:
+        return normalize_target(text)
+    except ScanError as exc:
+        raise PanelError(str(exc)) from None
 
 
 def checked(func, *args):

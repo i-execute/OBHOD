@@ -7,6 +7,7 @@ import pytest
 
 from BOT import i18n, xscreens
 from BOT.panel import PanelError, XrayPanel, host_port, parse_port, state_report
+from BOT.ui import code
 from BOT.scan import ScanResult
 from BOT.xray import SUB_SEGMENT_LEN, XrayState, new_inbound
 from BOT.xrayrpc import XrayError as RpcError
@@ -569,7 +570,7 @@ def test_scan_switch_to_post_quantum_records_the_group(tmp_path: Path) -> None:
     run(item.scan_action(1, 0, "sec", "reality-pq", "0"))
     assert inbound.security == "reality"
     assert inbound.pq_mode == "x25519mlkem768"
-    assert inbound.security_kind() == "reality-pq"
+    assert inbound.security_kind() == "reality-x25519mlkem768"
 
 
 def test_scan_switch_to_ml_dsa_generates_the_keys(tmp_path: Path) -> None:
@@ -580,7 +581,7 @@ def test_scan_switch_to_ml_dsa_generates_the_keys(tmp_path: Path) -> None:
     item.results = [ScanResult(target="www.apple.com:443", host="www.apple.com", port=443, tls13=True, h2=True, x25519=True, pq_hybrid=True, cert_valid=True, days_left=90, cert_chain_bytes=4096, ml_dsa_ready=True)]
     run(item.scan_action(1, 0, "sec", "reality-mldsa", "0"))
     assert inbound.mldsa65_seed == "SEEDVALUE"
-    assert inbound.security_kind() == "reality-mldsa"
+    assert inbound.security_kind() == "reality-mldsa65"
     assert inbound.dest == "www.apple.com:443"
 
 
@@ -615,3 +616,71 @@ def test_scan_switch_rejects_an_encryption_the_target_does_not_fit(tmp_path: Pat
     run(item.scan_action(1, 0, "sec", "reality-pq", "0"))
     assert inbound.pq_mode == ""
     assert i18n.t("XR_SCAN_SEC_BAD", "en", security=xscreens.security_label("reality-pq", "en")) in bot.rendered[-1].to_html()
+
+
+def test_scan_input_adds_the_default_port(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    notice = item.set_field("xr_scan_manual", "", "www.apple.com")
+    assert bot.state.xray.scan_targets[-1] == "www.apple.com:443"
+    assert "www.apple.com:443" in notice
+    item.set_field("xr_scan_manual", "", "https://www.google.com/search?q=1")
+    assert bot.state.xray.scan_targets[-1] == "www.google.com:443"
+    with pytest.raises(PanelError):
+        item.set_field("xr_scan_manual", "", "host.com:99999")
+    with pytest.raises(PanelError):
+        item.set_field("xr_scan_manual", "", "  ")
+
+
+def test_scan_list_input_skips_broken_targets(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    notice = item.set_field("xr_scan_targets", "", "a.com, b.com:8443; a.com, bad_host.com")
+    assert bot.state.xray.scan_targets == ["a.com:443", "b.com:8443"]
+    assert "skipped" in notice
+    with pytest.raises(PanelError):
+        item.set_field("xr_scan_targets", "", "bad_host.com")
+
+
+def test_scan_candidates_are_normalized(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    item.set_field("xr_scan_candidates", "", "a.com, b.com:8443")
+    assert bot.state.xray.scan_candidates == ["a.com:443", "b.com:8443"]
+
+
+def test_scan_switch_to_every_post_quantum_kind(tmp_path: Path) -> None:
+    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "yes", "X25519Kyber768Draft00": "yes"}
+    for position, (kind, mode) in enumerate((("reality-x25519mlkem768", "x25519mlkem768"), ("reality-p256mlkem768", "p256mlkem768"), ("reality-x25519kyber768draft00", "x25519kyber768draft00"))):
+        item, bot = panel(tmp_path / str(position))
+        inbound = new_inbound("vless", 443, "raw", "reality")
+        inbound.reality_private = "k" * 43
+        bot.state.xray.add(inbound)
+        item.results = [ScanResult(target="www.apple.com:443", host="www.apple.com", port=443, tls13=True, h2=True, x25519=True, pq_hybrid=True, groups=groups, cert_valid=True, days_left=90, cert_chain_bytes=4096, ml_dsa_ready=True)]
+        run(item.scan_action(1, 0, "sec", kind, "0"))
+        assert inbound.pq_mode == mode
+        assert inbound.security_kind() == kind
+        assert inbound.dest == "www.apple.com:443"
+
+
+def test_check_target_action(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.dest = "www.cloudflare.com:443"
+    inbound.sni = "www.cloudflare.com"
+    bot.state.xray.add(inbound)
+
+    async def fake_probe(host: str, port: int = 443, sni: str = "", timeout: float = 10.0, xver: int = 0, allow_private: bool = False, bulk: bool = False) -> ScanResult:
+        assert host == "www.cloudflare.com" and port == 443 and sni == "www.cloudflare.com"
+        return ScanResult(target="www.cloudflare.com:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, pq_group="X25519MLKEM768", groups={"X25519MLKEM768": "yes"}, cert_valid=True, days_left=88, cert_chain_bytes=3425)
+
+    monkeypatch.setattr("BOT.panel.probe", fake_probe)
+    run(item.check_target(1, 0, str(inbound.id)))
+    html = bot.rendered[-1].to_html()
+    assert i18n.t("XR_CHECK_OK", "en", security=code(xscreens.security_label("reality", "en"))) in html
+    assert "3425" in html
+    assert "xr:fit:" + str(inbound.id) in html
+
+
+def test_check_target_without_an_inbound(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    run(item.check_target(1, 0, ""))
+    assert i18n.t("XR_CHECK_MISSING", "en") in bot.rendered[-1].to_html()

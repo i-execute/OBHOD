@@ -57,7 +57,10 @@ def test_split_target_variants() -> None:
 
 
 def test_normalize_host() -> None:
-    assert normalize_host(" Example.COM ") == "Example.COM"
+    assert normalize_host(" Example.COM ") == "example.com"
+    assert normalize_host("[2606:4700::1111]") == "2606:4700::1111"
+    assert normalize_host("host.com.") == "host.com"
+    assert normalize_host("https://host.com/path") == "host.com"
     assert normalize_host("[::1]") == "::1"
     with pytest.raises(ScanError):
         normalize_host("")
@@ -287,8 +290,13 @@ def test_scan_result_feasibility_rule() -> None:
     assert scanner.feasible_of(item) is False
     item.h2 = True
     item.pq_hybrid = False
+    assert scanner.feasible_of(item) is True
+    item.x25519 = False
     assert scanner.feasible_of(item) is False
-    item.pq_hybrid = True
+    item.x25519 = True
+    item.cert_valid = False
+    assert scanner.feasible_of(item) is False
+    item.cert_valid = True
     item.days_left = -1
     assert scanner.feasible_of(item) is False
 
@@ -336,26 +344,74 @@ def test_scan_limits_match_the_reference() -> None:
 
 
 def test_security_fit_covers_every_kind() -> None:
-    result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, pq_group="x25519mlkem768", cert_valid=True, days_left=40, cert_chain_bytes=4096, ml_dsa_ready=True)
+    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "yes", "X25519Kyber768Draft00": "yes"}
+    result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, pq_group="X25519MLKEM768", groups=groups, cert_valid=True, days_left=40, cert_chain_bytes=4096, ml_dsa_ready=True)
     fits = dict((kind, (ok, note)) for kind, ok, note in scanner.security_fits(result))
     assert set(fits) == set(scanner.SECURITY_KINDS)
+    assert len(fits) == 9
     assert all(ok for ok, _ in fits.values())
-    assert scanner.recommended_security(result) == "reality-mldsa"
+    assert scanner.recommended_security(result) == "reality-mldsa65-x25519mlkem768"
+
+
+def test_security_fit_reads_the_per_group_answers() -> None:
+    groups = {"X25519MLKEM768": "yes", "P256MLKEM768": "retry", "X25519Kyber768Draft00": "no"}
+    result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, pq_group="X25519MLKEM768", groups=groups, cert_valid=True, days_left=40, cert_chain_bytes=2000)
+    assert result.group_state("x25519mlkem768") == "yes"
+    assert result.group_state("p256mlkem768") == "retry"
+    assert result.group_state("x25519kyber768draft00") == "no"
+    assert result.supports_group("p256mlkem768")
+    assert not result.supports_group("x25519kyber768draft00")
+    ok, note = scanner.security_fit(result, "reality-p256mlkem768")
+    assert ok and "hello retry" in note
+    assert not scanner.security_fit(result, "reality-x25519kyber768draft00")[0]
+    assert result.pq_group_names() == ["x25519mlkem768", "p256mlkem768"]
+    assert ScanResult.from_dict(result.to_dict()).groups == groups
+
+
+def test_kind_aliases_still_work() -> None:
+    assert scanner.canonical_kind("reality-pq") == "reality-x25519mlkem768"
+    assert scanner.canonical_kind("reality-mldsa") == "reality-mldsa65"
+    assert scanner.kind_group("reality-x25519kyber768draft00") == "x25519kyber768draft00"
+    assert scanner.kind_is_tls("tls-p256mlkem768")
+    assert scanner.kind_has_mldsa("reality-mldsa65-x25519mlkem768")
+    with pytest.raises(ValueError):
+        scanner.canonical_kind("reality-nonsense")
+
+
+def test_normalize_target_edge_cases() -> None:
+    assert scanner.normalize_target("example.com") == "example.com:443"
+    assert scanner.normalize_target("EXAMPLE.com.") == "example.com:443"
+    assert scanner.normalize_target("  https://www.apple.com/store?x=1#top  ") == "www.apple.com:443"
+    assert scanner.normalize_target("vless://uuid@host.com:8443?type=tcp") == "host.com:8443"
+    assert scanner.normalize_target("[2606:4700::1111]") == "[2606:4700::1111]:443"
+    assert scanner.normalize_target("[2606:4700::1111]:8443") == "[2606:4700::1111]:8443"
+    assert scanner.normalize_target("10.0.0.0/30") == "10.0.0.0/30"
+    assert scanner.normalize_target("user:pass@host.com:443") == "host.com:443"
+    assert scanner.normalize_target("host.com:") == "host.com:443"
+    assert scanner.normalize_target("\u200bhost.com\ufeff") == "host.com:443"
+    assert scanner.normalize_target("host.com:443/tcp") == "host.com:443"
+    for bad in ("", "   ", "host.com:99999", "host.com:0", "host.com:abc", "bad_host.com", "-host.com", "host .com"):
+        with pytest.raises(scanner.ScanError):
+            scanner.normalize_target(bad)
+    clean, problems = scanner.normalize_targets("a.com, b.com:8443; a.com\n10.0.0.0/30 nonsense:99999")
+    assert clean == ["a.com:443", "b.com:8443", "10.0.0.0/30"]
+    assert problems and "nonsense" in problems[0]
+    assert scanner.normalize_targets("")[0] == []
 
 
 def test_security_fit_reports_a_short_chain() -> None:
     result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=True, cert_valid=True, days_left=40, cert_chain_bytes=1800, ml_dsa_ready=False)
-    ok, note = scanner.security_fit(result, "reality-mldsa")
+    ok, note = scanner.security_fit(result, "reality-mldsa65")
     assert not ok
     assert "1800" in note and "1700" in note and str(scanner.ML_DSA65_CHAIN_MIN) in note
-    assert scanner.recommended_security(result) == "reality-pq"
+    assert scanner.recommended_security(result) == "reality-x25519mlkem768"
 
 
 def test_security_fit_without_post_quantum() -> None:
     result = ScanResult(target="a:443", tls13=True, h2=True, x25519=True, pq_hybrid=False, cert_valid=True, days_left=40, cert_chain_bytes=1200)
     assert scanner.security_fit(result, "reality")[0]
-    assert not scanner.security_fit(result, "reality-pq")[0]
-    assert not scanner.security_fit(result, "reality-mldsa")[0]
+    assert not scanner.security_fit(result, "reality-x25519mlkem768")[0]
+    assert not scanner.security_fit(result, "reality-mldsa65")[0]
     assert scanner.security_fit(result, "tls")[0]
     assert scanner.recommended_security(result) == "reality"
 
@@ -366,3 +422,15 @@ def test_security_fit_rejects_a_legacy_target() -> None:
     assert scanner.recommended_security(result) == ""
     with pytest.raises(ValueError):
         scanner.security_fit(result, "xtls")
+
+
+def test_format_target_wraps_ipv6() -> None:
+    assert scanner.format_target("www.apple.com", 443) == "www.apple.com:443"
+    assert scanner.format_target("2606:4700::1111", 8443) == "[2606:4700::1111]:8443"
+    assert scanner.normalize_target("2606:4700::1111") == "[2606:4700::1111]:443"
+
+
+def test_the_probe_keeps_a_pasted_host_name() -> None:
+    item = ScanResult(target="www.cloudflare.com:443", host="www.cloudflare.com", server_names=["blog.api.www.cloudflare.com"])
+    assert item.target == "www.cloudflare.com:443"
+    assert scanner._is_ip("1.1.1.1") and not scanner._is_ip("www.cloudflare.com")

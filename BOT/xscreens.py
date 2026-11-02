@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import i18n, inline
-from .scan import ML_DSA65_CHAIN_MIN, ScanResult, security_fit, security_fits
+from .scan import ML_DSA65_CHAIN_MIN, ScanResult, canonical_kind, security_fit, security_fits
 from .ui import (
     bold,
     bullet_list,
@@ -493,6 +493,7 @@ def scan_screen(view: XrayView, results: list[ScanResult] | None = None) -> Any:
         if best is not None:
             blocks.append(quote(muted(t("XR_SCAN_BEST", target=best.target, latency=best.latency_ms))))
         blocks.append(fit_table(t, focus))
+        blocks.append(quote(muted(group_line(t, focus))))
         inbound = next((item for item in state.inbounds if item.security in {"reality", "tls"}), None)
         if inbound is not None:
             kind = inbound.security_kind()
@@ -528,15 +529,39 @@ def scan_screen(view: XrayView, results: list[ScanResult] | None = None) -> Any:
 
 SECURITY_LABELS = {
     "reality": "XR_SEC_KIND_REALITY",
-    "reality-pq": "XR_SEC_KIND_PQ",
-    "reality-mldsa": "XR_SEC_KIND_MLDSA",
+    "reality-x25519mlkem768": "XR_SEC_KIND_REALITY_PQ",
+    "reality-p256mlkem768": "XR_SEC_KIND_REALITY_P256",
+    "reality-x25519kyber768draft00": "XR_SEC_KIND_REALITY_KYBER",
+    "reality-mldsa65": "XR_SEC_KIND_REALITY_MLDSA",
+    "reality-mldsa65-x25519mlkem768": "XR_SEC_KIND_REALITY_MLDSA_PQ",
     "tls": "XR_SEC_KIND_TLS",
+    "tls-x25519mlkem768": "XR_SEC_KIND_TLS_PQ",
+    "tls-p256mlkem768": "XR_SEC_KIND_TLS_P256",
 }
-SECURITY_ICONS = {"reality": "lock", "reality-pq": "shield", "reality-mldsa": "star", "tls": "world"}
+SECURITY_ICONS = {
+    "reality": "lock",
+    "reality-x25519mlkem768": "shield",
+    "reality-p256mlkem768": "shield",
+    "reality-x25519kyber768draft00": "shield",
+    "reality-mldsa65": "star",
+    "reality-mldsa65-x25519mlkem768": "star",
+    "tls": "world",
+    "tls-x25519mlkem768": "world",
+    "tls-p256mlkem768": "world",
+}
 
 
 def security_label(kind: str, lang: str = i18n.DEFAULT_LANGUAGE) -> str:
-    return i18n.t(SECURITY_LABELS.get(kind, "XR_SEC_KIND_REALITY"), lang)
+    try:
+        name = canonical_kind(kind)
+    except ValueError:
+        name = "reality"
+    return i18n.t(SECURITY_LABELS.get(name, "XR_SEC_KIND_REALITY"), lang)
+
+
+def group_line(t: Any, result: ScanResult) -> str:
+    names = result.pq_group_names()
+    return t("XR_SCAN_GROUPS", groups=", ".join(names)) if names else t("XR_SCAN_GROUPS_NONE")
 
 
 def fit_table(t: Any, result: ScanResult) -> Any:
@@ -565,23 +590,55 @@ def scan_mismatch_screen(view: XrayView, result: ScanResult, inbound: XrayInboun
     )
     if current == "reality-mldsa" and not result.ml_dsa_ready:
         blocks.append(quote(muted(t("XR_SCAN_MISMATCH_CHAIN", length=code(result.cert_chain_bytes), min=code(ML_DSA65_CHAIN_MIN)))))
+    blocks.append(quote(muted(group_line(t, result))))
     blocks.append(f"<p>{bold(t('XR_SCAN_MISMATCH_FITS'))}</p>")
     blocks.append(fit_table(t, result))
     blocks.append(quote(muted(t("XR_SCAN_MISMATCH_NOTE"))))
     available = [kind for kind, ok, _ in security_fits(result) if ok and kind != current]
     buttons = []
     if available:
-        buttons.append(
-            row(*[button(t("XR_SCAN_SWITCH", security=security_label(kind, view.lang)), f"xr:scan:sec:{kind}:{index}", icon=SECURITY_ICONS[kind]) for kind in available[:2]])
-        )
-        if len(available) > 2:
+        for start in range(0, len(available), 2):
             buttons.append(
-                row(*[button(t("XR_SCAN_SWITCH", security=security_label(kind, view.lang)), f"xr:scan:sec:{kind}:{index}", icon=SECURITY_ICONS[kind]) for kind in available[2:]])
+                row(*[button(t("XR_SCAN_SWITCH", security=security_label(kind, view.lang)), f"xr:scan:sec:{kind}:{index}", icon=SECURITY_ICONS[kind]) for kind in available[start : start + 2]])
             )
     else:
         blocks.append(quote(muted(t("XR_SCAN_SEC_NOTHING"))))
     buttons.append(row(button(t("XR_SCAN_KEEP"), "xr:scan", icon="back"), button(t("UI_HOME"), "nav:home", icon="home")))
     return screen(t("XR_SCAN_MISMATCH_TITLE"), t("XR_SCAN_MISMATCH_SUBTITLE"), blocks, buttons, icon="warn")
+
+
+def target_check_screen(view: XrayView, inbound: XrayInbound, result: ScanResult | None = None) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    if inbound is None or result is None:
+        blocks.append(quote(muted(t("XR_CHECK_MISSING"))))
+        buttons = [back_row("xr:home")]
+        return screen(t("XR_CHECK_TITLE"), t("XR_CHECK_SUBTITLE"), blocks, buttons, icon="scan")
+    kind = inbound.security_kind()
+    label = security_label(kind, view.lang)
+    ok, note = security_fit(result, kind)
+    head = t("XR_CHECK_OK", security=code(label)) if ok else t("XR_CHECK_BAD", security=code(label))
+    blocks.append(quote("<b>%s</b>" % head))
+    blocks.append(
+        table(
+            [
+                ("target", t("XR_SEC_TARGET"), code(result.target)),
+                ("shield", t("XR_SEC_CURRENT"), code(label)),
+                ("lock" if ok else "warn", t("XR_SCAN_FIT"), t("XR_SCAN_FIT_YES") if ok else t("XR_SCAN_FIT_NO")),
+                ("info", t("UI_HINT"), muted(note)),
+                ("tag", t("XR_MLDSA_CHAIN"), code("%d / %d" % (result.cert_chain_bytes, ML_DSA65_CHAIN_MIN))),
+                ("world", t("XR_CHECK_PROBE"), code(result.tls_version or t("UI_NONE"))),
+            ],
+            (t("XR_CHECK_TITLE"), t("UI_VALUE")),
+        )
+    )
+    blocks.append(quote(muted(group_line(t, result))))
+    blocks.append(quote(muted(t("XR_CHECK_NOTE"))))
+    buttons = [
+        row(button(t("XR_CHECK_BTN"), f"xr:fit:{inbound.id}", icon="scan"), button(t("XR_SCAN_SWITCH_OPEN"), "xr:scan", icon="warn")),
+        back_row(f"xr:in:{inbound.id}"),
+    ]
+    return screen(t("XR_CHECK_TITLE"), t("XR_CHECK_SUBTITLE"), blocks, buttons, icon="scan")
 
 
 def scan_targets_screen(view: XrayView) -> Any:

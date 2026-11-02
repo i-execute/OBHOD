@@ -24,8 +24,26 @@ def guard_jail(raw: Any) -> str:
 PROTOCOLS = ("vless",)
 NETWORKS = ("raw", "grpc", "xhttp")
 SECURITIES = ("reality", "tls", "none")
-SECURITY_KINDS = ("reality", "reality-pq", "reality-mldsa", "tls")
+SECURITY_KINDS = (
+    "reality",
+    "reality-x25519mlkem768",
+    "reality-p256mlkem768",
+    "reality-x25519kyber768draft00",
+    "reality-mldsa65",
+    "reality-mldsa65-x25519mlkem768",
+    "tls",
+    "tls-x25519mlkem768",
+    "tls-p256mlkem768",
+)
+KIND_ALIASES = {
+    "reality-pq": "reality-x25519mlkem768",
+    "reality-mldsa": "reality-mldsa65",
+    "reality-mldsa-pq": "reality-mldsa65-x25519mlkem768",
+    "tls-pq": "tls-x25519mlkem768",
+}
+PQ_MODES = ("x25519mlkem768", "p256mlkem768", "x25519kyber768draft00")
 PQ_HYBRID = "x25519mlkem768"
+VLESS_AUTH_MLKEM_MIN = 300
 VLESS_MODES = ("native", "xorpub", "random")
 VLESS_TICKETS = ("600s", "0s", "300-600s")
 VLESS_CLIENT_MODES = ("0rtt", "1rtt")
@@ -331,6 +349,12 @@ class VlessEncryption:
         self.private_key, self.public_key = x25519_keypair()
         return self
 
+    def auth_kind(self) -> str:
+        return "mlkem768" if len(self.private_key or "") > VLESS_AUTH_MLKEM_MIN else "x25519"
+
+    def label(self) -> str:
+        return "%s.%s.%s" % (VLESS_HANDSHAKE, self.mode, self.auth_kind())
+
     def decryption(self) -> str:
         parts = [VLESS_HANDSHAKE, self.mode, self.ticket]
         if self.padding:
@@ -458,15 +482,17 @@ class XrayInbound:
         return None
 
     def security_kind(self) -> str:
-        if self.security == "tls":
+        if self.security == "none":
+            return "none"
+        base = "tls" if self.security == "tls" else ("reality-mldsa65" if self.mldsa65_seed and self.mldsa65_verify else "reality")
+        if base == "tls" and not self.pq_mode:
             return "tls"
-        if self.security == "reality":
-            if self.mldsa65_seed and self.mldsa65_verify:
-                return "reality-mldsa"
-            if self.pq_mode == PQ_HYBRID:
-                return "reality-pq"
-            return "reality"
-        return "none"
+        group = self.pq_mode if self.pq_mode in PQ_MODES else ""
+        if base == "reality-mldsa65":
+            return base + ("-" + group if group else "")
+        if base == "tls":
+            return base + "-" + group if group else base
+        return base + ("-" + group if group else "")
 
     def make_client(self, email: str) -> XrayClient:
         name = valid_email(email)
@@ -901,7 +927,7 @@ def summary(inbound: XrayInbound, language: str = i18n.DEFAULT_LANGUAGE) -> list
         ("route", i18n.t("SUM_NETWORK", lang), inbound.network),
         ("shield", i18n.t("SUM_SECURITY", lang), inbound.security),
         ("users", i18n.t("SUM_CLIENTS", lang), str(len(inbound.clients))),
-        ("key", i18n.t("SUM_ENCRYPTION", lang), VLESS_HANDSHAKE + "." + inbound.encryption.mode),
+        ("key", i18n.t("SUM_ENCRYPTION", lang), inbound.encryption.label()),
     ]
     fields = relevant_fields(inbound.security, inbound.network)
     if "dest" in fields:
@@ -1173,19 +1199,23 @@ class XrayState:
         item = self.inbound(ident)
         if item is None:
             raise XrayError("inbound not found")
-        if kind not in SECURITY_KINDS:
+        name = KIND_ALIASES.get(str(kind or ""), str(kind or ""))
+        if name not in SECURITY_KINDS:
             raise XrayError("security must be one of " + ", ".join(SECURITY_KINDS))
-        if kind == "tls":
+        want_tls = name.startswith("tls")
+        want_mldsa = "mldsa65" in name
+        group = ""
+        for mode in PQ_MODES:
+            if name.endswith("-" + mode):
+                group = mode
+        if want_tls:
             if not item.cert_file or not item.key_file:
                 raise XrayError("tls needs a certificate and a key, import a certificate first")
-        if kind in {"reality", "reality-pq", "reality-mldsa"} and not item.reality_private:
+        elif not item.reality_private:
             raise XrayError("reality needs a key pair, generate the reality keys first")
-        item.security = "tls" if kind == "tls" else "reality"
-        if kind == "reality-pq":
-            item.pq_mode = PQ_HYBRID
-        elif kind == "reality" or kind == "tls":
-            item.pq_mode = ""
-        if kind != "reality-mldsa":
+        item.security = "tls" if want_tls else "reality"
+        item.pq_mode = group
+        if not want_mldsa:
             item.mldsa65_seed = ""
             item.mldsa65_verify = ""
         return item
