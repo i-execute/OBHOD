@@ -52,7 +52,7 @@ VLESS_TICKETS = ("600s", "0s", "300-600s")
 VLESS_CLIENT_MODES = ("0rtt", "1rtt")
 XHTTP_MODES = ("auto", "packet-up", "stream-up", "stream-one")
 FLOWS = ("", "xtls-rprx-vision")
-FINGERPRINTS = ("chrome", "firefox", "safari", "ios", "android", "edge", "random", "randomized")
+FINGERPRINTS = ("firefox", "edge", "chrome", "safari", "ios", "android", "random", "randomized")
 VLESS_HANDSHAKE = "mlkem768x25519plus"
 DEFAULT_DEST = "www.cloudflare.com:443"
 DEFAULT_SNI = "www.cloudflare.com"
@@ -492,7 +492,7 @@ class XrayInbound:
     sni: str = DEFAULT_SNI
     short_ids: list[str] = field(default_factory=list)
     spider_x: str = ""
-    fingerprint: str = "chrome"
+    fingerprint: str = "firefox"
     mldsa65_seed: str = ""
     mldsa65_verify: str = ""
     pq_mode: str = ""
@@ -650,7 +650,7 @@ class XrayInbound:
             sni=str(data.get("sni", DEFAULT_SNI)),
             short_ids=[str(item) for item in data.get("short_ids") or []],
             spider_x=str(data.get("spider_x", "")),
-            fingerprint=str(data.get("fingerprint", "chrome")),
+            fingerprint=str(data.get("fingerprint", "firefox")),
             mldsa65_seed=str(data.get("mldsa65_seed", "") or ""),
             mldsa65_verify=str(data.get("mldsa65_verify", "") or ""),
             pq_mode=str(data.get("pq_mode", "") or ""),
@@ -862,7 +862,7 @@ def _security_params(inbound: XrayInbound, params: dict[str, str]) -> None:
     if inbound.security == "reality":
         params["security"] = "reality"
         params["sni"] = inbound.sni or DEFAULT_SNI
-        params["fp"] = inbound.fingerprint or "chrome"
+        params["fp"] = inbound.fingerprint or "firefox"
         params["pbk"] = inbound.reality_public
         params["sid"] = (inbound.short_ids or [""])[0]
         if inbound.spider_x:
@@ -873,7 +873,7 @@ def _security_params(inbound: XrayInbound, params: dict[str, str]) -> None:
     if inbound.security == "tls":
         params["security"] = "tls"
         params["sni"] = inbound.sni
-        params["fp"] = inbound.fingerprint or "chrome"
+        params["fp"] = inbound.fingerprint or "firefox"
         if inbound.alpn:
             params["alpn"] = ",".join(inbound.alpn)
         return

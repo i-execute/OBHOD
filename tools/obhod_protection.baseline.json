@@ -3,7 +3,7 @@
     "BOT/app.py": "4e72fd57cd77a5ee23c29894876f47515f6d83baf56319297c105c9badca2a0a",
     "BOT/audit.py": "5e3417b27eac442950ca527032b5db51dedc6256b8e724d045df5513626afdc4",
     "BOT/guard.py": "be03d58332d2a9d932c5421e0f487017786ddbdc3799733a21adb0edadabfa73",
-    "BOT/inline.py": "e461c8480432236d4b6f3f6b0175db6c72313416005451ecbf63c8aed2e6c394",
+    "BOT/inline.py": "85de12f2a15bc77f5c907360150cc3738a2b9a47ebfe55c944447476acc18bb2",
     "BOT/ratelimit.py": "cd89721d1914c42b469ff1782c2305ceb2664f4c1f2b816447d9f754bd5ddc6c",
     "BOT/releases.py": "40a2889d052d706f3538183bc67ba0ef87888009cb4ec4b4e642b8bdeec5541e",
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
@@ -13,7 +13,7 @@
     "Storage/remote/freeturn_agent.py": "ee7c27c4d38d4f5ba4327b8e89853d35a1b00a4a7c068db91e8335872ca5328a",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "9ec0f191200009771e3ff62126fe1b917843562c603edd2fbaf3492106ea74e6",
-    "Storage/remote/xray_agent.py": "b6c42167f5b57508d792eabaa41a2b9881024bb5b0d69dc2734c4c16e9176e2a",
+    "Storage/remote/xray_agent.py": "046b264819f057c37db44185f384125d9e60aa1f550c71caa09272e0fb56aa8b",
     "tools/obhod_watchdog.py": "ccd3378bfe06c60a0b91ccd9e2b4e3ab19d7196647a935877143031b59d04cbe"
   },
   "policy": [

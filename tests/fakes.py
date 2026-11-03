@@ -95,6 +95,18 @@ class FakeControl:
         self.calls.append(["restart"])
         return self._state()
 
+    async def dpi_scan(self, cfg: Any) -> Any:
+        from BOT.xrayrpc import TrapState
+
+        self.calls.append(["dpi-scan"])
+        return TrapState.from_dict(getattr(self, "traps", None) or {"config_path": "/usr/local/etc/xray/config.json"})
+
+    async def dpi_fix(self, cfg: Any) -> Any:
+        from BOT.xrayrpc import TrapState
+
+        self.calls.append(["dpi-fix"])
+        return TrapState.from_dict({"config_path": "/usr/local/etc/xray/config.json", "found": [], "count": 0, "stripped": 0})
+
     async def stop(self, cfg: Any) -> Any:
         self.calls.append(["stop"])
         return self._state()

@@ -244,6 +244,57 @@ class CoreState:
         )
 
 
+@dataclass
+class TrapState:
+    config_path: str = ""
+    config_exists: bool = False
+    interval: int = 400
+    found: list[dict[str, Any]] = field(default_factory=list)
+    count: int = 0
+    inbounds: int = 0
+    stripped: int = 0
+    backup: str = ""
+    restarted: bool = False
+
+    @property
+    def clean(self) -> bool:
+        return not self.found
+
+    def tags(self, limit: int = 6) -> list[str]:
+        names = []
+        for item in self.found[:limit]:
+            name = str(item.get("tag", "") or "")
+            port = item.get("port", 0)
+            label = name or ("port %s" % port if port else "inbound")
+            if label not in names:
+                names.append(label)
+        return names
+
+    def keys(self) -> list[str]:
+        names = []
+        for item in self.found:
+            for key in (item.get("keys") or {}):
+                if key not in names:
+                    names.append(str(key))
+        return names
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> TrapState:
+        raw = raw or {}
+        found = [item for item in raw.get("found") or [] if isinstance(item, dict)]
+        return cls(
+            config_path=str(raw.get("config_path", "") or ""),
+            config_exists=bool(raw.get("config_exists", False)),
+            interval=int(raw.get("interval", 400) or 400),
+            found=found,
+            count=int(raw.get("count", 0) or 0),
+            inbounds=int(raw.get("inbounds", 0) or 0),
+            stripped=int(raw.get("stripped", 0) or 0),
+            backup=str(raw.get("backup", "") or ""),
+            restarted=bool(raw.get("restarted", False)),
+        )
+
+
 def parse_response(text: str) -> XrayResponse:
     payload = ""
     for line in (text or "").splitlines():
@@ -299,6 +350,16 @@ class XrayControl:
         response = await self.call(cfg, ["probe"], timeout=90)
         response.raise_for_status()
         return CoreState.from_dict(response.data)
+
+    async def dpi_scan(self, cfg: SshSettings) -> TrapState:
+        response = await self.call(cfg, ["dpi-scan"], timeout=90)
+        response.raise_for_status()
+        return TrapState.from_dict(response.data)
+
+    async def dpi_fix(self, cfg: SshSettings) -> TrapState:
+        response = await self.call(cfg, ["dpi-fix"], timeout=180)
+        response.raise_for_status()
+        return TrapState.from_dict(response.data)
 
     async def install_core(
         self,

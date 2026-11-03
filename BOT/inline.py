@@ -55,7 +55,7 @@ FIELDS: dict[str, Field] = {
     "xr_dest": Field("xr_dest", "FLD_XR_DEST", "FLH_XR_DEST", "www.cloudflare.com:443"),
     "xr_short_id": Field("xr_short_id", "FLD_XR_SHORT_ID", "FLH_XR_SHORT_ID", "a1b2c3d4"),
     "xr_spider_x": Field("xr_spider_x", "FLD_XR_SPIDER_X", "FLH_XR_SPIDER_X", "/"),
-    "xr_fingerprint": Field("xr_fingerprint", "FLD_XR_FINGERPRINT", "FLH_XR_FINGERPRINT", "chrome"),
+    "xr_fingerprint": Field("xr_fingerprint", "FLD_XR_FINGERPRINT", "FLH_XR_FINGERPRINT", "firefox"),
     "xr_alpn": Field("xr_alpn", "FLD_XR_ALPN", "FLH_XR_ALPN", "h2,http/1.1"),
     "xr_cert_file": Field("xr_cert_file", "FLD_XR_CERT_FILE", "FLH_XR_CERT_FILE", "/etc/ssl/fullchain.pem"),
     "xr_key_file": Field("xr_key_file", "FLD_XR_KEY_FILE", "FLH_XR_KEY_FILE", "/etc/ssl/key.pem"),

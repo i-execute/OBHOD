@@ -686,6 +686,98 @@ def version_of(flags):
     return version
 
 
+DPI_TRAP_KEYS = ("scMinPostsIntervalMs", "scMaxEachPostBytes")
+DPI_SAFE_INTERVAL_MS = 400
+
+
+def _scan_traps(config):
+    found = []
+    for inbound in config.get("inbounds") or []:
+        if not isinstance(inbound, dict):
+            continue
+        stream = inbound.get("streamSettings")
+        if not isinstance(stream, dict):
+            continue
+        settings = stream.get("xhttpSettings")
+        if not isinstance(settings, dict):
+            continue
+        hit = {}
+        for key in DPI_TRAP_KEYS:
+            if key in settings:
+                hit[key] = settings[key]
+        if hit:
+            found.append(
+                {
+                    "tag": str(inbound.get("tag") or ""),
+                    "port": inbound.get("port") if isinstance(inbound.get("port"), int) else 0,
+                    "keys": hit,
+                }
+            )
+    return found
+
+
+def _strip_traps(config):
+    touched = 0
+    for inbound in config.get("inbounds") or []:
+        if not isinstance(inbound, dict):
+            continue
+        stream = inbound.get("streamSettings")
+        if not isinstance(stream, dict):
+            continue
+        settings = stream.get("xhttpSettings")
+        if not isinstance(settings, dict):
+            continue
+        for key in DPI_TRAP_KEYS:
+            if key in settings:
+                settings.pop(key, None)
+                touched += 1
+    return touched
+
+
+def trap_report(config):
+    found = _scan_traps(config)
+    return {
+        "config_path": CONF,
+        "config_exists": os.path.isfile(CONF),
+        "interval": DPI_SAFE_INTERVAL_MS,
+        "found": found,
+        "count": sum(len(item["keys"]) for item in found),
+        "inbounds": len(found),
+    }
+
+
+def cmd_dpi_scan(flags, rest):
+    return trap_report(read_config()), None
+
+
+def cmd_dpi_fix(flags, rest):
+    config = read_config()
+    report = trap_report(config)
+    if not report["found"]:
+        report["stripped"] = 0
+        report["backup"] = ""
+        report["restarted"] = False
+        return report, None
+    stripped = _strip_traps(config)
+    payload = json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8")
+    ok, text = test_config(payload)
+    if not ok:
+        raise ScriptError("config_invalid", text[:600] or "the core rejected the configuration", "dpi")
+    backup = backup_config()
+    write_bytes_atomic(CONF, payload, 0o600)
+    restarted = False
+    if not flag_on(flags.get("no_restart"), False):
+        stop_core()
+        start_core()
+        restarted = True
+    after = trap_report(read_config())
+    after["stripped"] = stripped
+    after["backup"] = backup
+    after["restarted"] = restarted
+    note("the dpi trap keys are removed")
+    return after, None
+
+
 def cmd_probe(flags, rest):
     return state_report(), None
 
@@ -1394,6 +1486,8 @@ def cmd_tunnel_down(flags, rest):
 
 COMMANDS = {
     "probe": cmd_probe,
+    "dpi-scan": cmd_dpi_scan,
+    "dpi-fix": cmd_dpi_fix,
     "install-core": cmd_install,
     "apply": cmd_apply,
     "test-config": cmd_test,
