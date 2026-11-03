@@ -3,6 +3,8 @@ from __future__ import annotations
 PACK = "tgiosicons"
 PACK_ID = 7489288727785635936
 PACK_LINK = "https://t.me/addemoji/tgiosicons"
+PACK_FILE = "Storage/emoji-pack.json"
+BORROWED = ("bug", "loading", "plug", "radar", "route", "speed")
 
 ICONS: dict[str, tuple[int, str]] = {
     "home": (6042137469204303531, "\U0001F3E0"),

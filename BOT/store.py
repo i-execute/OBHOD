@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import cores, i18n
+from . import cores, i18n, notify
 from .models import SshSettings
 from .freeturn import FtState
 from .xray import SUB_PORT, XrayState
@@ -37,6 +37,7 @@ class State:
     xray: XrayState = field(default_factory=XrayState)
     freeturn: FtState = field(default_factory=FtState)
     core: str = "xray"
+    notify: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +53,7 @@ class State:
             "xray": self.xray.to_dict(),
             "freeturn": self.freeturn.to_dict(),
             "core": self.core if self.core in CORES else "xray",
+            "notify": notify.Settings.from_dict(self.notify).to_dict(),
         }
 
     @staticmethod
@@ -70,6 +72,7 @@ class State:
             xray=XrayState.from_dict(data.get("xray")),
             freeturn=FtState.from_dict(data.get("freeturn")),
             core=str(data.get("core", "xray") or "xray"),
+            notify=notify.Settings.from_dict(data.get("notify")).to_dict(),
         )
         if state.core not in CORES:
             state.core = "xray"

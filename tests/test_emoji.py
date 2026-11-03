@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import ast
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from BOT import icons, i18n, ui
+
+ROOT = Path(__file__).resolve().parents[1]
+PACK = ROOT / "Storage" / "emoji-pack.json"
+TG_EMOJI = re.compile(r'<tg-emoji emoji-id="(\d+)">')
+
+
+def pack_items() -> dict[str, str]:
+    body = json.loads(PACK.read_text(encoding="utf-8"))
+    return {str(item["id"]): str(item["alt"]) for item in body["items"]}
+
+
+def test_the_pack_is_vendored_and_matches_the_declared_id() -> None:
+    body = json.loads(PACK.read_text(encoding="utf-8"))
+    assert body["pack"]["id"] == icons.PACK_ID
+    assert body["pack"]["short_name"] == icons.PACK
+    assert body["pack"]["link"] == icons.PACK_LINK
+    assert len(body["items"]) >= 400
+    assert len({item["id"] for item in body["items"]}) == len(body["items"])
+
+
+def test_every_icon_id_exists_in_the_pack() -> None:
+    known = pack_items()
+    missing = [name for name, (ident, _alt) in icons.ICONS.items() if str(ident) not in known]
+    assert missing == []
+    assert all(str(ident).isdigit() for ident, _alt in icons.ICONS.values())
+
+
+def test_a_borrowed_sticker_is_declared_as_borrowed() -> None:
+    known = pack_items()
+    wrong = sorted(
+        name
+        for name, (ident, alt) in icons.ICONS.items()
+        if str(ident) in known and known[str(ident)] != alt and name not in icons.BORROWED
+    )
+    assert wrong == []
+    assert set(icons.BORROWED) <= set(icons.ICONS)
+    for name in icons.BORROWED:
+        ident, alt = icons.ICONS[name]
+        assert str(ident) in known
+        assert known[str(ident)] != alt
+
+
+def test_the_markup_is_well_formed() -> None:
+    for name in icons.ICONS:
+        markup = icons.markup(name)
+        assert markup.startswith('<tg-emoji emoji-id="')
+        assert markup.endswith("</tg-emoji>")
+        assert TG_EMOJI.search(markup)
+    assert icons.markup("nope") == ""
+    assert icons.markup("") == ""
+    assert icons.markup(None) == ""
+
+
+def test_emoji_are_off_by_default() -> None:
+    ui.use_icons(False)
+    assert ui.icons_on() is False
+    assert ui.ico("bell") == ""
+    from BOT.config import Config
+
+    assert Config.__dataclass_fields__["emoji_default"].default is False
+
+
+def test_the_switch_turns_every_text_on() -> None:
+    ui.use_icons(True)
+    try:
+        assert ui.ico("bell").startswith('<tg-emoji emoji-id="')
+        row = ui.table([("bell", "key", ui.code("value"))], ("a", "b"))
+        assert "<tg-emoji" in row
+        button = ui.button("label", "data", icon="bell").html()
+        assert "<tg-emoji" in button and "label" in button
+        copy = ui.copy_button("copy", "text", icon="copy")
+        assert "<tg-emoji" in copy
+        link = ui.link_button("open", "https://example.com", icon="link")
+        assert "<tg-emoji" in link
+    finally:
+        ui.use_icons(False)
+
+
+def test_no_screen_builds_a_naked_button() -> None:
+    helpers = {"button", "link_button", "copy_button", "inline_button", "big"}
+    offenders = []
+    for path in sorted((ROOT / "BOT").glob("*.py")):
+        if path.name in {"ui.py"}:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", getattr(node.func, "attr", ""))
+            if name in helpers and not any(keyword.arg == "icon" for keyword in node.keywords):
+                offenders.append("%s:%d %s" % (path.name, node.lineno, name))
+    assert offenders == []
+
+
+def test_every_table_row_names_a_known_icon() -> None:
+    offenders = []
+    for path in sorted((ROOT / "BOT").glob("*.py")):
+        if path.name in {"ui.py", "icons.py"}:
+            continue
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", getattr(node.func, "attr", ""))
+            if name not in {"table", "row_parts"}:
+                continue
+            for arg in node.args:
+                if isinstance(arg, (ast.List, ast.Tuple)):
+                    for item in ast.walk(arg):
+                        if isinstance(item, ast.Tuple) and item.elts:
+                            head = item.elts[0]
+                            if isinstance(head, ast.Constant) and isinstance(head.value, str) and head.value:
+                                if not icons.known(head.value):
+                                    offenders.append("%s:%d %s" % (path.name, item.lineno, head.value))
+    assert offenders == []
+
+
+@pytest.mark.parametrize("key", ["NAV_DEBUG", "UI_HOME"])
+def test_the_navigation_labels_stay_short_enough_for_a_button(key: str) -> None:
+    for lang in i18n.LANGUAGES:
+        assert len(i18n.t(key, lang)) <= 24

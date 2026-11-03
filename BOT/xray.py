@@ -91,7 +91,8 @@ API_PORT = 62789
 API_SERVICES = ("HandlerService", "LoggerService", "StatsService", "RoutingService")
 DNS_TAG = "dns"
 DEFAULT_ACCESS_LOG = "/var/log/xray/access.log"
-DEFAULT_SSH_BANTIME = "3d"
+DEFAULT_SSH_BANTIME = "7d"
+DEFAULT_BANTIME_MIN = 10080
 DEFAULT_SSH_MAXRETRY = 3
 DEFAULT_IGNOREIP = "127.0.0.1/8 ::1"
 DEFAULT_ERROR_LOG = "/var/log/xray/error.log"
@@ -1153,7 +1154,7 @@ class XrayState:
     sub_all_id: str = ""
     sub_all_key: str = ""
     fail2ban_enabled: bool = False
-    fail2ban_bantime: int = 30
+    fail2ban_bantime: int = DEFAULT_BANTIME_MIN
     fail2ban_ssh_bantime: str = DEFAULT_SSH_BANTIME
     fail2ban_ssh_maxretry: int = DEFAULT_SSH_MAXRETRY
     fail2ban_ignoreip: str = DEFAULT_IGNOREIP
@@ -1229,7 +1230,7 @@ class XrayState:
             sub_all_id=str(data.get("sub_all_id", "") or ""),
             sub_all_key=str(data.get("sub_all_key", "") or ""),
             fail2ban_enabled=bool(data.get("fail2ban_enabled", False)),
-            fail2ban_bantime=int(data.get("fail2ban_bantime", 30) or 30),
+            fail2ban_bantime=int(data.get("fail2ban_bantime", DEFAULT_BANTIME_MIN) or DEFAULT_BANTIME_MIN),
             fail2ban_ssh_bantime=str(data.get("fail2ban_ssh_bantime", DEFAULT_SSH_BANTIME) or DEFAULT_SSH_BANTIME),
             fail2ban_ssh_maxretry=int(data.get("fail2ban_ssh_maxretry", DEFAULT_SSH_MAXRETRY) or DEFAULT_SSH_MAXRETRY),
             fail2ban_ignoreip=str(data.get("fail2ban_ignoreip", DEFAULT_IGNOREIP) or DEFAULT_IGNOREIP),

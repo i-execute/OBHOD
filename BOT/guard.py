@@ -10,11 +10,13 @@ from .xrayrpc import XrayControl, XrayError, XrayResponse, b64
 REMOTE_DIR = Path(__file__).resolve().parent.parent / "Storage" / "remote"
 FAIL2BAN_SCRIPT = REMOTE_DIR / "fail2ban_agent.py"
 SSH_SCRIPT = REMOTE_DIR / "ssh_agent.py"
+HONEYPOT_SCRIPT = REMOTE_DIR / "honeypot_agent.py"
 
-DEFAULT_BANTIME = 30
+DEFAULT_BANTIME = 10080
+DEFAULT_BAN_DAYS = 7
 DEFAULT_FINDTIME = 1920
 DEFAULT_MAXRETRY = 1
-DEFAULT_SSH_BANTIME = "3d"
+DEFAULT_SSH_BANTIME = "7d"
 DEFAULT_SSH_FINDTIME = 3600
 DEFAULT_SSH_MAXRETRY = 3
 DEFAULT_IGNOREIP = "127.0.0.1/8 ::1"
@@ -43,10 +45,12 @@ class BanState:
     jail: str = DEFAULT_JAIL
     ssh_jail: str = "obhod-sshd"
     sub_jail: str = "obhod-subs"
+    honeypot_jail: str = "obhod-honeypot"
     jails: list[str] = field(default_factory=list)
     banned: list[str] = field(default_factory=list)
     ssh_banned: list[str] = field(default_factory=list)
     sub_banned: list[str] = field(default_factory=list)
+    honey_banned: list[str] = field(default_factory=list)
     chain: str = "OBHOD-IPL"
     chain_rules: list[str] = field(default_factory=list)
     port: int = 0
@@ -69,6 +73,8 @@ class BanState:
             ssh_banned=[str(item) for item in ssh.get("banned") or []],
             sub_banned=[str(item) for item in (data.get("subs") or {}).get("banned") or []],
             sub_jail=str(data.get("sub_jail", "obhod-subs") or "obhod-subs"),
+            honeypot_jail=str(data.get("honeypot_jail", "obhod-honeypot") or "obhod-honeypot"),
+            honey_banned=[str(item) for item in (data.get("honeypot") or {}).get("banned") or []],
             chain=str(data.get("chain", "OBHOD-IPL") or "OBHOD-IPL"),
             chain_rules=[str(item) for item in data.get("chain_rules") or []],
             port=int(data.get("port", 0) or 0),
@@ -80,6 +86,8 @@ class BanState:
             "jail": self.jail,
             "ssh_jail": self.ssh_jail,
             "sub_jail": self.sub_jail,
+            "honeypot_jail": self.honeypot_jail,
+            "honey_banned": list(self.honey_banned),
             "jails": list(self.jails),
             "banned": list(self.banned),
             "ssh_banned": list(self.ssh_banned),
@@ -245,3 +253,73 @@ class GuardClient:
     async def ssh_remove(self, cfg: SshSettings) -> SshState:
         response = await self._call(cfg, SSH_SCRIPT, "ssh script", ["remove"], 240)
         return SshState.from_dict(response.data)
+
+
+@dataclass
+class HoneypotState:
+    installed: bool = False
+    running: bool = False
+    ports: list[int] = field(default_factory=lambda: [2222, 2323, 2121, 8081, 6379])
+    profiles: dict[str, str] = field(default_factory=dict)
+    log: str = ""
+    version: str = ""
+    events: dict[str, int] = field(default_factory=dict)
+    top: list[list[Any]] = field(default_factory=list)
+    total: int = 0
+
+    @property
+    def active(self) -> bool:
+        return bool(self.installed and self.running)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "HoneypotState":
+        data = raw or {}
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        top = []
+        for item in summary.get("top") or []:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                top.append([str(item[0]), int(item[1] or 0)])
+        return cls(
+            installed=bool(data.get("installed", False)),
+            running=bool(data.get("running", False)),
+            ports=[int(item) for item in data.get("ports") or []],
+            profiles={str(key): str(value) for key, value in (data.get("profiles") or {}).items()},
+            log=str(data.get("log", "") or ""),
+            version=str(data.get("version", "") or ""),
+            events={str(key): int(value or 0) for key, value in (summary.get("events") or {}).items()},
+            top=top,
+            total=int(summary.get("total", 0) or 0),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "installed": self.installed,
+            "running": self.running,
+            "ports": list(self.ports),
+            "profiles": dict(self.profiles),
+            "log": self.log,
+            "version": self.version,
+            "events": dict(self.events),
+            "top": [list(item) for item in self.top],
+            "total": self.total,
+        }
+
+
+def honey_argv(action: str, ports: str = "", limit: int = 0) -> list[str]:
+    argv = [action]
+    if ports:
+        argv.append("--ports=" + str(ports))
+    if limit:
+        argv.append("--limit=%d" % int(limit))
+    return argv
+
+
+async def honey_call(guard: "GuardClient", cfg: SshSettings, argv: list[str], timeout: float = 180.0) -> HoneypotState:
+    response = await guard._call(cfg, HONEYPOT_SCRIPT, "honeypot script", argv, timeout)
+    return HoneypotState.from_dict(response.data)
+
+
+async def honey_events(guard: "GuardClient", cfg: SshSettings, limit: int = 100) -> dict[str, Any]:
+    response = await guard._call(cfg, HONEYPOT_SCRIPT, "honeypot script", honey_argv("events", limit=limit), 120)
+    data = response.data if isinstance(response.data, dict) else {}
+    return data

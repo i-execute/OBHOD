@@ -323,7 +323,7 @@ def test_input_values_are_prefilled(tmp_path: Path) -> None:
     assert values["ssh_new_port"] == "22"
     assert values["xr_remark"] == "main"
     assert values["xr_port"] == "443"
-    assert values["xr_bantime"] == "30"
+    assert values["xr_bantime"] == "10080"
 
 
 def test_save_and_load_roundtrip(tmp_path: Path) -> None:

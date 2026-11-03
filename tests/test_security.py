@@ -442,6 +442,7 @@ def test_fail2ban_install_writes_three_jails_and_ipv6_rules(tmp_path: Path, monk
             "logpath": logpath,
             "sublog": str(tmp_path / "sub.log"),
             "seclog": str(tmp_path / "security.log"),
+            "honeylog": str(tmp_path / "honeypot.log"),
         }
     )
     assert data == {"ok": True}
@@ -454,7 +455,7 @@ def test_fail2ban_install_writes_three_jails_and_ipv6_rules(tmp_path: Path, monk
     assert "exemptports = 22 2096" in action
     jail = (etc / "jail.d" / "obhod-ipl.conf").read_text(encoding="utf-8")
     assert "bantime = 45m" in jail
-    assert "bantime = 3d" in jail
+    assert "bantime = 7d" in jail
     assert "maxretry = 3" in jail
     assert "ignoreip = 127.0.0.1/8 ::1" in jail
     assert "[obhod-subs]" in jail

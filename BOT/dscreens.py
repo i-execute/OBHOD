@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import chebur, dpi, i18n, net, scripts
+from . import chebur, dpi, i18n, net, notify, scripts
 from .ui import (
     bold,
     button,
@@ -38,6 +38,9 @@ class DbgView:
     chebur: Any = None
     chebur_target: str = ""
     dpi: Any = None
+    notify: Any = None
+    honeypot: Any = None
+    honey_busy: bool = False
     lang: str = i18n.DEFAULT_LANGUAGE
 
     def tr(self) -> i18n.Translator:
@@ -71,6 +74,7 @@ def home(view: DbgView) -> Any:
         row(button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
         row(button(t("DBG_EMOJI_BTN"), "dbg:emoji", icon="star"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
         row(button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield"), button(t("DPI_BTN_OPEN"), "dbg:dpi", icon="warn")),
+        row(button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell"), button(t("HP_BTN_OPEN"), "dbg:hp", icon="target")),
         row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
     ]
     return screen(t("DBG_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="bug")
@@ -547,3 +551,146 @@ def dpi_screen(view: "DbgView") -> Any:
         row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
     ]
     return screen(t("DPI_TITLE"), t("DPI_SUBTITLE"), blocks, buttons, icon="shield")
+
+
+def notify_kind_key(kind: str) -> str:
+    name = str(kind).upper()
+    if name == "SSH_BRUTE":
+        name = "SSH"
+    return "NTF_KIND_" + name
+
+
+def notify_kind_label(t: Any, kind: str) -> str:
+    return t(notify_kind_key(kind))
+
+
+def notify_hint(t: Any, kind: str) -> str:
+    if kind == notify.KIND_PORTSCAN:
+        return t("NTF_HINT_PORTSCAN", ports=notify.PORT_SCAN_PORTS, window=int(notify.PORT_SCAN_WINDOW))
+    if kind == notify.KIND_SSH:
+        return t("NTF_HINT_SSH", count=notify.SSH_FAILS, window=int(notify.SSH_WINDOW))
+    if kind == notify.KIND_BAN:
+        return t("NTF_HINT_BAN", days=7)
+    if kind == notify.KIND_HONEYPOT:
+        return t("NTF_HINT_HONEYPOT")
+    if kind == notify.KIND_SUBS:
+        return t("NTF_HINT_SUBS")
+    return t("NTF_HINT_CORE")
+
+
+def notify_message(event: Any, t: Any) -> Any:
+    days = 7
+    shown = ", ".join(str(item) for item in (getattr(event, "evidence", None) or [])[:8]) or "-"
+    address = notify.mask(getattr(event, "address", ""))
+    count = int(getattr(event, "count", 1) or 1)
+    kind = getattr(event, "kind", notify.KIND_CORE)
+    if kind == notify.KIND_PORTSCAN:
+        body = t("NTF_MSG_PORTSCAN", address=address, count=count, ports=shown)
+    elif kind == notify.KIND_SSH:
+        body = t("NTF_MSG_SSH", address=address, count=count, days=days)
+    elif kind == notify.KIND_BAN:
+        body = t("NTF_MSG_BAN", address=address, days=days)
+    elif kind == notify.KIND_HONEYPOT:
+        body = t("NTF_MSG_HONEYPOT", address=address, ports=shown)
+    elif kind == notify.KIND_SUBS:
+        body = t("NTF_MSG_SUBS", address=address, count=count)
+    else:
+        body = t("NTF_MSG_CORE", value=str(getattr(event, "detail", "") or "-")[:60])
+    mark = {"bad": "shield", "warn": "warn"}.get(getattr(event, "severity", lambda: "warn")(), "bell")
+    blocks = [
+        table([(mark, notify_kind_label(t, kind), code(body))], (t("NTF_MSG_TITLE"), notify_kind_label(t, kind))),
+        quote(muted(t("NTF_MSG_FOOT"))),
+    ]
+    return screen(t("NTF_MSG_TITLE"), t("NTF_TITLE"), blocks, [row(button(i18n.t("NAV_DEBUG", t.language), "dbg:home", icon="bug"))], icon="bell")
+
+
+def notify_screen(view: "DbgView") -> Any:
+    t = view.tr()
+    centre = view.notify
+    settings = getattr(centre, "settings", None) if centre is not None else None
+    summary = centre.summary() if hasattr(centre, "summary") else {}
+    blocks = banner(view, t)
+    any_on = bool(settings.any_on()) if settings is not None else False
+    rows_data = [
+        ("bell" if any_on else "mute", t("NTF_STATE"), code(t("NTF_STATE_ON") if any_on else t("NTF_STATE_OFF"))),
+        ("clock", t("NTF_QUEUE"), code(int(summary.get("queued", 0)))),
+        ("target", t("NTF_TRACKED"), code(int(summary.get("tracked", 0)))),
+    ]
+    if settings is not None and settings.muted():
+        rows_data.append(("mute", t("NTF_STATE"), code(t("NTF_MUTED"))))
+    blocks.append(table(rows_data, (t("NTF_TITLE"), t("UI_VALUE"))))
+    kinds = []
+    for kind in notify.KINDS:
+        on = settings.on(kind) if settings is not None else notify.DEFAULT_ON.get(kind, False)
+        kinds.append(("bell" if on else "mute", notify_kind_label(t, kind), code(t("NTF_STATE_ON") if on else t("NTF_STATE_OFF"))))
+    blocks.append(table(kinds, (t("NTF_TITLE"), t("UI_VALUE"))))
+    hints = []
+    for kind in notify.KINDS:
+        hints.append((notify.SEVERITY.get(kind, "warn"), notify_kind_label(t, kind), notify_hint(t, kind)))
+    blocks.append(table(hints, (t("NTF_KIND_PORTSCAN"), t("UI_VALUE"))))
+    blocks.append(quote(bold(t("NTF_OWNER_RULE"))))
+    blocks.append(quote(muted(t("NTF_EMPTY"))))
+    buttons = []
+    for kind in notify.KINDS:
+        on = settings.on(kind) if settings is not None else notify.DEFAULT_ON.get(kind, False)
+        buttons.append(row(button(notify_kind_label(t, kind), "dbg:ntf:" + kind, icon="mute" if on else "bell")))
+    buttons.append(row(button(t("NTF_BTN_TEST"), "dbg:ntf:test", icon="bell"), button(t("NTF_BTN_ALL_OFF"), "dbg:ntf:off", icon="mute")))
+    buttons.append(row(button(t("NTF_BTN_ALL_ON"), "dbg:ntf:on", icon="bell"), button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell")))
+    buttons.append(
+        row(
+            button(t("HP_BTN_OPEN"), "dbg:hp", icon="target"),
+            button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"),
+        )
+    )
+    return screen(t("NTF_TITLE"), t("NTF_SUBTITLE"), blocks, buttons, icon="bell")
+
+
+def honey_quote(t: Any, state: Any, error: str = "", busy: bool = False) -> str:
+    if error:
+        return t("HP_ERR", value=error[:90])
+    if busy:
+        return t("HP_QUOTE_BUSY")
+    if state is None or not getattr(state, "installed", False):
+        return t("HP_QUOTE_OFF")
+    return t("HP_QUOTE_ON", days=7)
+
+
+def honeypot_screen(view: "DbgView") -> Any:
+    t = view.tr()
+    state = view.honeypot
+    blocks = banner(view, t)
+    blocks.append(quote(bold(honey_quote(t, state, view.error, view.honey_busy))))
+    if state is not None:
+        ports = ", ".join(str(item) for item in state.ports) or "-"
+        profiles = ", ".join("%s %s" % (key, value) for key, value in sorted(state.profiles.items())) or "-"
+        blocks.append(
+            table(
+                [
+                    ("target" if state.active else "mute", t("HP_INSTALLED"), code(t("HP_ON") if state.installed else t("HP_OFF"))),
+                    ("radar" if state.running else "mute", t("HP_RUNNING"), code(t("HP_ON") if state.running else t("HP_OFF"))),
+                    ("plug", t("HP_PORTS"), code(ports)),
+                    ("route", t("HP_PROFILES"), code(profiles)),
+                    ("logs", t("HP_TOTAL"), code(int(state.total))),
+                ],
+                (t("HP_TITLE"), t("UI_VALUE")),
+            )
+        )
+        counts = sorted((state.events or {}).items(), key=lambda item: (-item[1], item[0]))
+        if counts:
+            blocks.append(table([("chart", key, code(value)) for key, value in counts[:8]], (t("HP_EVENTS"), t("UI_VALUE"))))
+        if state.top:
+            blocks.append(table([("target", notify.mask(item[0]), code(item[1])) for item in state.top[:8]], (t("HP_TOP"), t("UI_VALUE"))))
+        if state.log:
+            blocks.append(quote(muted(t("HP_LOG") + " " + state.log)))
+    blocks.append(quote(muted(t("HP_NOTE"))))
+    blocks.append(quote(muted(t("HP_BANNER"))))
+    buttons = [
+        row(button(t("HP_BTN_INSTALL"), "dbg:hp:install", icon="add"), button(t("HP_BTN_REFRESH"), "dbg:hp:refresh", icon="refresh")),
+        row(button(t("HP_BTN_START"), "dbg:hp:start", icon="restart"), button(t("HP_BTN_STOP"), "dbg:hp:stop", icon="stop")),
+        row(button(t("HP_BTN_SELFCHECK"), "dbg:hp:check", icon="ok"), button(t("HP_BTN_REMOVE"), "dbg:hp:remove", icon="delete")),
+        row(
+            button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell"),
+            button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"),
+        ),
+    ]
+    return screen(t("HP_TITLE"), t("HP_SUBTITLE"), blocks, buttons, icon="target")

@@ -132,7 +132,7 @@ def test_fail2ban_agent_writes_expected_files(tmp_path: Path, monkeypatch: pytes
     assert "bantime = 30m" in jail
     assert "exemptports" not in jail
     assert "[obhod-sshd]" in jail
-    assert "bantime = 3d" in jail
+    assert "bantime = 7d" in jail
     assert "maxretry = 3" in jail
     assert "findtime = 3600" in jail
     assert "[obhod-subs]" in jail
@@ -187,7 +187,7 @@ def test_fail2ban_jail_carries_loopback_exemptions_and_auth_log(tmp_path: Path) 
     sys.modules["fail2ban_agent_ignore"] = module
     spec.loader.exec_module(module)
     jail = module.jail_body(60, 32, 1, "/var/log/xray/access.log", True, [22, 2096], "/var/log/secure", "10.0.0.0/8")
-    assert jail.count("ignoreip = 10.0.0.0/8") == 4
+    assert jail.count("ignoreip = 10.0.0.0/8") == 5
     assert "logpath = /var/log/secure" in jail
     assert "logpath = /var/log/xray/access.log" in jail
     default = module.jail_body(60, 32, 1, "/var/log/xray/access.log", False, [22])

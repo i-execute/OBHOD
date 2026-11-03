@@ -27,14 +27,18 @@ XRAY_LOG = "/var/log/xray/access.log"
 SUB_LOG = "/var/log/xray/sub.log"
 JAIL_SUB = "obhod-subs"
 JAIL_SEC = "obhod-security"
+JAIL_HONEY = "obhod-honeypot"
+HONEY_LOG = "/var/log/obhod/honeypot.log"
+DEFAULT_HONEY_BANTIME = "7d"
 SECLOG = "/var/log/obhod/security.log"
 SECURITY_FILTER_NAME = "obhod-security.conf"
 DEFAULT_SEC_MAXRETRY = 20
 DEFAULT_SEC_FINDTIME = 1800
-DEFAULT_SEC_BANTIME = "1h"
+DEFAULT_SEC_BANTIME = "7d"
 CHAIN = "OBHOD-IPL"
-DEFAULT_BANTIME = 30
-DEFAULT_SSH_BANTIME = "3d"
+DEFAULT_BANTIME = 10080
+DEFAULT_BAN_DAYS = 7
+DEFAULT_SSH_BANTIME = "7d"
 DEFAULT_SSH_FINDTIME = 3600
 DEFAULT_SSH_MAXRETRY = 3
 DEFAULT_IGNORE = "127.0.0.1/8 ::1"
@@ -62,6 +66,15 @@ SUB_FILTER = "\n".join(
     [
         "[Definition]",
         "failregex = ^sub 40[34] <ADDR>$",
+        "ignoreregex =",
+        "",
+    ]
+)
+
+HONEY_FILTER = "\n".join(
+    [
+        "[Definition]",
+        "failregex = ^honeypot ip=<HOST> port=\\d+ proto=\\w+ event=\\w+ ",
         "ignoreregex =",
         "",
     ]
@@ -357,6 +370,9 @@ def jail_body(
     sec_findtime=DEFAULT_SEC_FINDTIME,
     sec_bantime=DEFAULT_SEC_BANTIME,
     ssh_backend="auto",
+    honey_log=HONEY_LOG,
+    honey=True,
+    honey_bantime=DEFAULT_HONEY_BANTIME,
 ):
     ssh_lines = ["filter = sshd", "port = " + ",".join(str(item) for item in ports)]
     if ssh_backend != "systemd":
@@ -405,6 +421,17 @@ def jail_body(
         "maxretry = {}".format(minutes_of(sec_maxretry, DEFAULT_SEC_MAXRETRY)),
         "findtime = {}".format(seconds_of(sec_findtime, DEFAULT_SEC_FINDTIME)),
         "bantime = " + duration_of(sec_bantime, DEFAULT_SEC_BANTIME),
+        "backend = auto",
+        "ignoreip = " + ignore,
+        "",
+        "[{}]".format(JAIL_HONEY),
+        "enabled = {}".format("true" if honey else "false"),
+        "filter = obhod-honeypot",
+        "action = " + JAIL,
+        "logpath = " + honey_log,
+        "maxretry = 1",
+        "findtime = 86400",
+        "bantime = " + duration_of(honey_bantime, DEFAULT_HONEY_BANTIME),
         "backend = auto",
         "ignoreip = " + ignore,
         "",
@@ -484,6 +511,7 @@ def report(port):
         "ssh_jail": JAIL_SSH,
         "sub_jail": JAIL_SUB,
         "security_jail": JAIL_SEC,
+        "honeypot_jail": JAIL_HONEY,
         "jails": [],
         "chain": CHAIN,
         "coexists_3x_ui": third_party_jail(),
@@ -500,6 +528,7 @@ def report(port):
         state["ssh"] = jail_state(JAIL_SSH)
         state["subs"] = jail_state(JAIL_SUB)
         state["security"] = jail_state(JAIL_SEC)
+        state["honeypot"] = jail_state(JAIL_HONEY)
     if port:
         state["port"] = int(port)
     code, text = run(["iptables", "-n", "-L", CHAIN], timeout=30)
@@ -528,6 +557,9 @@ def install(flags):
     sec_maxretry = minutes_of(flags.get("secmaxretry", DEFAULT_SEC_MAXRETRY), DEFAULT_SEC_MAXRETRY)
     sec_findtime = seconds_of(flags.get("secfindtime", DEFAULT_SEC_FINDTIME), DEFAULT_SEC_FINDTIME)
     sec_bantime = duration_of(flags.get("secbantime", DEFAULT_SEC_BANTIME), DEFAULT_SEC_BANTIME)
+    honey_log = safe_path(flags.get("honeylog", HONEY_LOG), "the honeypot log path")
+    honey = flag_on(flags.get("honeypot"), True)
+    honey_bantime = duration_of(flags.get("honeybantime", DEFAULT_HONEY_BANTIME), DEFAULT_HONEY_BANTIME)
     port = str(flags.get("port", ""))
     if port:
         port = str(safe_port_list([port])[0])
@@ -538,6 +570,7 @@ def install(flags):
     write_file(os.path.join(FILTER_DIR, "xray-reject.conf"), REJECT_FILTER)
     write_file(os.path.join(FILTER_DIR, "obhod-subs.conf"), SUB_FILTER)
     write_file(os.path.join(FILTER_DIR, SECURITY_FILTER_NAME), SECURITY_FILTER)
+    write_file(os.path.join(FILTER_DIR, "obhod-honeypot.conf"), HONEY_FILTER)
     write_file(ACTION_FILE, ACTION.replace("__PORTS__", " ".join(str(item) for item in ports)))
     write_file(
         os.path.join(JAIL_DIR, "xray-reject.conf"),
@@ -582,11 +615,14 @@ def install(flags):
                 sec_findtime,
                 sec_bantime,
                 ssh_backend=mode,
+                honey_log=honey_log,
+                honey=honey,
+                honey_bantime=honey_bantime,
             ),
         )
 
     write_jails(backend)
-    for target in (logpath, sub_log, sec_log):
+    for target in (logpath, sub_log, sec_log, honey_log):
         folder = os.path.dirname(target)
         if folder and not os.path.isdir(folder):
             os.makedirs(folder, exist_ok=True)
@@ -622,6 +658,7 @@ def uninstall(flags):
         ACTION_FILE,
         os.path.join(FILTER_DIR, "xray-reject.conf"),
         os.path.join(FILTER_DIR, "obhod-subs.conf"),
+        os.path.join(FILTER_DIR, "obhod-honeypot.conf"),
         *security_paths(),
         *legacy,
     ):
@@ -630,7 +667,7 @@ def uninstall(flags):
                 os.unlink(target)
             except OSError:
                 pass
-    for jail in (JAIL, JAIL_SSH, JAIL_SUB, JAIL_SEC):
+    for jail in (JAIL, JAIL_SSH, JAIL_SUB, JAIL_SEC, JAIL_HONEY):
         run(["fail2ban-client", "set", jail, "unban", "--all"], timeout=60)
     code, text = run(["iptables", "-D", "INPUT", "-j", CHAIN], timeout=30)
     run(["iptables", "-F", CHAIN], timeout=30)

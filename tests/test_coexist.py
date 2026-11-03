@@ -74,6 +74,7 @@ def prepare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str):
         "logpath": str(tmp_path / "xray" / "access.log"),
         "sublog": str(tmp_path / "xray" / "sub.log"),
         "seclog": str(tmp_path / "obhod" / "security.log"),
+        "honeylog": str(tmp_path / "obhod" / "honeypot.log"),
     }
     return module, etc, flags
 
@@ -249,7 +250,7 @@ def test_the_ssh_jail_switches_to_the_journal_when_no_auth_log_exists(
     assert "backend = systemd" in section
     assert "logpath" not in section
     assert "maxretry = 3" in section
-    assert "bantime = 3d" in section
+    assert "bantime = 7d" in section
 
 
 def test_the_ssh_jail_keeps_the_file_when_the_auth_log_exists(
@@ -309,7 +310,7 @@ def test_the_remove_never_unbans_a_jail_of_another_tool(
     module.uninstall(flags)
     assert ["fail2ban-client", "unban", "--all"] not in calls
     unbanned = [item[2] for item in calls if item[:2] == ["fail2ban-client", "set"] and item[-2:] == ["unban", "--all"]]
-    assert sorted(unbanned) == sorted([module.JAIL, module.JAIL_SSH, module.JAIL_SUB, module.JAIL_SEC])
+    assert sorted(unbanned) == sorted([module.JAIL, module.JAIL_SSH, module.JAIL_SUB, module.JAIL_SEC, module.JAIL_HONEY])
     assert module.THIRD_PARTY_JAIL not in unbanned
 
 

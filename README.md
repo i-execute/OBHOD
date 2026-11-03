@@ -161,9 +161,28 @@ fingerprint is `firefox` and not the mass `chrome`, `360` and `qq` are accepted,
 client json with `mux` at `concurrency 8`, except under `xtls-rprx-vision`, where the core ignores mux and the json
 says so by leaving it out.
 
+## Honeypot
+
+`Debug` holds `honeypot`, a daemon on decoy ports that nothing legitimate uses. Every connection is hostile by
+definition, so one touch is enough: the line `honeypot ip=<HOST> port=<n> proto=<p> event=<e>` is the only shape
+the fail2ban filter accepts, `maxretry = 1` and the ban is seven days. The ssh facade sends the banner of the real
+`sshd` of the box and a well formed `SSH_MSG_KEXINIT` with modern algorithms, so a version scanner sees a plausible
+server; ftp, telnet, redis, http and rdp answer with their own greetings. Plaintext logins are captured, the
+password is stored as a truncated sha256 and never in the clear. The limits are part of the design: a global
+connection cap, two per address, an idle timeout, an 8192 byte read, one log line per connection, no outbound
+socket, no shell and nothing proxied. The install refuses to shadow a port that already answers.
+
+## Notifications
+
+`notifications` in the same menu decides what reaches the owner: a port scan (twelve distinct ports from one
+address inside five minutes), ssh brute force (ten failures inside ten minutes), a new ban, a honeypot touch, a
+subscription flood and a core event. Each kind has its own switch and cooldown, addresses are deduplicated, and the
+queue is bounded, so an attack cannot become a message flood. Delivery goes to `admin_id` and to nobody else: with
+no owner claimed the events are collected and never sent. `send a test` proves the path end to end.
+
 ## Localization
 
-`BOT/strings.py` holds `EN`, `RU` and `ZH` with the same variables, 1255 today, with and without emoji.
+`BOT/strings.py` holds `EN`, `RU` and `ZH` with the same variables, 1325 today, with and without emoji.
 `BOT/i18n.py` looks a variable up by name, falls back to English, refuses a missing key or a forgotten
 placeholder and exposes `check_catalogs()` for the parity test. Raise messages, logs and shell output stay English.
 
@@ -186,7 +205,7 @@ placeholder and exposes `check_catalogs()` for the parity test. Raise messages, 
 ## Layout
 
 ```
-BOT/            app, panels, screens, cores, scripts, net, subs, commands, dbg, dpi, portguard, ui, i18n, strings
+BOT/            app, panels, screens, cores, scripts, net, subs, commands, dbg, dpi, notify, portguard, ui, i18n, strings
 Storage/remote/ agents: xray, subscription server, fail2ban, ssh, freeturn
 tools/          policy assertions and the protection baseline
 tests/          the suite
@@ -204,11 +223,13 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2304 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2367 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, the cheburcheck client with a fake transport and a fake socket, the dpi survey with a synthetic
-kernel state and the generator guards for sockopt, mux and the fingerprint, and the hardening suites in `tests/test_security.py` and
+kernel state, the generator guards for sockopt, mux and the fingerprint, the honeypot with a live socket, its own
+protocol facades and a log injection battery, the notification engine with its cooldowns and its owner-only delivery,
+the emoji invariants against the vendored pack, and the hardening suites in `tests/test_security.py` and
 `tests/test_pentest.py`. `tests/test_source.py` fails the build on a Python comment, docstring, emoji or long
 dash, and on any Cyrillic or CJK character outside `BOT/strings.py`.
 

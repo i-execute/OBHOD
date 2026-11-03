@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -10,12 +11,12 @@ from typing import Any
 
 from goygram import GoyGram
 
-from . import commands, cores, ftscreens, i18n, inline, screens, ui, xscreens
+from . import commands, cores, dscreens, ftscreens, i18n, inline, notify, screens, ui, xscreens
 from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
 from .ftpanel import FtPanel
-from .guard import DEFAULT_BANTIME, BanState, GuardClient, SshState
+from .guard import DEFAULT_BANTIME, BanState, GuardClient, SshState, honey_events
 from .models import ModelError, valid_port
 from .panel import PanelError, XrayPanel
 from .audit import Audit
@@ -108,6 +109,12 @@ class Bot:
         self.inline_seen: dict[tuple[str, str, str], float] = {}
         self.subs_digest = ""
         self.subs_failed = 0.0
+        self.notify = notify.Centre(notify.Settings.from_dict(self.state.notify))
+        self.notify_task: Any = None
+        self.notify_seen_bans: set[str] = set()
+        self.notify_seen_ssh: set[str] = set()
+        self.notify_poll_error = ""
+        self.notify_poll_at = 0.0
         ui.use_icons(self.emoji_enabled)
         self.seed_ports()
 
@@ -275,6 +282,72 @@ class Bot:
         self.app = app
         return app
 
+    async def notify_start(self) -> None:
+        if self.notify_task is not None and not self.notify_task.done():
+            return
+        self.notify_task = asyncio.create_task(self.notify_loop())
+
+    async def notify_loop(self, span: float = 120.0) -> None:
+        while True:
+            try:
+                await asyncio.sleep(span)
+                await self.notify_poll()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                self.notify_poll_error = type(exc).__name__
+                log.debug("the notification poll failed: %s", exc)
+
+    async def notify_send(self, event: Any, test: bool = False) -> bool:
+        target = notify.delivery_target(self)
+        if not target:
+            return False
+        if test:
+            t = self.tr()
+            payload = dscreens.notify_message(notify.Event(notify.KIND_CORE, address="0.0.0.0", detail=t("NTF_TEST_TITLE")), t)
+        else:
+            payload = dscreens.notify_message(event, self.tr())
+        try:
+            await self.send(target, payload)
+        except Exception as exc:
+            log.debug("the notification was not delivered: %s", exc)
+            return False
+        return True
+
+    async def notify_poll(self) -> list[Any]:
+        cfg = getattr(self.state, "ssh", None)
+        raised: list[Any] = []
+        try:
+            events = await honey_events(self.guard, cfg, 200)
+        except Exception as exc:
+            self.notify_poll_error = type(exc).__name__
+            events = {}
+        for obs in notify.parse_events(events):
+            raised.extend(self.notify.observe(obs))
+        try:
+            ban = await self.guard.status(cfg, int(getattr(self.state.xray, "sub_port", 0) or 0))
+        except Exception as exc:
+            self.notify_poll_error = type(exc).__name__
+            ban = None
+        if ban is not None:
+            for address in ban.ssh_banned:
+                if address not in self.notify_seen_ssh:
+                    self.notify_seen_ssh.add(address)
+                    raised.extend(self.notify.force(notify.KIND_SSH, address, "banned"))
+            for address in ban.banned + ban.honey_banned + ban.sub_banned:
+                if address not in self.notify_seen_bans:
+                    self.notify_seen_bans.add(address)
+                    raised.extend(self.notify.force(notify.KIND_BAN, address, "jail"))
+        if len(self.notify_seen_bans) > 4096:
+            self.notify_seen_bans = set(list(self.notify_seen_bans)[-2048:])
+        if len(self.notify_seen_ssh) > 4096:
+            self.notify_seen_ssh = set(list(self.notify_seen_ssh)[-2048:])
+        self.notify_poll_at = time.time()
+        for event in raised:
+            await self.notify_send(event)
+        self.notify.drain()
+        return raised
+
     async def run(self) -> None:
         await self.verify_update()
         app = await self.boot()
@@ -282,6 +355,10 @@ class Bot:
             await self.register_commands()
         except Exception as exc:
             log.warning("the command menu was skipped: %s", exc)
+        try:
+            await self.notify_start()
+        except Exception as exc:
+            log.warning("the notification poller was skipped: %s", exc)
         await app.run()
 
     async def verify_update(self) -> None:

@@ -399,3 +399,66 @@ def test_the_dpi_inputs_come_from_the_inbounds(tmp_path: Path) -> None:
     assert marks == ["chrome"]
     assert networks == ["raw"]
     assert version == "v26.1.1"
+
+
+def test_the_notification_screen_toggles_every_kind(tmp_path: Path) -> None:
+    from BOT import notify
+
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:ntf"))
+    body = last(bot)
+    for kind in notify.KINDS:
+        assert "dbg:ntf:" + kind in body
+    before = debug.notify.settings.on(notify.KIND_PORTSCAN)
+    run(debug.route(1, 2, "dbg:ntf:portscan"))
+    assert debug.notify.settings.on(notify.KIND_PORTSCAN) is (not before)
+    assert bot.state.notify["enabled"]["portscan"] is (not before)
+    run(debug.route(1, 2, "dbg:ntf:off"))
+    assert debug.notify.settings.any_on() is False
+    run(debug.route(1, 2, "dbg:ntf:on"))
+    assert debug.notify.settings.any_on() is True
+
+
+def test_the_notification_test_button_needs_an_owner(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    bot.cfg.admin_id = 0
+    bot.state.admin_id = 0
+    sent = []
+
+    async def fake_send(chat_id, rich):
+        sent.append(chat_id)
+
+    bot.send = fake_send
+    run(debug.route(1, 2, "dbg:ntf:test"))
+    assert sent == []
+    bot.cfg.admin_id = 777
+    debug.marks.clear()
+    run(debug.notify_action(1, 2, "test"))
+    assert sent == [777]
+
+
+def test_the_honeypot_screen_survives_a_dead_agent(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:hp"))
+    body = last(bot)
+    assert "dbg:hp:install" in body
+    assert debug.honeypot is None
+
+
+def test_the_honeypot_refresh_reads_the_agent(tmp_path: Path, monkeypatch) -> None:
+    from BOT import guard
+
+    bot, debug, _control = panel_for(tmp_path)
+    state = guard.HoneypotState(installed=True, running=True, ports=[2222], profiles={"2222": "ssh"}, total=3)
+    calls = []
+
+    async def fake_call(client, cfg, argv, timeout=180.0):
+        calls.append(argv)
+        return state
+
+    monkeypatch.setattr(guard, "honey_call", fake_call)
+    run(debug.honeypot_action(1, 2, "refresh"))
+    assert calls and calls[0] == ["status"]
+    assert debug.honeypot is state
+    body = last(bot)
+    assert "2222" in body

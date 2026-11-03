@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from . import chebur, cores, dpi, dscreens, fwguard, i18n, net, portguard, scripts, ui
+from . import chebur, cores, dpi, dscreens, fwguard, guard, i18n, net, notify, portguard, scripts, ui
 from .freeturn import FtError
 
 SCAN_COOLDOWN = 3.0
@@ -13,6 +13,8 @@ VK_COOLDOWN = 10.0
 SCRIPTS_COOLDOWN = 5.0
 CHK_COOLDOWN = 4.0
 DPI_COOLDOWN = 8.0
+NTF_COOLDOWN = 2.0
+HP_COOLDOWN = 5.0
 MAX_LOG = 12
 
 
@@ -36,6 +38,15 @@ class DebugPanel:
         self.chebur: chebur.Answer | None = None
         self.chebur_target = ""
         self.dpi: Any = None
+        self.notify: Any = self.make_centre()
+        self.honeypot: Any = None
+        self.honey_busy = False
+
+    def make_centre(self) -> Any:
+        centre = getattr(self.bot, "notify", None)
+        if centre is not None:
+            return centre
+        return notify.Centre(notify.Settings.from_dict(getattr(self.bot.state, "notify", {})))
 
     def tr(self) -> i18n.Translator:
         return i18n.translator(getattr(self.bot.state, "language", i18n.DEFAULT_LANGUAGE))
@@ -56,6 +67,9 @@ class DebugPanel:
             chebur=self.chebur,
             chebur_target=self.chebur_target,
             dpi=self.dpi,
+            notify=self.notify,
+            honeypot=self.honeypot,
+            honey_busy=self.honey_busy,
             emoji=self.bot.emoji_enabled,
             lang=self.tr().language,
         )
@@ -118,6 +132,12 @@ class DebugPanel:
                 return
             if head == "dpi":
                 await self.dpi_action(chat_id, msg_id, arg1)
+                return
+            if head == "ntf":
+                await self.notify_action(chat_id, msg_id, arg1)
+                return
+            if head == "hp":
+                await self.honeypot_action(chat_id, msg_id, arg1)
                 return
             if head == "info":
                 await self.render(chat_id, msg_id, dscreens.info_screen(self.view(), self.clock()))
@@ -309,6 +329,85 @@ class DebugPanel:
         self.note("dpi", self.dpi.level(), dpi.quote_summary(self.dpi)[:64])
         self.remember("dpi %s" % dpi.quote_summary(self.dpi))
         await self.render(chat_id, msg_id, dscreens.dpi_screen(self.view()))
+
+    def save_notify(self) -> None:
+        try:
+            self.bot.state.notify = self.notify.settings.to_dict()
+            self.bot.save()
+        except Exception:
+            pass
+
+    async def notify_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        t = self.tr()
+        self.honey_busy = False
+        if action in ("", "open"):
+            await self.render(chat_id, msg_id, dscreens.notify_screen(self.view()))
+            return
+        if action == "test":
+            if not self.cooled("ntf:test", NTF_COOLDOWN):
+                await self.render(chat_id, msg_id, dscreens.notify_screen(self.view(notice=t("DBG_LIMIT"))))
+                return
+            event = notify.Event(notify.KIND_CORE, address="0.0.0.0", detail=t("NTF_TEST_TITLE"), at=0.0)
+            sent = await self.bot.notify_send(event, test=True)
+            self.note("ntf", "test", "sent" if sent else "no-owner")
+            await self.render(chat_id, msg_id, dscreens.notify_screen(self.view(notice=t("NTF_TEST_LINE") if sent else t("NTF_OWNER_RULE"))))
+            return
+        if action in ("on", "off"):
+            for kind in notify.KINDS:
+                self.notify.settings.enabled[kind] = action == "on"
+            self.notify.settings.mute_until = 0.0
+            self.save_notify()
+            self.note("ntf", action, "all")
+            await self.render(chat_id, msg_id, dscreens.notify_screen(self.view()))
+            return
+        if action in notify.KINDS:
+            value = self.notify.toggle(action)
+            self.save_notify()
+            key = "NTF_TOAST_ON" if value else "NTF_TOAST_OFF"
+            self.note("ntf", action, "on" if value else "off")
+            await self.render(chat_id, msg_id, dscreens.notify_screen(self.view(notice=t(key, value=dscreens.notify_kind_label(t, action)))))
+            return
+        await self.render(chat_id, msg_id, dscreens.notify_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
+
+    async def honey_refresh(self) -> None:
+        cfg = getattr(self.bot.state, "ssh", None)
+        client = guard.GuardClient(self.bot.control)
+        try:
+            self.honeypot = await guard.honey_call(client, cfg, guard.honey_argv("status"), 120)
+        except Exception as exc:
+            self.honeypot = None
+            self.error = str(getattr(exc, "message", exc))[:160]
+
+    async def honeypot_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        t = self.tr()
+        self.honey_busy = False
+        if action in ("", "open", "refresh"):
+            await self.honey_refresh()
+            await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view()))
+            return
+        mapping = {"install": "install", "start": "start", "stop": "stop", "remove": "remove", "check": "selfcheck"}
+        if action not in mapping:
+            await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
+            return
+        if not self.cooled("hp:" + action, HP_COOLDOWN):
+            await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view(notice=t("DBG_LIMIT"))))
+            return
+        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        client = guard.GuardClient(self.bot.control)
+        cfg = getattr(self.bot.state, "ssh", None)
+        try:
+            await guard.honey_call(client, cfg, guard.honey_argv(mapping[action]), 300)
+        except Exception as exc:
+            message = str(getattr(exc, "message", exc))
+            self.honey_busy = "busy" in message or getattr(exc, "code", "") == "port_busy"
+            self.note("hp", action, "fail")
+            self.error = message[:160]
+            await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view()))
+            return
+        self.error = ""
+        self.note("hp", action, "ok")
+        await self.honey_refresh()
+        await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view(notice=self.tr()("HP_TITLE"))))
 
     async def scripts_action(self, chat_id: int, msg_id: int, stage: str) -> None:
         if stage == "fetch":
