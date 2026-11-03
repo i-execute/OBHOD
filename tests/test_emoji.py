@@ -130,3 +130,56 @@ def test_every_table_row_names_a_known_icon() -> None:
 def test_the_navigation_labels_stay_short_enough_for_a_button(key: str) -> None:
     for lang in i18n.LANGUAGES:
         assert len(i18n.t(key, lang)) <= 24
+
+
+SHOUT_ALLOWED = {"HOME_TITLE", "CMD_START_TITLE", "CMD_VLESS_TITLE", "CMD_WHITELIST_TITLE"}
+
+
+def button_keys() -> set[str]:
+    keys: set[str] = set()
+    for path in sorted((ROOT / "BOT").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", getattr(node.func, "attr", ""))
+            if name not in {"button", "link_button", "copy_button", "inline_button", "big"}:
+                continue
+            for arg in node.args[:1]:
+                for inner in ast.walk(arg):
+                    if isinstance(inner, ast.Call):
+                        for item in inner.args[:1]:
+                            if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                                keys.add(item.value)
+    return keys
+
+
+def shouted(value: str) -> bool:
+    letters = [char for char in value if char.isalpha()]
+    if len(letters) <= 5:
+        return False
+    return all(char.isupper() for char in letters)
+
+
+def test_no_button_label_shouts() -> None:
+    offenders = []
+    for key in sorted(button_keys()):
+        if key in SHOUT_ALLOWED or not i18n.has_key(key):
+            continue
+        for lang in i18n.LANGUAGES:
+            value = i18n.t(key, lang)
+            if shouted(value):
+                offenders.append("%s/%s %s" % (key, lang, value))
+    assert offenders == []
+
+
+def test_button_labels_stay_short() -> None:
+    long = []
+    for key in sorted(button_keys()):
+        if not i18n.has_key(key):
+            continue
+        for lang in i18n.LANGUAGES:
+            value = i18n.t(key, lang)
+            if len(value) > 28:
+                long.append("%s/%s %s" % (key, lang, value))
+    assert long == []
