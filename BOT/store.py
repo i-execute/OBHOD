@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import cores, i18n, notify
+from . import antiddos, cores, i18n, notify
 from .models import SshSettings
 from .freeturn import FtState
 from .xray import SUB_PORT, XrayState
@@ -32,12 +32,12 @@ class State:
     sub_port: int = SUB_PORT
     last_probe: dict[str, Any] = field(default_factory=dict)
     language: str = i18n.DEFAULT_LANGUAGE
-    emoji: bool | None = None
     traffic: dict[str, Any] = field(default_factory=dict)
     xray: XrayState = field(default_factory=XrayState)
     freeturn: FtState = field(default_factory=FtState)
     core: str = "xray"
     notify: dict[str, Any] = field(default_factory=dict)
+    ddos: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,12 +48,12 @@ class State:
             "sub_port": int(self.sub_port),
             "last_probe": dict(self.last_probe),
             "language": i18n.normalize(self.language),
-            "emoji": self.emoji,
             "traffic": {str(key)[:TRAFFIC_NAME]: dict(value) for key, value in list(self.traffic.items())[:4096] if isinstance(value, dict)},
             "xray": self.xray.to_dict(),
             "freeturn": self.freeturn.to_dict(),
             "core": self.core if self.core in CORES else "xray",
             "notify": notify.Settings.from_dict(self.notify).to_dict(),
+            "ddos": antiddos.Policy.from_dict(self.ddos).to_dict(),
         }
 
     @staticmethod
@@ -67,12 +67,12 @@ class State:
             sub_port=int(data.get("sub_port", SUB_PORT) or SUB_PORT),
             last_probe=dict(data.get("last_probe") or {}),
             language=i18n.normalize(data.get("language", i18n.DEFAULT_LANGUAGE)),
-            emoji=bool(data["emoji"]) if isinstance(data.get("emoji"), bool) else None,
             traffic={str(key)[:TRAFFIC_NAME]: dict(value) for key, value in list((data.get("traffic") or {}).items())[:4096] if isinstance(value, dict)} if isinstance(data.get("traffic"), dict) else {},
             xray=XrayState.from_dict(data.get("xray")),
             freeturn=FtState.from_dict(data.get("freeturn")),
             core=str(data.get("core", "xray") or "xray"),
             notify=notify.Settings.from_dict(data.get("notify")).to_dict(),
+            ddos=antiddos.Policy.from_dict(data.get("ddos")).to_dict(),
         )
         if state.core not in CORES:
             state.core = "xray"

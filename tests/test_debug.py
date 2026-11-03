@@ -188,15 +188,16 @@ def test_the_keep_button_changes_nothing(tmp_path: Path) -> None:
     assert i18n.t("SCR_KEEP") in last(bot)
 
 
-def test_the_emoji_switch_flips_the_state(tmp_path: Path) -> None:
+def test_the_emoji_route_is_gone_and_the_config_rules(tmp_path: Path) -> None:
     bot, debug, _control = panel_for(tmp_path)
-    bot.state.emoji = False
+    before = ui.icons_on()
     run(debug.route(1, 0, "dbg:emoji"))
-    assert bot.state.emoji is True
-    assert ui.icons_on()
-    run(debug.route(1, 0, "dbg:emoji"))
-    assert bot.state.emoji is False
-    assert not ui.icons_on()
+    assert bot.state.notify is not None
+    assert ui.icons_on() == before
+    assert not any("<tg-button" in html and "data=\"dbg:emoji\"" in html for html in [last(bot)]), last(bot)
+    bot.cfg.emoji_default = True
+    assert bot.apply_emoji() is True
+    ui.use_icons(False)
 
 
 def test_the_info_screen_shows_the_cores(tmp_path: Path) -> None:
@@ -272,7 +273,6 @@ def test_every_debug_route_renders_in_every_language() -> None:
             dscreens.trace_screen_view(view),
             dscreens.vk_screen(view),
             dscreens.scripts_screen(view),
-            dscreens.emoji_screen(view),
             dscreens.info_screen(view, {"uptime": 10, "address": "1.1.1.1", "cores": []}),
             dscreens.crash_screen(view, "dbg:scan", "Traceback"),
         ]
@@ -462,3 +462,101 @@ def test_the_honeypot_refresh_reads_the_agent(tmp_path: Path, monkeypatch) -> No
     assert debug.honeypot is state
     body = last(bot)
     assert "2222" in body
+
+
+def ddos_status(**fields) -> Any:
+    from BOT import antiddos
+
+    return antiddos.Status.from_dict(fields)
+
+
+def test_the_ddos_screen_survives_a_dead_agent(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:dd"))
+    body = last(bot)
+    assert "dbg:dd:install" in body
+    assert debug.ddos is None
+
+
+def test_the_ddos_refresh_reads_the_agent(tmp_path: Path, monkeypatch) -> None:
+    from BOT import guard
+
+    bot, debug, _control = panel_for(tmp_path)
+    state = ddos_status(table=True, pps=42, syn_flood=["1.2.3.4"])
+    calls = []
+
+    async def fake_call(client, cfg, argv, timeout=180.0):
+        calls.append(argv)
+        return state
+
+    async def fake_probe(client, cfg, allow=None):
+        return []
+
+    monkeypatch.setattr(guard, "ddos_call", fake_call)
+    monkeypatch.setattr(guard, "ddos_exposure", fake_probe)
+    run(debug.ddos_action(1, 2, "open"))
+    assert calls and calls[0] == ["status"]
+    assert debug.ddos is state
+    body = last(bot)
+    assert "1.2.3.4" in body
+
+
+def test_the_ddos_install_sends_the_policy(tmp_path: Path, monkeypatch) -> None:
+    from BOT import guard
+
+    bot, debug, _control = panel_for(tmp_path)
+    bot.state.ddos = {"syn_rate": 77, "ports": [22, 443]}
+    seen = []
+
+    async def fake_call(client, cfg, argv, timeout=180.0):
+        seen.append(list(argv))
+        return ddos_status(table=True)
+
+    async def fake_probe(client, cfg, allow=None):
+        return []
+
+    monkeypatch.setattr(guard, "ddos_call", fake_call)
+    monkeypatch.setattr(guard, "ddos_exposure", fake_probe)
+    debug.marks.clear()
+    run(debug.ddos_action(1, 2, "install"))
+    assert seen[0][0] == "install"
+    assert "--syn_rate=77" in seen[0]
+    assert "--ports=22,443" in seen[0]
+
+
+def test_the_ddos_install_remembers_a_failure(tmp_path: Path, monkeypatch) -> None:
+    from BOT import guard
+
+    bot, debug, _control = panel_for(tmp_path)
+
+    async def fake_call(client, cfg, argv, timeout=180.0):
+        raise RuntimeError("nft refused")
+
+    async def fake_probe(client, cfg, allow=None):
+        return []
+
+    monkeypatch.setattr(guard, "ddos_call", fake_call)
+    monkeypatch.setattr(guard, "ddos_exposure", fake_probe)
+    debug.marks.clear()
+    run(debug.ddos_action(1, 2, "install"))
+    assert "nft refused" in debug.error
+
+
+def test_the_ddos_routes_refuse_the_unknown(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.ddos_action(1, 2, "launch"))
+    assert i18n.t("HOME_NOTICE_UNKNOWN", "en") in last(bot)
+
+
+def test_the_notification_switches_include_the_ddos_kind(tmp_path: Path) -> None:
+    from BOT import notify
+
+    bot, debug, _control = panel_for(tmp_path)
+    debug.marks.clear()
+    before = debug.notify.settings.on(notify.KIND_DDOS)
+    run(debug.notify_action(1, 2, notify.KIND_DDOS))
+    assert debug.notify.settings.on(notify.KIND_DDOS) is (not before)
+    body = last(bot)
+    assert i18n.t("NTF_KIND_DDOS", "en") in body
+    run(debug.notify_action(1, 2, notify.KIND_DDOS))
+    assert debug.notify.settings.on(notify.KIND_DDOS) is before

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import antiddos
 from .models import SshSettings
 from .xrayrpc import XrayControl, XrayError, XrayResponse, b64
 
@@ -11,6 +12,7 @@ REMOTE_DIR = Path(__file__).resolve().parent.parent / "Storage" / "remote"
 FAIL2BAN_SCRIPT = REMOTE_DIR / "fail2ban_agent.py"
 SSH_SCRIPT = REMOTE_DIR / "ssh_agent.py"
 HONEYPOT_SCRIPT = REMOTE_DIR / "honeypot_agent.py"
+DDOS_SCRIPT = REMOTE_DIR / "ddos_agent.py"
 
 DEFAULT_BANTIME = 10080
 DEFAULT_BAN_DAYS = 7
@@ -303,6 +305,29 @@ class HoneypotState:
             "top": [list(item) for item in self.top],
             "total": self.total,
         }
+
+
+def ddos_argv(action: str, policy: antiddos.Policy | None = None) -> list[str]:
+    argv = [str(action or "status")]
+    if policy is None:
+        return argv
+    shaped = policy.normalise()
+    argv.append("--enabled=%d" % (1 if shaped.enabled else 0))
+    argv.append("--ports=" + ",".join(str(item) for item in shaped.ports))
+    for name in ("syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size"):
+        argv.append("--%s=%d" % (name, int(getattr(shaped, name))))
+    return argv
+
+
+async def ddos_call(guard: "GuardClient", cfg: SshSettings, argv: list[str], timeout: float = 180.0) -> antiddos.Status:
+    response = await guard._call(cfg, DDOS_SCRIPT, "ddos script", argv, timeout)
+    return antiddos.Status.from_dict(response.data)
+
+
+async def ddos_exposure(guard: "GuardClient", cfg: SshSettings, allow: list[int] | None = None) -> list[antiddos.Finding]:
+    response = await guard._call(cfg, DDOS_SCRIPT, "ddos script", ["probe"], 120)
+    data = response.data if isinstance(response.data, dict) else {}
+    return antiddos.exposure(data.get("rows"), allow)
 
 
 def honey_argv(action: str, ports: str = "", limit: int = 0) -> list[str]:

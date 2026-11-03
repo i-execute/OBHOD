@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from BOT import icons, i18n, screens, ui
+from BOT import i18n, icons, screens, ui
 from BOT.store import State, Store
 from BOT.xray import XrayState
 from tests.fakes import make_bot
@@ -131,30 +131,36 @@ def test_the_setting_is_off_and_follows_the_config(tmp_path: Path) -> None:
     assert bot.emoji_enabled is False
     bot.cfg.emoji_default = True
     assert bot.emoji_enabled is True
-    bot.state.emoji = False
-    assert bot.emoji_enabled is False
 
 
-def test_the_button_flips_the_setting_and_saves_it(tmp_path: Path) -> None:
+def test_the_button_does_not_toggle_anything(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     bot.cfg.admin_id = 7
     bot.state.admin_id = 7
     asyncio.run(bot.route(1, 5, "set:emoji"))
-    assert bot.state.emoji is True
-    assert ui.icons_on() is True
-    assert "<tg-emoji" in bot.rendered[-1].to_html()
-    saved = json.loads(Path(tmp_path / "state.json").read_text(encoding="utf-8"))
-    assert saved["emoji"] is True
-    asyncio.run(bot.route(1, 5, "set:emoji"))
-    assert bot.state.emoji is False
+    assert bot.emoji_enabled is False
     assert ui.icons_on() is False
     assert "<tg-emoji" not in bot.rendered[-1].to_html()
+    path = Path(tmp_path / "state.json")
+    if path.is_file():
+        assert "emoji" not in json.loads(path.read_text(encoding="utf-8"))
+    assert i18n.t("TOAST_EMOJI_CONFIG", "en") in bot.rendered[-1].to_html()
+
+
+def test_the_pack_only_turns_on_from_the_config(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    asyncio.run(bot.route(1, 5, "set:emoji"))
+    assert ui.icons_on() is False
+    bot.cfg.emoji_default = True
+    assert bot.apply_emoji() is True
+    asyncio.run(bot.route(1, 5, "nav:home"))
+    assert "<tg-emoji" in bot.rendered[-1].to_html()
+    ui.use_icons(False)
 
 
 def test_an_unknown_setting_just_shows_the_screen(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     asyncio.run(bot.route(1, 5, "set:whatever"))
-    assert bot.state.emoji is None
     assert bot.rendered
 
 
@@ -162,28 +168,20 @@ def test_the_settings_screen_shows_the_state(tmp_path: Path) -> None:
     state = State(xray=XrayState())
     off = screens.settings(screens.View(state=state)).to_html()
     assert i18n.t("SET_EMOJI_OFF") in off
-    state.emoji = True
-    on = screens.settings(screens.View(state=state)).to_html()
+    on = screens.settings(screens.View(state=state, emoji_default=True)).to_html()
     assert i18n.t("SET_EMOJI_ON") in on
-    assert i18n.t("SET_EMOJI_BTN_OFF") in on
+    assert "data=\"set:emoji\"" not in on and "data=\"set:emoji\"" not in off
 
 
-def test_the_state_survives_a_reload(tmp_path: Path) -> None:
+def test_the_emoji_is_not_state(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     store = Store(path)
     state = State(xray=XrayState())
-    state.emoji = True
     store.save(state)
-    assert store.load().emoji is True
-    state.emoji = None
-    store.save(state)
-    assert store.load().emoji is None
-
-
-def test_a_broken_state_value_does_not_crash(tmp_path: Path) -> None:
-    path = tmp_path / "state.json"
-    path.write_text(json.dumps({"emoji": "yes please"}), encoding="utf-8")
-    assert Store(path).load().emoji is None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert "emoji" not in raw
+    path.write_text(json.dumps({**raw, "emoji": True}), encoding="utf-8")
+    assert not hasattr(Store(path).load(), "emoji")
 
 
 def test_the_config_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

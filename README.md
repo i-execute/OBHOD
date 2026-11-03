@@ -172,6 +172,27 @@ password is stored as a truncated sha256 and never in the clear. The limits are 
 connection cap, two per address, an idle timeout, an 8192 byte read, one log line per connection, no outbound
 socket, no shell and nothing proxied. The install refuses to shadow a port that already answers.
 
+## Anti flood
+
+The censor does not only block, it also sends traffic: in June 2026 the team behind Amnezia reported what they
+called the first open shift from blocking servers to attacking the control infrastructure itself, and volunteer
+ranges keep losing hosts for hours at a time. `Debug -> anti flood` covers the part that can be answered on the box.
+
+`BOT/antiddos.py` builds one nftables table, `inet obhod_ddos`, in the `raw` hook: invalid conntrack packets, null
+and xmas packets, then five dynamic sets. syn, new connections, udp and icmp are counted per source address, not
+globally, which is the difference between dropping one flooding host and punishing every honest client; a source
+that crosses its rate is remembered for an hour and dropped on sight. The limits default to 60 syn and 120 new
+connections per second per address, the source sets hold 65536 entries, and the whole thing lives in one
+`/etc/obhod/ddos.nft` that `nft -c` validates before `nft -f` loads it, with the previous file restored if the load
+fails. `99-obhod-ddos.conf` turns on syn cookies, a deeper syn backlog, bbr and a bigger conntrack table, and
+`obhod-ddos.service` reloads the table after a reboot.
+
+The same screen answers the question the filtering systems actually ask. Active probing has been scanning public
+addresses since at least December 2025 looking for the fingerprints of bypass software, so `check open ports` lists
+every listening socket and names what a scanner would call a panel, an open core api, a database, an open proxy or
+an unexpected daemon. A clean box shows nothing; anything else is a reason to close a port before the subnet gets
+blocked with it.
+
 ## Notifications
 
 `notifications` in the same menu decides what reaches the owner: a port scan (twelve distinct ports from one
@@ -182,9 +203,14 @@ no owner claimed the events are collected and never sent. `send a test` proves t
 
 ## Localization
 
-`BOT/strings.py` holds `EN`, `RU` and `ZH` with the same variables, 1325 today, with and without emoji.
+`BOT/strings.py` holds `EN`, `RU` and `ZH` with the same variables, 1370 today, with and without emoji.
 `BOT/i18n.py` looks a variable up by name, falls back to English, refuses a missing key or a forgotten
-placeholder and exposes `check_catalogs()` for the parity test. Raise messages, logs and shell output stay English.
+placeholder and exposes `check_catalogs()` for the parity test.
+
+Custom emoji are a config switch and nothing else. A `<tg-emoji>` from a pack renders only on an account with
+Telegram Premium; everybody else sees the plain glyph that sits inside the tag, so the feature is off unless
+`OBHOD_EMOJI=1` is in the env file and the bot is restarted. Every icon carries its unicode fallback for exactly
+that case, and there is no button anywhere in the menus that flips it. Raise messages, logs and shell output stay English.
 
 ## Security
 
@@ -223,13 +249,14 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2367 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2443 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
 the three catalogues with their placeholder parity, the cheburcheck client with a fake transport and a fake socket, the dpi survey with a synthetic
 kernel state, the generator guards for sockopt, mux and the fingerprint, the honeypot with a live socket, its own
 protocol facades and a log injection battery, the notification engine with its cooldowns and its owner-only delivery,
-the emoji invariants against the vendored pack, and the hardening suites in `tests/test_security.py` and
+the emoji invariants against the vendored pack, the anti flood ruleset, the agent that writes and rolls it back,
+the exposure probe, and the hardening suites in `tests/test_security.py` and
 `tests/test_pentest.py`. `tests/test_source.py` fails the build on a Python comment, docstring, emoji or long
 dash, and on any Cyrillic or CJK character outside `BOT/strings.py`.
 

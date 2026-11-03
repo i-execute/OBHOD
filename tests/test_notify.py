@@ -18,13 +18,14 @@ def centre(**kwargs) -> notify.Centre:
 
 
 def test_the_kind_list_is_closed_and_documented() -> None:
-    assert notify.KINDS == ("portscan", "ssh_brute", "fail2ban", "honeypot", "sub_abuse", "core")
+    assert notify.KINDS == ("portscan", "ssh_brute", "fail2ban", "honeypot", "ddos", "sub_abuse", "core")
     assert set(notify.DEFAULT_ON) == set(notify.KINDS)
     assert set(notify.SEVERITY) == set(notify.KINDS)
     assert set(notify.COOLDOWN) == set(notify.KINDS)
     assert notify.DEFAULT_ON[notify.KIND_PORTSCAN] is True
     assert notify.DEFAULT_ON[notify.KIND_SSH] is True
     assert notify.DEFAULT_ON[notify.KIND_SUBS] is False
+    assert notify.DEFAULT_ON[notify.KIND_DDOS] is True
 
 
 def test_a_port_scan_needs_enough_distinct_ports() -> None:

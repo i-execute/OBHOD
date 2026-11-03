@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import chebur, dpi, i18n, net, notify, scripts
+from . import antiddos, chebur, dpi, i18n, net, notify, scripts
 from .ui import (
     bold,
     button,
@@ -41,6 +41,9 @@ class DbgView:
     notify: Any = None
     honeypot: Any = None
     honey_busy: bool = False
+    ddos: Any = None
+    ddos_exposure: Any = None
+    ddos_busy: bool = False
     lang: str = i18n.DEFAULT_LANGUAGE
 
     def tr(self) -> i18n.Translator:
@@ -72,9 +75,10 @@ def home(view: DbgView) -> Any:
         row(button(t("DBG_SCAN_BTN"), "dbg:scan", icon="radar"), button(t("DBG_TRACE_BTN"), "dbg:trace", icon="route")),
         row(button(t("DBG_VK_BTN"), "dbg:vk", icon="world"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
         row(button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
-        row(button(t("DBG_EMOJI_BTN"), "dbg:emoji", icon="star"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
+        row(button(t("DBG_EMOJI_BTN"), "dbg:info", icon="star"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
         row(button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield"), button(t("DPI_BTN_OPEN"), "dbg:dpi", icon="warn")),
         row(button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell"), button(t("HP_BTN_OPEN"), "dbg:hp", icon="target")),
+        row(button(t("DDOS_BTN_OPEN"), "dbg:dd", icon="shield")),
         row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
     ]
     return screen(t("DBG_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="bug")
@@ -231,17 +235,6 @@ def scripts_screen(view: DbgView) -> Any:
         row(button(t("SCR_KEEP"), "dbg:scr:keep", icon="back"), button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug")),
     ]
     return screen(t("SCR_TITLE"), t("SCR_SUBTITLE"), blocks, buttons, icon="file")
-
-
-def emoji_screen(view: DbgView) -> Any:
-    t = view.tr()
-    blocks = banner(view, t)
-    blocks.append(table([("star", t("DBG_EMOJI_TITLE"), code(t("UI_ON") if view.emoji else t("UI_OFF")))], (t("DBG_EMOJI_TITLE"), t("UI_VALUE"))))
-    blocks.append(f"<p>{muted(t('DBG_EMOJI_SUBTITLE'))}</p>")
-    buttons = [
-        row(button(t("DBG_EMOJI_BTN"), "dbg:emoji", icon="star"), button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug")),
-    ]
-    return screen(t("DBG_EMOJI_TITLE"), t("DBG_EMOJI_SUBTITLE"), blocks, buttons, icon="star")
 
 
 def info_screen(view: DbgView, info: dict[str, Any]) -> Any:
@@ -553,6 +546,84 @@ def dpi_screen(view: "DbgView") -> Any:
     return screen(t("DPI_TITLE"), t("DPI_SUBTITLE"), blocks, buttons, icon="shield")
 
 
+def ddos_level(t: Any, status: Any) -> str:
+    level = "ok"
+    try:
+        level = str(status.level() if status is not None else "ok")
+    except Exception:
+        level = "ok"
+    return t({"ok": "DDOS_LEVEL_OK", "warn": "DDOS_LEVEL_WARN", "bad": "DDOS_LEVEL_BAD"}.get(level, "DDOS_LEVEL_OK"))
+
+
+def ddos_exposure_text(t: Any, findings: Any) -> str:
+    code = ""
+    try:
+        code = antiddos.exposure_hint(findings or [])
+    except Exception:
+        code = ""
+    return t({"panel": "DDOS_EXPOSURE_PANEL", "core_api": "DDOS_EXPOSURE_CORE_API", "datastore": "DDOS_EXPOSURE_DATASTORE",
+              "risky": "DDOS_EXPOSURE_RISKY", "proxy": "DDOS_EXPOSURE_PROXY", "unexpected": "DDOS_EXPOSURE_UNEXPECTED"}.get(code, "DDOS_EXPOSURE_EMPTY"))
+
+
+def ddos_screen(view: DbgView) -> Any:
+    t = view.tr()
+    status = view.ddos
+    blocks = banner(view, t)
+    if status is None:
+        blocks.append(f"<p>{muted(t('DDOS_EMPTY'))}</p>")
+        if view.ddos_exposure is not None:
+            blocks.append(table([("scan", t("DDOS_EXPOSURE"), ddos_exposure_text(t, view.ddos_exposure))], (t("DDOS_EXPOSURE"), t("UI_VALUE"))))
+        buttons = [
+            row(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"), button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan")),
+            row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
+        ]
+        return screen(t("DDOS_TITLE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
+    level = "ok"
+    try:
+        level = str(status.level())
+    except Exception:
+        level = "ok"
+    mark = {"ok": "shield", "warn": "warn", "bad": "fail"}.get(level, "shield")
+    state = [("shield", t("DDOS_STATE"), code(t("UI_ON") if status.enabled else t("UI_OFF"))),
+             (mark, t("DDOS_LEVEL"), code(ddos_level(t, status))),
+             ("box", t("DDOS_TABLE"), code(t("UI_ON") if status.table else t("UI_OFF"))),
+             ("speed", t("DDOS_PPS"), code(status.pps)),
+             ("link", t("DDOS_CONNS"), code(status.connections)),
+             ("chart", t("DDOS_CONNTRACK"), code("%d / %d" % (status.conntrack, status.conntrack_max))),
+             ("stop", t("DDOS_DROPS"), code(status.dropped())),
+             ("server", t("DDOS_KERNEL"), code(status.kernel or "-"))]
+    blocks.append(table(state, (t("DDOS_TITLE"), t("UI_VALUE"))))
+    policy = status.policy
+    blocks.append(table([("clock", t("DDOS_SYN_RATE"), code(policy.syn_rate)),
+                         ("users", t("DDOS_CONN_RATE"), code(policy.conn_rate)),
+                         ("clock", t("DDOS_BAN_TIME"), code(t("DDOS_SECONDS", value=policy.ban_timeout))),
+                         ("plug", t("DDOS_PORTS"), code(",".join(str(item) for item in policy.ports)))], (t("DDOS_POLICY"), t("UI_VALUE"))))
+    sets = [("speed", t("DDOS_SET_SYN"), code("%d" % len(status.syn_flood))),
+            ("link", t("DDOS_SET_CONN"), code("%d" % len(status.conn_flood))),
+            ("world", t("DDOS_SET_UDP"), code("%d" % len(status.udp_flood))),
+            ("scan", t("DDOS_SET_SCAN"), code("%d" % len(status.scan)))]
+    blocks.append(table(sets, (t("DDOS_LEVEL"), t("UI_VALUE"))))
+    offenders = status.offenders()
+    if offenders:
+        blocks.append(table([("target", t("DDOS_OFFENDERS"), code(", ".join(offenders[:6])))], (t("DDOS_OFFENDERS"), t("UI_VALUE"))))
+    if view.ddos_exposure is not None:
+        findings = view.ddos_exposure
+        rows = [(item.severity if item.severity in {"warn", "bad"} else "info", ddos_exposure_text(t, [item]), code("%d/%s" % (item.port, item.proto))) for item in findings[:8]]
+        if not rows:
+            rows = [("ok", t("DDOS_EXPOSURE_EMPTY"), code("-"))]
+        blocks.append(table(rows, (t("DDOS_EXPOSURE"), t("UI_VALUE"))))
+        blocks.append(quote(muted(t("DDOS_EXPOSURE_NOTE"))))
+    if status.notice:
+        blocks.append(quote(muted(str(status.notice)[:120])))
+    blocks.append(quote(muted(t("DDOS_HINT"))))
+    buttons = [
+        row(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"), button(t("DDOS_BTN_REMOVE"), "dbg:dd:remove", icon="delete")),
+        row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:refresh", icon="refresh"), button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan")),
+        row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
+    ]
+    return screen(t("DDOS_TITLE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
+
+
 def notify_kind_key(kind: str) -> str:
     name = str(kind).upper()
     if name == "SSH_BRUTE":
@@ -575,6 +646,8 @@ def notify_hint(t: Any, kind: str) -> str:
         return t("NTF_HINT_HONEYPOT")
     if kind == notify.KIND_SUBS:
         return t("NTF_HINT_SUBS")
+    if kind == notify.KIND_DDOS:
+        return t("NTF_HINT_DDOS")
     return t("NTF_HINT_CORE")
 
 
@@ -594,6 +667,8 @@ def notify_message(event: Any, t: Any) -> Any:
         body = t("NTF_MSG_HONEYPOT", address=address, ports=shown)
     elif kind == notify.KIND_SUBS:
         body = t("NTF_MSG_SUBS", address=address, count=count)
+    elif kind == notify.KIND_DDOS:
+        body = t("NTF_MSG_DDOS", address=address, value=str(getattr(event, "detail", "") or "-")[:60])
     else:
         body = t("NTF_MSG_CORE", value=str(getattr(event, "detail", "") or "-")[:60])
     mark = {"bad": "shield", "warn": "warn"}.get(getattr(event, "severity", lambda: "warn")(), "bell")

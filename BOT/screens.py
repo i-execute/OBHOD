@@ -42,9 +42,7 @@ class View:
 
     @property
     def emoji_on(self) -> bool:
-        if self.state.emoji is None:
-            return bool(self.emoji_default)
-        return bool(self.state.emoji)
+        return bool(self.emoji_default)
 
     @property
     def ssh_ready(self) -> bool:
@@ -239,9 +237,6 @@ def settings(view: View) -> Any:
         input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
         input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
         input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),
-        row(
-            button(t("SET_EMOJI_BTN_OFF" if view.emoji_on else "SET_EMOJI_BTN_ON"), "set:emoji", icon="star"),
-        ),
         row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language")),
         row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]

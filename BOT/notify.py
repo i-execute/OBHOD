@@ -10,12 +10,14 @@ KIND_HONEYPOT = "honeypot"
 KIND_BAN = "fail2ban"
 KIND_SUBS = "sub_abuse"
 KIND_CORE = "core"
-KINDS = (KIND_PORTSCAN, KIND_SSH, KIND_BAN, KIND_HONEYPOT, KIND_SUBS, KIND_CORE)
+KIND_DDOS = "ddos"
+KINDS = (KIND_PORTSCAN, KIND_SSH, KIND_BAN, KIND_HONEYPOT, KIND_DDOS, KIND_SUBS, KIND_CORE)
 DEFAULT_ON = {
     KIND_PORTSCAN: True,
     KIND_SSH: True,
     KIND_BAN: True,
     KIND_HONEYPOT: True,
+    KIND_DDOS: True,
     KIND_SUBS: False,
     KIND_CORE: True,
 }
@@ -24,6 +26,7 @@ SEVERITY = {
     KIND_SSH: "bad",
     KIND_BAN: "warn",
     KIND_HONEYPOT: "bad",
+    KIND_DDOS: "bad",
     KIND_SUBS: "warn",
     KIND_CORE: "bad",
 }
@@ -32,6 +35,7 @@ COOLDOWN = {
     KIND_SSH: 900.0,
     KIND_BAN: 300.0,
     KIND_HONEYPOT: 300.0,
+    KIND_DDOS: 600.0,
     KIND_SUBS: 3600.0,
     KIND_CORE: 600.0,
 }
@@ -40,6 +44,7 @@ PER_IP = {
     KIND_SSH: 1800.0,
     KIND_BAN: 900.0,
     KIND_HONEYPOT: 1800.0,
+    KIND_DDOS: 1200.0,
     KIND_SUBS: 3600.0,
     KIND_CORE: 1800.0,
 }
@@ -166,7 +171,7 @@ class Centre:
             return self.bruteforce(address, moment)
         if obs.kind == KIND_HONEYPOT:
             return self.honeypot(address, int(obs.port or 0), obs.detail, moment)
-        if obs.kind in (KIND_BAN, KIND_SUBS, KIND_CORE):
+        if obs.kind in (KIND_BAN, KIND_SUBS, KIND_CORE, KIND_DDOS):
             return self.direct(obs.kind, address, obs.detail, moment)
         return []
 

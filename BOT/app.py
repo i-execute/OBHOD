@@ -16,7 +16,7 @@ from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
 from .ftpanel import FtPanel
-from .guard import DEFAULT_BANTIME, BanState, GuardClient, SshState, honey_events
+from .guard import DEFAULT_BANTIME, BanState, GuardClient, SshState, ddos_call, ddos_argv, honey_events
 from .models import ModelError, valid_port
 from .panel import PanelError, XrayPanel
 from .audit import Audit
@@ -115,6 +115,8 @@ class Bot:
         self.notify_seen_ssh: set[str] = set()
         self.notify_poll_error = ""
         self.notify_poll_at = 0.0
+        self.ddos_state: Any = None
+        self.ddos_reported = 0.0
         ui.use_icons(self.emoji_enabled)
         self.seed_ports()
 
@@ -177,9 +179,7 @@ class Bot:
 
     @property
     def emoji_enabled(self) -> bool:
-        if self.state.emoji is None:
-            return bool(getattr(self.cfg, "emoji_default", False))
-        return bool(self.state.emoji)
+        return bool(getattr(self.cfg, "emoji_default", False))
 
     def apply_emoji(self) -> bool:
         ui.use_icons(self.emoji_enabled)
@@ -342,6 +342,14 @@ class Bot:
             self.notify_seen_bans = set(list(self.notify_seen_bans)[-2048:])
         if len(self.notify_seen_ssh) > 4096:
             self.notify_seen_ssh = set(list(self.notify_seen_ssh)[-2048:])
+        try:
+            status = await ddos_call(self.guard, cfg, ddos_argv("status"), 90)
+        except Exception as exc:
+            self.notify_poll_error = type(exc).__name__
+            status = None
+        self.ddos_state = status
+        if status is not None and status.under_attack():
+            raised.extend(self.notify.force(notify.KIND_DDOS, (status.offenders() or ["0.0.0.0"])[0], status.headline()))
         self.notify_poll_at = time.time()
         for event in raised:
             await self.notify_send(event)
@@ -781,18 +789,8 @@ class Bot:
         await self.render(chat_id, msg_id, screens.home(self.view(notice=self.tr()("HOME_NOTICE_UNKNOWN"))))
 
     async def setting_action(self, chat_id: int, msg_id: int, name: str) -> None:
-        t = self.tr()
-        if name != "emoji":
-            await self.render(chat_id, msg_id, screens.settings(self.view()))
-            return
-        enabled = not self.emoji_enabled
-        self.state.emoji = enabled
-        self.save()
-        ui.use_icons(enabled)
-        self.audit.note(self.admin_id, "set:emoji", "on" if enabled else "off")
-        notice = t("TOAST_EMOJI_ON") if enabled else t("TOAST_EMOJI_OFF")
+        notice = self.tr()("TOAST_EMOJI_CONFIG") if name == "emoji" else ""
         await self.render(chat_id, msg_id, screens.settings(self.view(notice=notice)))
-        return
 
     async def language_action(self, chat_id: int, msg_id: int, action: str, code_value: str) -> None:
         choice = code_value or action

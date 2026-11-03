@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from . import chebur, cores, dpi, dscreens, fwguard, guard, i18n, net, notify, portguard, scripts, ui
+from . import antiddos, chebur, cores, dpi, dscreens, fwguard, guard, i18n, net, notify, portguard, scripts
 from .freeturn import FtError
 
 SCAN_COOLDOWN = 3.0
@@ -13,6 +13,7 @@ VK_COOLDOWN = 10.0
 SCRIPTS_COOLDOWN = 5.0
 CHK_COOLDOWN = 4.0
 DPI_COOLDOWN = 8.0
+DDOS_COOLDOWN = 15.0
 NTF_COOLDOWN = 2.0
 HP_COOLDOWN = 5.0
 MAX_LOG = 12
@@ -41,6 +42,9 @@ class DebugPanel:
         self.notify: Any = self.make_centre()
         self.honeypot: Any = None
         self.honey_busy = False
+        self.ddos: Any = None
+        self.ddos_exposure: Any = None
+        self.ddos_busy = False
 
     def make_centre(self) -> Any:
         centre = getattr(self.bot, "notify", None)
@@ -70,6 +74,9 @@ class DebugPanel:
             notify=self.notify,
             honeypot=self.honeypot,
             honey_busy=self.honey_busy,
+            ddos=self.ddos,
+            ddos_exposure=self.ddos_exposure,
+            ddos_busy=self.ddos_busy,
             emoji=self.bot.emoji_enabled,
             lang=self.tr().language,
         )
@@ -121,9 +128,6 @@ class DebugPanel:
             if head == "scr":
                 await self.scripts_action(chat_id, msg_id, arg1)
                 return
-            if head == "emoji":
-                await self.emoji_action(chat_id, msg_id)
-                return
             if head == "ports":
                 await self.ports_action(chat_id, msg_id, arg1)
                 return
@@ -135,6 +139,9 @@ class DebugPanel:
                 return
             if head == "ntf":
                 await self.notify_action(chat_id, msg_id, arg1)
+                return
+            if head == "dd":
+                await self.ddos_action(chat_id, msg_id, arg1)
                 return
             if head == "hp":
                 await self.honeypot_action(chat_id, msg_id, arg1)
@@ -409,6 +416,62 @@ class DebugPanel:
         await self.honey_refresh()
         await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view(notice=self.tr()("HP_TITLE"))))
 
+    async def ddos_refresh(self, probe: bool = False) -> None:
+        client = guard.GuardClient(self.bot.control)
+        cfg = getattr(self.bot.state, "ssh", None)
+        try:
+            self.ddos = await guard.ddos_call(client, cfg, guard.ddos_argv("status"), 120)
+        except Exception as exc:
+            self.ddos = None
+            self.error = str(getattr(exc, "message", exc))[:160]
+        if probe:
+            try:
+                allow = portguard.protected_ports(self.bot.state) + [int(getattr(self.bot.state.xray, "api_port", 0) or 0)]
+                self.ddos_exposure = await guard.ddos_exposure(client, cfg, allow)
+            except Exception as exc:
+                self.ddos_exposure = []
+                self.error = str(getattr(exc, "message", exc))[:160]
+
+    async def ddos_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        t = self.tr()
+        self.ddos_busy = False
+        if action in ("", "open", "refresh"):
+            await self.ddos_refresh(probe=action == "open")
+            await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        if action not in ("install", "remove", "probe"):
+            await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
+            return
+        if action == "probe":
+            if not self.cooled("dd:probe", DDOS_COOLDOWN):
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DBG_LIMIT"))))
+                return
+            await self.ddos_refresh(probe=True)
+            self.note("dd", "probe", "ok")
+            await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        if not self.cooled("dd:" + action, DDOS_COOLDOWN):
+            await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DBG_LIMIT"))))
+            return
+        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        client = guard.GuardClient(self.bot.control)
+        cfg = getattr(self.bot.state, "ssh", None)
+        policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+        try:
+            argv = guard.ddos_argv(action, policy) if action == "install" else guard.ddos_argv(action)
+            await guard.ddos_call(client, cfg, argv, 300)
+        except Exception as exc:
+            message = str(getattr(exc, "message", exc))
+            self.ddos_busy = "busy" in message or getattr(exc, "code", "") == "port_busy"
+            self.note("dd", action, "fail")
+            self.error = message[:160]
+            await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        self.error = ""
+        self.note("dd", action, "ok")
+        await self.ddos_refresh(probe=True)
+        await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DDOS_TITLE"))))
+
     async def scripts_action(self, chat_id: int, msg_id: int, stage: str) -> None:
         if stage == "fetch":
             await self.scripts_fetch(chat_id, msg_id)
@@ -551,15 +614,6 @@ class DebugPanel:
         self.remember("chk %s %s" % (host, answer.verdict()))
         self.note("chk", answer.verdict(), host)
         await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
-
-    async def emoji_action(self, chat_id: int, msg_id: int) -> None:
-        enabled = not self.bot.emoji_enabled
-        self.bot.state.emoji = enabled
-        self.bot.save()
-        ui.use_icons(enabled)
-        self.note("emoji", "on" if enabled else "off")
-        notice = self.tr()("TOAST_EMOJI_ON") if enabled else self.tr()("TOAST_EMOJI_OFF")
-        await self.render(chat_id, msg_id, dscreens.emoji_screen(self.view(notice=notice)))
 
     def describe(self, error: FtError) -> str:
         key = "FT_CODE_%s" % str(error.code or "").upper()
