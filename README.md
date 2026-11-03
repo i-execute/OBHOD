@@ -58,12 +58,12 @@ post quantum ml-kem and the ml-dsa-65 signature on top. Clients are the
 
 | Kind | Platform | Client |
 | --- | --- | --- |
+| VLESS | all platforms | [INCY](https://github.com/INCY-DEV/incy-platforms) |
 | FreeTurn | android | [turn-proxy-android](https://github.com/hackdiaz-dev/turn-proxy-android) |
 | FreeTurn | ios | [vk-turn-proxy-ios](https://github.com/anton48/vk-turn-proxy-ios) |
-| VLESS | all platforms | [INCY](https://github.com/INCY-DEV/incy-platforms) |
 
-The bot menu registers `/whitelist_bypass_wg_vk_call` (a 32 character Telegram limit) and keeps accepting the
-full names, plus the old `/vless_rkn_bypass_raskur` as an alias.
+The bot menu registers `/wg` and `/vless` (caps in the description, lower in the command) and keeps accepting the
+old long names `/whitelist_bypass_wg_vk_call_raskur` and `/vless_rkn_raw_tcp_xhttp_ws_raskur` as aliases.
 
 ## Subscriptions
 

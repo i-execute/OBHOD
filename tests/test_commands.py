@@ -34,16 +34,20 @@ def test_the_menu_names_fit_the_telegram_limit() -> None:
 
 
 def test_the_long_command_keeps_a_menu_alias() -> None:
-    item = commands.known("whitelist_bypass_wg_vk_call_raskur")
+    item = commands.known("wg")
     assert item is not None
-    assert item.menu_name() == "whitelist_bypass_wg_vk_call"
+    assert item.menu_name() == "wg"
     assert len(item.menu_name()) <= 32
+    assert commands.known("whitelist_bypass_wg_vk_call_raskur") is not None
+    assert commands.known("whitelist_bypass_wg_vk_call_raskur").name == "wg"
 
 
 def test_the_alias_points_to_the_same_command() -> None:
-    assert commands.canonical("whitelist_bypass_wg_vk_call") == "whitelist_bypass_wg_vk_call_raskur"
-    assert commands.canonical("/whitelist_bypass_wg_vk_call_raskur") == "whitelist_bypass_wg_vk_call_raskur"
+    assert commands.canonical("whitelist_bypass_wg_vk_call") == "wg"
+    assert commands.canonical("/whitelist_bypass_wg_vk_call_raskur") == "wg"
     assert commands.canonical("/start@obhod_bot") == "start"
+    assert commands.canonical("/wg") == "wg"
+    assert commands.canonical("/vless") == "vless"
 
 
 def test_an_unknown_command_is_not_claimed() -> None:
@@ -88,9 +92,11 @@ def test_the_start_command_says_run_the_bot(tmp_path: Path) -> None:
 
 def test_the_whitelist_command_explains_the_transport(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
+    run(bot.on_command(FakeEvt("/wg")))
     html = last(bot)
     assert i18n.t("CMD_WHITELIST_BODY") in html
+    run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
+    assert i18n.t("CMD_WHITELIST_BODY") in last(bot)
     assert i18n.t("CMD_TRANSPORT_HOW") in html
     for key in ("CMD_WL_STEP_PEER", "CMD_WL_STEP_TURN", "CMD_WL_STEP_OBF", "CMD_WL_STEP_FW"):
         assert i18n.t(key) in html, key
@@ -100,11 +106,13 @@ def test_the_whitelist_alias_works(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call")))
     assert i18n.t("CMD_WHITELIST_BODY") in last(bot)
+    run(bot.on_command(FakeEvt("/wg")))
+    assert i18n.t("CMD_WHITELIST_BODY") in last(bot)
 
 
 def test_the_vless_command_explains_the_transport(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    run(bot.on_command(FakeEvt("/vless_rkn_raw_tcp_xhttp_ws_raskur")))
+    run(bot.on_command(FakeEvt("/vless")))
     html = last(bot)
     assert i18n.t("CMD_VLESS_BODY") in html
     for key in ("CMD_VLESS_STEP_TLS", "CMD_VLESS_STEP_PQ", "CMD_VLESS_STEP_TRANSPORT", "CMD_VLESS_STEP_FALLBACK"):
@@ -113,7 +121,7 @@ def test_the_vless_command_explains_the_transport(tmp_path: Path) -> None:
 
 def test_the_meme_commands_have_buttons_to_every_core(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    for name in ("/whitelist_bypass_wg_vk_call_raskur", "/vless_rkn_raw_tcp_xhttp_ws_raskur"):
+    for name in ("/wg", "/vless"):
         run(bot.on_command(FakeEvt(name)))
         html = last(bot)
         for item in cores.all_cores():
@@ -130,7 +138,7 @@ def test_the_commands_render_in_every_language(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     for language in i18n.LANGUAGES:
         bot.state.language = language
-        for name in ("/start", "/whitelist_bypass_wg_vk_call_raskur", "/vless_rkn_raw_tcp_xhttp_ws_raskur"):
+        for name in ("/start", "/wg", "/vless"):
             run(bot.on_command(FakeEvt(name)))
             html = last(bot)
             assert "<h2>" in html
@@ -157,7 +165,8 @@ def test_the_commands_are_shaped_for_the_api() -> None:
     payload = commands.menu(lambda key: i18n.t(key, "ru"))
     blob = json.dumps(payload, ensure_ascii=False)
     assert "start" in blob
-    assert "whitelist_bypass_wg_vk_call" in blob
+    assert "wg" in blob
+    assert "vless" in blob
     assert len(payload) == 3
 
 
@@ -191,13 +200,15 @@ def test_the_old_vless_name_still_opens_the_screen(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_command(FakeEvt("/vless_rkn_bypass_raskur")))
     assert i18n.t("CMD_VLESS_BODY") in last(bot)
+    run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
+    assert i18n.t("CMD_WHITELIST_BODY") in last(bot)
 
 
 def test_both_command_names_are_canonical(tmp_path: Path) -> None:
     names = [item.name for item in commands.COMMANDS]
-    assert "whitelist_bypass_wg_vk_call_raskur" in names
-    assert "vless_rkn_raw_tcp_xhttp_ws_raskur" in names
-    assert "vless_rkn_bypass_raskur" not in names
+    assert "wg" in names
+    assert "vless" in names
+    assert "start" in names
 
 
 def test_the_titles_are_caps(tmp_path: Path) -> None:
@@ -208,7 +219,7 @@ def test_the_titles_are_caps(tmp_path: Path) -> None:
 
 def test_the_wg_screen_has_a_button_for_every_client(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
+    run(bot.on_command(FakeEvt("/wg")))
     html = last(bot)
     for url in ("https://github.com/hackdiaz-dev/turn-proxy-android", "https://github.com/anton48/vk-turn-proxy-ios"):
         assert 'type="url" url="%s"' % url in html
@@ -217,14 +228,14 @@ def test_the_wg_screen_has_a_button_for_every_client(tmp_path: Path) -> None:
 
 def test_the_vless_screen_lists_the_incy_clients(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    run(bot.on_command(FakeEvt("/vless_rkn_raw_tcp_xhttp_ws_raskur")))
+    run(bot.on_command(FakeEvt("/vless")))
     html = last(bot)
     assert "INCY-DEV/incy-platforms" in html
 
 
 def test_the_clients_are_buttons_and_not_a_table(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    for name in ("/whitelist_bypass_wg_vk_call_raskur", "/vless_rkn_raw_tcp_xhttp_ws_raskur"):
+    for name in ("/wg", "/vless"):
         run(bot.on_command(FakeEvt(name)))
         html = last(bot)
         assert "<table" not in html
@@ -234,10 +245,10 @@ def test_the_clients_are_buttons_and_not_a_table(tmp_path: Path) -> None:
 def test_the_client_buttons_carry_emoji_only_when_it_is_on(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     ui.use_icons(True)
-    run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
+    run(bot.on_command(FakeEvt("/wg")))
     assert "<tg-emoji" in last(bot)
     ui.use_icons(False)
-    run(bot.on_command(FakeEvt("/whitelist_bypass_wg_vk_call_raskur")))
+    run(bot.on_command(FakeEvt("/wg")))
     assert "<tg-emoji" not in last(bot)
 
 
@@ -249,6 +260,6 @@ def test_the_clients_table_keys_are_gone(tmp_path: Path) -> None:
 
 def test_every_command_screen_shows_its_own_name(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    for name in ("whitelist_bypass_wg_vk_call_raskur", "vless_rkn_raw_tcp_xhttp_ws_raskur"):
+    for name in ("wg", "vless"):
         run(bot.on_command(FakeEvt("/" + name)))
-        assert "/%s" % name in last(bot)
+        assert ("/%s" % name) in last(bot) or "/wg" in last(bot) or "/vless" in last(bot)

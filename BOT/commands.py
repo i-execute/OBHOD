@@ -29,12 +29,14 @@ class Command:
 
 COMMANDS: tuple[Command, ...] = (
     Command("start", "CMD_START_DESC"),
-    Command("whitelist_bypass_wg_vk_call_raskur", "CMD_WHITELIST_DESC", "whitelist_bypass_wg_vk_call"),
-    Command("vless_rkn_raw_tcp_xhttp_ws_raskur", "CMD_VLESS_DESC"),
+    Command("wg", "CMD_WG_DESC"),
+    Command("vless", "CMD_VLESS_DESC"),
 )
 ALIASES = {
-    "whitelist_bypass_wg_vk_call": "whitelist_bypass_wg_vk_call_raskur",
-    "vless_rkn_bypass_raskur": "vless_rkn_raw_tcp_xhttp_ws_raskur",
+    "whitelist_bypass_wg_vk_call": "wg",
+    "whitelist_bypass_wg_vk_call_raskur": "wg",
+    "vless_rkn_raw_tcp_xhttp_ws_raskur": "vless",
+    "vless_rkn_bypass_raskur": "vless",
 }
 
 
@@ -105,9 +107,9 @@ def transport_screen(t, title_key: str, body_key: str, steps: list[str], cards, 
 
 def whitelist_screen(t, cards):
     steps = [t("CMD_WL_STEP_PEER"), t("CMD_WL_STEP_TURN"), t("CMD_WL_STEP_OBF"), t("CMD_WL_STEP_FW")]
-    return transport_screen(t, "CMD_WHITELIST_TITLE", "CMD_WHITELIST_BODY", steps, cards, icon="calls", command="whitelist_bypass_wg_vk_call_raskur")
+    return transport_screen(t, "CMD_WHITELIST_TITLE", "CMD_WHITELIST_BODY", steps, cards, icon="calls", command="wg")
 
 
 def vless_screen(t, cards):
     steps = [t("CMD_VLESS_STEP_TLS"), t("CMD_VLESS_STEP_PQ"), t("CMD_VLESS_STEP_TRANSPORT"), t("CMD_VLESS_STEP_FALLBACK")]
-    return transport_screen(t, "CMD_VLESS_TITLE", "CMD_VLESS_BODY", steps, cards, icon="xray", command="vless_rkn_raw_tcp_xhttp_ws_raskur")
+    return transport_screen(t, "CMD_VLESS_TITLE", "CMD_VLESS_BODY", steps, cards, icon="xray", command="vless")

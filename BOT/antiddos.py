@@ -337,6 +337,8 @@ class Status:
 
     def reasons(self) -> list[str]:
         out: list[str] = []
+        if not self.installed:
+            return out
         if self.error:
             out.append("agent_error")
         if self.enabled and not self.table:
@@ -358,6 +360,8 @@ class Status:
         return out
 
     def level(self) -> str:
+        if not self.installed:
+            return "ok"
         reasons = self.reasons()
         if self.error or not self.enabled:
             return "warn" if self.enabled and not self.table else "ok"
@@ -372,7 +376,7 @@ class Status:
         return "warn" if reasons else "ok"
 
     def under_attack(self) -> bool:
-        return self.level() == "bad"
+        return bool(self.installed) and self.level() == "bad"
 
     def event_kind(self) -> str:
         reasons = self.reasons()

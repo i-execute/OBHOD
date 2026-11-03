@@ -89,7 +89,7 @@ def core_line(view: View, t: i18n.Translator) -> str:
     if not view.core:
         return muted(t("HOME_CORE_UNKNOWN"))
     if not view.installed:
-        return bold(t("HOME_CORE_MISSING"))
+        return muted(t("HOME_CORE_MISSING"))
     state = t("HOME_CORE_RUNNING") if view.running else t("HOME_CORE_STOPPED")
     ports = ", ".join(str(item) for item in view.core.get("listening") or []) or t("UI_NONE")
     version = str(view.core.get("version", "") or "")
@@ -435,15 +435,23 @@ def help_screen(view: View) -> Any:
                 t("HELP_WHAT_4"),
                 t("HELP_WHAT_5", path=code("/<64>/<64>")),
                 t("HELP_WHAT_6"),
+                t("HELP_WHAT_7"),
+                t("HELP_WHAT_8"),
+                t("HELP_WHAT_9"),
+                t("HELP_WHAT_10"),
             ]
         )
     )
     blocks.append(heading(t("HELP_FLOW_TITLE"), 3))
-    blocks.append(bullet_list([t("HELP_FLOW_1"), t("HELP_FLOW_2"), t("HELP_FLOW_3"), t("HELP_FLOW_4")]))
+    blocks.append(bullet_list([t("HELP_FLOW_1"), t("HELP_FLOW_2"), t("HELP_FLOW_3"), t("HELP_FLOW_4"), t("HELP_FLOW_5"), t("HELP_FLOW_6")]))
     blocks.append(heading(t("INL_HINT_TITLE"), 3))
     blocks.append(bullet_list([t("INL_HINT_1"), t("INL_HINT_2"), t("INL_HINT_3"), t("INL_HINT_4")]))
     blocks.append(f"<p>{muted(t('INL_STATUS_ON'))} {muted(t('INL_STATUS_OWNER'))}</p>")
-    buttons = [row(button(t("UI_HOME"), "nav:home", icon="home"), button(t("NAV_XRAY"), "xr:home", icon="xray"))]
+    buttons = [
+        row(button(t("NAV_XRAY"), "xr:home", icon="xray"), button(t("NAV_FREETURN"), "ft:home", icon="tunnel")),
+        row(button(t("NAV_DEBUG"), "dbg:home", icon="bug"), button(t("DDOS_BTN_OPEN"), "dbg:dd", icon="shield")),
+        row(button(t("UI_HOME"), "nav:home", icon="home")),
+    ]
     return screen(t("HELP_TITLE"), t("HELP_SUBTITLE"), blocks, buttons, icon="docs")
 
 

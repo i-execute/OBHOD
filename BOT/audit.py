@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger("obhod.audit")
 MAX_EVENTS = 200
-REPLAY_WINDOW = 2.0
+REPLAY_WINDOW = 1.0
 SECRET_KEYS = ("key", "password", "secret", "token", "seed", "ident", "sub_id", "sub_key", "private")
 CLEAN = re.compile(r"[^ -~]")
 

@@ -47,6 +47,23 @@ HOME_QUIET = 3.0
 RATE_QUIET = 10.0
 UPDATE_QUIET = 10.0
 
+NAV_PREFIXES = ("nav:", "lang:", "set:")
+NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:info", "core:show", "ft:home", "xr:home", "xr:scan", "xr:subs", "xr:core")
+
+def is_navigation(data: str) -> bool:
+    if data.startswith(NAV_PREFIXES):
+        return True
+    if data in NAV_ROUTES:
+        return True
+    return False
+
+def is_expensive(data: str) -> bool:
+    if data.startswith(("nav:", "lang:")):
+        return False
+    if is_navigation(data):
+        return False
+    return True
+
 
 def public_address() -> str:
     try:
@@ -604,10 +621,13 @@ class Bot:
         if found.name == "start":
             await self.send(chat_id, commands.start_screen(t, cards, self.language))
             return
-        if found.name == "whitelist_bypass_wg_vk_call_raskur":
+        if found.name == "wg":
             await self.send(chat_id, commands.whitelist_screen(t, cards))
             return
-        await self.send(chat_id, commands.vless_screen(t, cards))
+        if found.name == "vless":
+            await self.send(chat_id, commands.vless_screen(t, cards))
+            return
+        await self.send(chat_id, commands.whitelist_screen(t, cards))
 
     async def register_commands(self) -> bool:
         if self.app is None:
@@ -698,25 +718,26 @@ class Bot:
         chat_id = int(getattr(evt, "chat_id", 0) or 0)
         msg_id = int(getattr(evt, "msg_id", 0) or 0)
         who = int(getattr(evt, "from_id", 0) or 0)
-        if self.is_busy() and not data.startswith("nav:"):
+        if self.is_busy() and not is_navigation(data):
             if self.quiet("busy", BUSY_QUIET):
                 await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
             return
-        if data.startswith(("nav:", "lang:")) and not self.allowed(who, "nav", NAVIGATE_LIMIT, 60.0):
-            if self.quiet("nav", BUSY_QUIET):
-                await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
-            return
-        if not data.startswith("nav:") and not data.startswith("lang:"):
+        if is_navigation(data) or data.startswith(("nav:", "lang:")):
+            if not self.allowed(who, "nav", NAVIGATE_LIMIT, 60.0):
+                if self.quiet("nav", BUSY_QUIET):
+                    await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
+                return
+        if is_expensive(data):
             if not self.audit.first_time(int(getattr(evt, "from_id", 0) or 0), data, time.monotonic()):
                 await self.toast(evt, self.tr()("TOAST_REPEAT"), alert=True)
                 return
-            if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "expensive", self.expensive_limit, 300.0):
+            if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "expensive", self.expensive_limit, 120.0):
                 self.audit.note(int(getattr(evt, "from_id", 0) or 0), data, "throttled")
                 if self.quiet("rate:%d" % int(getattr(evt, "from_id", 0) or 0), RATE_QUIET):
                     await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
                 return
         busy = False
-        if not data.startswith(("nav:", "lang:")):
+        if is_expensive(data):
             busy = self.busy_begin()
             if not busy:
                 if self.quiet("busy", BUSY_QUIET):

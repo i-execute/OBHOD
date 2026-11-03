@@ -116,13 +116,15 @@ def xray_card(raw: dict[str, Any] | None, clients: int, active: str) -> Card:
         active=active == "xray",
     )
     installed = bool(book.get("installed", False))
+    if not installed:
+        card.state = STATE_MISSING
+        card.ports = []
+        return card
     service = str(book.get("service", "") or "").lower()
     card.version = str(book.get("version", "") or "")[:24]
     ports = book.get("listening") or []
     card.ports = [str(item) for item in ports][:8]
-    if not installed:
-        card.state = STATE_MISSING
-    elif service == "active":
+    if service == "active":
         card.state = STATE_RUNNING
     elif service:
         card.state = STATE_STOPPED
@@ -141,15 +143,18 @@ def freeturn_card(raw: Any, clients: int, active: str) -> Card:
         active=active == "freeturn",
     )
     installed = bool(getattr(raw, "installed", False))
+    if not installed:
+        card.state = STATE_MISSING
+        card.ports = []
+        card.version = ""
+        return card
     running = bool(getattr(raw, "running", False))
     card.version = str(getattr(raw, "version", "") or "")[:24]
     config = getattr(raw, "config", None)
     port = int(getattr(config, "listen_port", 0) or getattr(config, "wg_port", 0) or 0)
     if port:
         card.ports = [str(port)]
-    if not installed:
-        card.state = STATE_MISSING
-    elif running:
+    if running:
         card.state = STATE_RUNNING
     else:
         card.state = STATE_STOPPED

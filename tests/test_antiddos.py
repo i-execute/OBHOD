@@ -10,6 +10,8 @@ from BOT.store import State
 
 
 def status(**fields) -> antiddos.Status:
+    if "installed" not in fields:
+        fields["installed"] = True
     return antiddos.Status.from_dict(fields)
 
 
@@ -100,8 +102,9 @@ def test_a_calm_box_is_ok() -> None:
 
 
 def test_a_missing_table_is_bad() -> None:
-    assert status(enabled=True, table=False).level() == "bad"
-    assert "table_missing" in status(enabled=True, table=False).reasons()
+    assert status(enabled=True, table=False, installed=True).level() == "bad"
+    assert "table_missing" in status(enabled=True, table=False, installed=True).reasons()
+    assert antiddos.Status.from_dict({"installed": False, "enabled": True, "table": False}).level() == "ok"
 
 
 def test_a_disabled_box_is_not_bad() -> None:
