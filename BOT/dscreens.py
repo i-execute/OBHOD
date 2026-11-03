@@ -74,7 +74,7 @@ def home(view: DbgView) -> Any:
     buttons = [
         row(button(t("DBG_SCAN_BTN"), "dbg:scan", icon="radar"), button(t("DBG_TRACE_BTN"), "dbg:trace", icon="route")),
         row(button(t("DBG_VK_BTN"), "dbg:vk", icon="world"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
-        row(button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
+        row(button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug")),
         row(button(t("DBG_EMOJI_BTN"), "dbg:info", icon="star"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
         row(button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield"), button(t("DPI_BTN_OPEN"), "dbg:dpi", icon="warn")),
         row(button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell"), button(t("HP_BTN_OPEN"), "dbg:hp", icon="target")),

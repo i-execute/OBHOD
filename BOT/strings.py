@@ -86,6 +86,7 @@ class EN:
     UPD_NOTICE_VERIFIED = "the update to {commit} is verified, the service is {state}"
     UPD_NOTICE_BROKEN = "the update to {commit} did not pass the check, read the logs"
     UPD_NO_GIT = "the bot does not run from a git checkout, the update is not possible"
+    UPD_NO_GIT_HINT = "reinstall from the latest archive: curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo bash"
 
     LANG_TITLE = "Language"
     LANG_SUBTITLE = "interface language"
@@ -1502,6 +1503,7 @@ class RU:
     UPD_NOTICE_VERIFIED = "обновление до {commit} проверено, сервис {state}"
     UPD_NOTICE_BROKEN = "обновление до {commit} не прошло проверку, смотри логи"
     UPD_NO_GIT = "бот запущен не из git-клона, обновление невозможно"
+    UPD_NO_GIT_HINT = "переустанови свежим архивом: curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo bash"
 
     LANG_TITLE = "Язык"
     LANG_SUBTITLE = "язык интерфейса"
@@ -2918,6 +2920,7 @@ class ZH:
     UPD_NOTICE_VERIFIED = "更新到 {commit} 已验证, 服务状态 {state}"
     UPD_NOTICE_BROKEN = "更新到 {commit} 未通过检查, 请查看日志"
     UPD_NO_GIT = "机器人不是从 git 克隆运行时无法更新"
+    UPD_NO_GIT_HINT = "用最新压缩包重装: curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo bash"
 
     LANG_TITLE = "语言"
     LANG_SUBTITLE = "界面语言"

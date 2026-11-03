@@ -85,16 +85,19 @@ def test_unknown_callback_falls_back(tmp_path: Path) -> None:
 
 def test_help_and_id_commands(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
+    run(bot.on_command(FakeEvent(cmd="start")))
+    run(bot.on_command(FakeEvent(cmd="wg")))
+    run(bot.on_command(FakeEvent(cmd="vless")))
+    assert len(bot.sent) == 3
     run(bot.on_command(FakeEvent(cmd="help")))
     run(bot.on_command(FakeEvent(cmd="id")))
-    run(bot.on_command(FakeEvent(cmd="start")))
     assert len(bot.sent) == 3
 
 
 def test_text_message_shows_home(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_message(FakeEvent(text="hello")))
-    assert bot.sent
+    assert not bot.sent
 
 
 def test_ssh_fields_are_validated(tmp_path: Path) -> None:
@@ -371,7 +374,7 @@ def test_language_switch_changes_every_screen(tmp_path: Path) -> None:
 def test_language_command_and_unknown_choice(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_command(FakeEvent(cmd="language")))
-    assert bot.sent
+    assert not bot.sent
     run(bot.route(1, 0, "lang:set:de"))
     assert bot.state.language == "en"
     run(bot.route(1, 0, "lang:show"))
@@ -403,10 +406,6 @@ def test_toast_and_notice_are_localized(tmp_path: Path) -> None:
     evt = FakeEvent(data="fb:install")
     run(bot.on_callback(evt))
     assert evt.answers[0]["text"] == i18n.t("TOAST_BUSY", "ru")
-    bot.busy = False
-    evt_two = FakeEvent(text="what")
-    run(bot.on_message(evt_two))
-    assert i18n.t("HOME_NOTICE_PICK", "ru") in bot.sent[-1].to_html()
 
 
 def test_sshd_password_switch_is_blocked_without_a_key(tmp_path: Path) -> None:

@@ -265,7 +265,8 @@ def test_the_update_screen_shows_both_ways() -> None:
 def test_the_update_screen_explains_a_tree_without_git() -> None:
     html = screens.update_screen(view(), {"git": False, "root": "/tmp/x"}).to_html()
     assert "upd:commit" not in html
-    assert "upd:show" in html
+    assert "nav:home" in html
+    assert "curl -fsSL" in html
 
 
 def test_the_result_screen_shows_the_steps() -> None:

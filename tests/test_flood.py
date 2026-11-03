@@ -136,7 +136,7 @@ def test_an_admin_flood_gets_one_home_screen(tmp_path: Path) -> None:
     bot, wire = make_wire_bot(tmp_path)
     for _ in range(30):
         asyncio.run(bot.on_message(FakeEvent(text="hi", from_id=7, chat_id=7, msg_id=0)))
-    assert len(wire.sent) == 1
+    assert len(wire.sent) == 0
 
 
 def test_two_actions_do_not_run_at_the_same_time(tmp_path: Path) -> None:

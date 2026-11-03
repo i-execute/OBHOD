@@ -131,7 +131,7 @@ def test_the_meme_commands_have_buttons_to_every_core(tmp_path: Path) -> None:
 def test_a_foreign_command_falls_back_to_the_home_screen(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_command(FakeEvt("/nonsense")))
-    assert i18n.t("HOME_SUBTITLE") in last(bot)
+    assert not bot.sent
 
 
 def test_the_commands_render_in_every_language(tmp_path: Path) -> None:

@@ -24,7 +24,7 @@ from .seclog import SecurityLog
 from .ratelimit import CALLBACK_LIMIT, CLAIM_LIMIT, EXPENSIVE_LIMIT, INLINE_LIMIT, MESSAGE_LIMIT, Limiter
 from .shell import LocalShell, ShellError
 from .store import State, Store
-from .ui import button, code, muted, quote, row, screen
+from .ui import code
 from .update import UpdateError, Updater
 from .xrayrpc import XrayControl, XrayError as RpcError
 from .xray import API_PORT, SUB_PORT
@@ -578,12 +578,10 @@ class Bot:
             if self.quiet("busy", BUSY_QUIET):
                 await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
             return
-        chat_id = int(getattr(evt, "chat_id", 0) or 0)
         if text.strip().startswith("/"):
             await self.on_command(evt)
             return
-        if self.quiet("home:%d" % chat_id, HOME_QUIET):
-            await self.send(chat_id, screens.home(self.view(notice=self.tr()("HOME_NOTICE_PICK"))))
+        return
 
     async def on_command(self, evt: object) -> None:
         if not await self.guard_admin(evt):
@@ -598,23 +596,7 @@ class Bot:
         if found is not None:
             await self.command_screen(chat_id, found, t)
             return
-        if cmd == "id":
-            who = int(getattr(evt, "from_id", 0) or 0)
-            rich = screen(
-                t("ID_TITLE"),
-                t("ID_SUBTITLE"),
-                [f"<p>{code(who)}</p>", quote(muted(t("ID_NOTE")))],
-                [row(button(t("UI_HOME"), "nav:home", icon="home"))],
-            )
-            await self.send(chat_id, rich)
-            return
-        if cmd == "help":
-            await self.send(chat_id, screens.help_screen(self.view()))
-            return
-        if cmd == "language":
-            await self.send(chat_id, screens.language_screen(self.view()))
-            return
-        await self.send(chat_id, screens.home(self.view()))
+        return
 
     async def command_screen(self, chat_id: int, found: commands.Command, t: i18n.Translator) -> None:
         cards = cores.snapshot(self.state, dict(self.xray.core), len(self.freeturn.clients))
@@ -910,7 +892,11 @@ class Bot:
             found = await self.updater.check_all()
             self.update_info = found.to_dict()
         except UpdateError as exc:
-            self.update_error = exc.message
+            if "not a git checkout" in exc.message:
+                self.update_info = {"git": False, "root": str(self.updater.root)}
+                self.update_error = ""
+            else:
+                self.update_error = exc.message
         except (ShellError, OSError) as exc:
             self.update_error = str(exc)
 
