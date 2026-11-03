@@ -339,33 +339,59 @@ class DebugPanel:
         if action in ("", "open"):
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
             return
-        if action not in ("check", "probe", "both"):
+        if action not in ("check", "probe", "both", "net"):
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
             return
-        if not self.cooled("chk", CHK_COOLDOWN):
+        if not self.cooled("chk:" + action, CHK_COOLDOWN):
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("CHK_TOO_FAST"))))
             return
+        if action == "net":
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=t("CHK_RUNNING_NET"))))
+            probe = await asyncio.to_thread(chebur.reach)
+            answer = self.chebur if self.chebur is not None else chebur.Answer(target=target, at=0.0)
+            answer.reach = probe
+            if not probe.reachable():
+                answer.error = probe.error or t("CHK_NET_TCP_FAIL")
+                answer.code = "network"
+            elif answer.error and answer.code in ("network", "timeout"):
+                answer.error = ""
+                answer.code = ""
+            self.chebur = answer
+            self.note("chk", "reach", probe.state())
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
+            return
         try:
-            host, kind = chebur.clean_target(target)
+            host, _kind = chebur.clean_target(target)
         except chebur.CheburError as exc:
             self.note("chk", "bad_arg", exc.code)
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("CHK_BAD_TARGET"))))
             return
         self.chebur_target = host
-        self.target = host
+        if _kind in ("ip", "subnet"):
+            self.target = host
         wants_live = action in ("probe", "both")
-        wants_registry = action in ("check", "both", "probe")
         answer = chebur.Answer(target=host, at=0.0)
-        if wants_registry:
-            try:
-                answer.registry = chebur.check(host)
-            except chebur.CheburError as exc:
-                self.note("chk", "check_failed", exc.code)
-                await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=exc.message)))
-                return
+        try:
+            answer.registry = await asyncio.to_thread(chebur.check, host)
+        except chebur.CheburError as exc:
+            self.note("chk", "check_failed", exc.code)
+            answer.error = exc.message
+            answer.code = exc.code
+            answer.reach = await asyncio.to_thread(chebur.reach)
+            self.chebur = answer
+            self.remember("chk %s %s" % (host, exc.code))
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
+            return
         self.chebur = answer
-        if not wants_live or not answer.registry or not answer.registry.context:
+        if wants_live and not chebur.probe_supported(_kind):
+            self.chebur = answer
+            self.note("chk", "registry_only", _kind)
+            self.remember("chk %s %s" % (host, answer.verdict()))
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=t("CHK_PROBE_WIDE"))))
+            return
+        if not wants_live or not answer.registry.context:
             self.note("chk", "registry", "blocked" if answer.blocked() else "clean")
+            self.remember("chk %s %s" % (host, answer.verdict()))
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
             return
         await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=t("CHK_RUNNING", value=answer.registry.geo.label()))))
@@ -374,10 +400,7 @@ class DebugPanel:
         self.chebur = answer
         self.remember("chk %s %s" % (host, answer.verdict()))
         self.note("chk", answer.verdict(), host)
-        notice = ""
-        if live.error:
-            notice = live.error
-        await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=notice)))
+        await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
 
     async def emoji_action(self, chat_id: int, msg_id: int) -> None:
         enabled = not self.bot.emoji_enabled
@@ -409,7 +432,9 @@ class DebugPanel:
                 await self.bot.send(chat_id, dscreens.scan_screen(self.view(notice=self.ports)))
                 return
             if ident == "dbg_chk_target":
-                host, kind = chebur.clean_target(text)
+                host, _kind = chebur.clean_target(text)
+                if host != self.chebur_target:
+                    self.chebur = None
                 self.chebur_target = host
                 await self.bot.send(chat_id, dscreens.chebur_screen(self.view(notice=host)))
                 return
@@ -417,6 +442,10 @@ class DebugPanel:
                 self.hops = net.parse_hops(text)
                 await self.bot.send(chat_id, dscreens.trace_screen_view(self.view(notice=str(self.hops))))
                 return
+        except chebur.CheburError as exc:
+            self.note("chk", "bad_arg", exc.code)
+            await self.bot.send(chat_id, dscreens.chebur_screen(self.view(error=self.tr()("CHK_BAD_TARGET"))))
+            return
         except net.NetError as exc:
             await self.bot.send(chat_id, dscreens.crash_screen(self.view(error=exc.message), ident, net.trace_text(exc)))
             return
