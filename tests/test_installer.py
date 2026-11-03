@@ -489,13 +489,15 @@ def test_the_unit_carries_the_product_name() -> None:
 
 def test_the_paste_harvest_disables_echo_before_the_clone() -> None:
     script = (ROOT / "get.sh").read_text(encoding="utf-8")
-    assert "quiet_tty()" in script
-    assert "loud_tty()" in script
+    assert "echo_off()" in script
+    assert "echo_on()" in script
+    assert "detach_stdin()" in script
     assert "stty -echo" in script and "stty echo" in script
-    body = script.split("quiet_tty\nfetch_source", 1)
+    body = script.split("echo_off\nfetch_source", 1)
     assert len(body) == 2
-    assert "trap 'loud_tty; cleanup' EXIT" in script
-    assert "a paste made before the prompt will not appear" in script
+    assert "trap 'echo_on; cleanup' EXIT" in script
+    assert "/dev/null" in script
+    assert "a paste made before the prompt stays invisible" in script
 
 
 def test_the_installer_echoes_nothing_while_the_credentials_are_typed() -> None:
@@ -517,3 +519,66 @@ def test_pip_is_bounded_and_never_silent_by_default() -> None:
     assert "check_index" in script
     assert "PIP_INDEX_URL" in script
     assert "is not reachable from this server" in script
+
+
+def test_the_unit_starts_the_interpreter_that_actually_exists(tmp_path: Path) -> None:
+    venv_prefix = tmp_path / "with-venv"
+    (venv_prefix / "venv" / "bin").mkdir(parents=True)
+    fake = venv_prefix / "venv" / "bin" / "python"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    bare_prefix = tmp_path / "no-venv"
+    bare_prefix.mkdir()
+    out_venv = tmp_path / "venv.service"
+    out_bare = tmp_path / "bare.service"
+    script = (
+        "source {installer}\n"
+        "ui_init\n"
+        "ENV_FILE=/etc/obhod/obhod.env\n"
+        "STATE_DIR=/var/lib/obhod\n"
+        "SKIP_DEPS=1\n"
+        "PREFIX={venv}\nrender_unit {out_venv}\n"
+        "PREFIX={bare}\nrender_unit {out_bare}\n"
+    ).format(
+        installer=shlex.quote(str(INSTALLER)),
+        venv=shlex.quote(str(venv_prefix)),
+        bare=shlex.quote(str(bare_prefix)),
+        out_venv=shlex.quote(str(out_venv)),
+        out_bare=shlex.quote(str(out_bare)),
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "OBHOD_LIB": "1"},
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ExecStart=%s -m BOT" % fake in out_venv.read_text(encoding="utf-8")
+    bare_unit = out_bare.read_text(encoding="utf-8")
+    system_python = shutil.which("python3")
+    assert system_python
+    assert "ExecStart=%s -m BOT" % system_python in bare_unit
+    assert "venv/bin/python" not in bare_unit
+
+
+def test_without_a_runtime_the_unit_keeps_the_venv_path() -> None:
+    script = (
+        "source {installer}\n"
+        "ui_init\n"
+        "ENV_FILE=/etc/obhod/obhod.env\n"
+        "STATE_DIR=/var/lib/obhod\n"
+        "SKIP_DEPS=0\n"
+        "PYTHON_BIN=python3\n"
+        "PREFIX=/nonexistent-prefix\n"
+        "unit_runtime\n"
+    ).format(installer=shlex.quote(str(INSTALLER)))
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "OBHOD_LIB": "1"},
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "/nonexistent-prefix/venv/bin/python"

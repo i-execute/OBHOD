@@ -68,6 +68,7 @@ FIELDS: dict[str, Field] = {
     "xr_client_email": Field("xr_client_email", "FLD_XR_CLIENT_EMAIL", "FLH_XR_CLIENT_EMAIL", "phone-1"),
     "dbg_target": Field("dbg_target", "FLD_DBG_TARGET", "FLH_DBG_TARGET", "203.0.113.0/24"),
     "dbg_ports": Field("dbg_ports", "FLD_DBG_PORTS", "FLH_DBG_PORTS", "22,80,443"),
+    "dbg_chk_target": Field("dbg_chk_target", "FLD_DBG_CHK_TARGET", "FLH_DBG_CHK_TARGET", "31.77.12.187"),
     "dbg_hops": Field("dbg_hops", "FLD_DBG_HOPS", "FLH_DBG_HOPS", "12"),
     "xr_client_flow": Field("xr_client_flow", "FLD_XR_CLIENT_FLOW", "FLH_XR_CLIENT_FLOW", ""),
     "xr_client_limit": Field("xr_client_limit", "FLD_XR_CLIENT_LIMIT", "FLH_XR_CLIENT_LIMIT", "2"),

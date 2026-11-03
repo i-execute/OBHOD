@@ -130,7 +130,9 @@ narrow a port in that list. Only the engine port changes. A host that also runs 
 
 `Debug` holds a subnet and domain scanner, a traceroute with hop count, `refresh vk subnets` which rescans the
 domains and reparses the prefixes into the firewall, the open port list with the protected rows marked, the emoji
-switch, an event trail, and the script cache. Every screen is rich HTML, every action that takes longer than half
+switch, an event trail, the script cache, and `Cheburcheck`, which asks `cheburcheck.ru` about any address:
+the registry answer from `/api/v1/check` and the live probe stream from `/api/v1/probe`, 37 online probes, one
+line per provider with its verdict, then the share of blocking answers and the resulting verdict. Every screen is rich HTML, every action that takes longer than half
 a second first edits the message into a loading screen, and any failure is sent as a second message with the full
 traceback in a code block.
 
@@ -177,10 +179,10 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2212 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2236 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
-the three catalogues with their placeholder parity, and the hardening suites in `tests/test_security.py` and
+the three catalogues with their placeholder parity, the cheburcheck client with a fake transport, and the hardening suites in `tests/test_security.py` and
 `tests/test_pentest.py`. `tests/test_source.py` fails the build on a Python comment, docstring, emoji or long
 dash, and on any Cyrillic or CJK character outside `BOT/strings.py`.
 

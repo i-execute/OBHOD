@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
-from . import cores, dscreens, fwguard, i18n, net, portguard, scripts, ui
+from . import chebur, cores, dscreens, fwguard, i18n, net, portguard, scripts, ui
 from .freeturn import FtError
 
 SCAN_COOLDOWN = 3.0
 TRACE_COOLDOWN = 3.0
 VK_COOLDOWN = 10.0
 SCRIPTS_COOLDOWN = 5.0
+CHK_COOLDOWN = 4.0
 MAX_LOG = 12
 
 
@@ -30,6 +32,8 @@ class DebugPanel:
         self.trace_text = ""
         self.events: list[str] = []
         self.marks: dict[str, float] = {}
+        self.chebur: chebur.Answer | None = None
+        self.chebur_target = ""
 
     def tr(self) -> i18n.Translator:
         return i18n.translator(getattr(self.bot.state, "language", i18n.DEFAULT_LANGUAGE))
@@ -47,6 +51,8 @@ class DebugPanel:
             notice=notice or self.notice,
             error=error or self.error,
             trace_text=self.trace_text,
+            chebur=self.chebur,
+            chebur_target=self.chebur_target,
             emoji=self.bot.emoji_enabled,
             lang=self.tr().language,
         )
@@ -103,6 +109,9 @@ class DebugPanel:
                 return
             if head == "ports":
                 await self.ports_action(chat_id, msg_id, arg1)
+                return
+            if head == "chk":
+                await self.chebur_action(chat_id, msg_id, arg1)
                 return
             if head == "info":
                 await self.render(chat_id, msg_id, dscreens.info_screen(self.view(), self.clock()))
@@ -324,6 +333,52 @@ class DebugPanel:
         self.note("ports", "ok", str(len(rows)))
         await self.render(chat_id, msg_id, dscreens.ports_screen(self.view(notice=t("DBG_PORTS_NOTE"))))
 
+    async def chebur_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        t = self.tr()
+        target = self.chebur_target or self.target
+        if action in ("", "open"):
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
+            return
+        if action not in ("check", "probe", "both"):
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
+            return
+        if not self.cooled("chk", CHK_COOLDOWN):
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("CHK_TOO_FAST"))))
+            return
+        try:
+            host, kind = chebur.clean_target(target)
+        except chebur.CheburError as exc:
+            self.note("chk", "bad_arg", exc.code)
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("CHK_BAD_TARGET"))))
+            return
+        self.chebur_target = host
+        self.target = host
+        wants_live = action in ("probe", "both")
+        wants_registry = action in ("check", "both", "probe")
+        answer = chebur.Answer(target=host, at=0.0)
+        if wants_registry:
+            try:
+                answer.registry = chebur.check(host)
+            except chebur.CheburError as exc:
+                self.note("chk", "check_failed", exc.code)
+                await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=exc.message)))
+                return
+        self.chebur = answer
+        if not wants_live or not answer.registry or not answer.registry.context:
+            self.note("chk", "registry", "blocked" if answer.blocked() else "clean")
+            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
+            return
+        await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=t("CHK_RUNNING", value=answer.registry.geo.label()))))
+        live = await asyncio.to_thread(chebur.probe, answer.registry.context, chebur.PROBE_DEADLINE, None)
+        answer.live = live
+        self.chebur = answer
+        self.remember("chk %s %s" % (host, answer.verdict()))
+        self.note("chk", answer.verdict(), host)
+        notice = ""
+        if live.error:
+            notice = live.error
+        await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=notice)))
+
     async def emoji_action(self, chat_id: int, msg_id: int) -> None:
         enabled = not self.bot.emoji_enabled
         self.bot.state.emoji = enabled
@@ -352,6 +407,11 @@ class DebugPanel:
                 ports = net.parse_ports(text)
                 self.ports = ",".join(str(item) for item in ports)
                 await self.bot.send(chat_id, dscreens.scan_screen(self.view(notice=self.ports)))
+                return
+            if ident == "dbg_chk_target":
+                host, kind = chebur.clean_target(text)
+                self.chebur_target = host
+                await self.bot.send(chat_id, dscreens.chebur_screen(self.view(notice=host)))
                 return
             if ident == "dbg_hops":
                 self.hops = net.parse_hops(text)

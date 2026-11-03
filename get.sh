@@ -8,6 +8,7 @@ SRC_DIR="${OBHOD_SRC_DIR:-}"
 ENV_PATH="${OBHOD_ENV_FILE:-}"
 DRY_RUN=0
 NO_INSTALL=0
+TUI=1
 ARGS=()
 WORK=""
 
@@ -31,27 +32,46 @@ check_dest() {
 }
 
 ECHO_OFF=0
+STDIN_EATEN=0
+CLONE_TIMEOUT="${OBHOD_CLONE_TIMEOUT:-180}"
+TRACE="${OBHOD_TRACE:-0}"
 
-quiet_tty() {
-  if [ "$CREDS" = "1" ]; then
+trace() {
+  if [ "$TRACE" = "1" ]; then
+    note "trace: $*"
+  fi
+}
+
+detach_stdin() {
+  if [ -t 0 ]; then
     return 0
   fi
-  if [ "$ECHO_OFF" = "1" ]; then
+  STDIN_EATEN=1
+  trace "stdin is a pipe, every child gets /dev/null so nothing swallows the rest of the script"
+  return 0
+}
+
+echo_off() {
+  if [ "$CREDS" = "1" ]; then
     return 0
   fi
   if tty_available && stty -echo </dev/tty 2>/dev/null; then
     ECHO_OFF=1
-    note "the terminal echo is off, a paste made before the prompt will not appear on screen"
+    note "the terminal echo is off until the source is fetched, a paste made before the prompt stays invisible"
   fi
   return 0
 }
 
-loud_tty() {
+echo_on() {
   if [ "$ECHO_OFF" = "1" ]; then
     stty echo </dev/tty 2>/dev/null || true
     ECHO_OFF=0
   fi
   return 0
+}
+
+step_done() {
+  say "  done in ${1}s"
 }
 
 cleanup() {
@@ -60,7 +80,7 @@ cleanup() {
   fi
   return 0
 }
-trap 'loud_tty; cleanup' EXIT
+trap 'echo_on; cleanup' EXIT
 
 for item in "$@"; do
   case "$item" in
@@ -71,6 +91,7 @@ for item in "$@"; do
     --env-file=*) ENV_PATH="${item#*=}" ;;
     --dry-run) DRY_RUN=1 ;;
     --no-install) NO_INSTALL=1 ;;
+    --no-tui|--plain) TUI=0 ;;
     *) ARGS+=("$item") ;;
   esac
 done
@@ -116,7 +137,42 @@ need_tools() {
   die "git is needed, or curl and tar, install them and repeat"
 }
 
+download_archive() {
+  local url="https://codeload.github.com/$REPO/tar.gz/${REF:-HEAD}"
+  say "downloading $url"
+  mkdir -p "$WORK/repo"
+  if ! curl -fSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 \
+      --progress-bar "$url" -o "$WORK/repo.tar.gz" </dev/null; then
+    note "the archive could not be downloaded, check the network and the proxy settings"
+    return 1
+  fi
+  if [ -n "${OBHOD_SHA256:-}" ]; then
+    local actual
+    actual="$(sha256sum "$WORK/repo.tar.gz" | cut -d' ' -f1)"
+    [ "$actual" = "$OBHOD_SHA256" ] || die "the source archive digest does not match"
+    say "source digest matches"
+  fi
+  tar -xzf "$WORK/repo.tar.gz" --strip-components=1 -C "$WORK/repo" </dev/null || return 1
+  SRC="$WORK/repo"
+  return 0
+}
+
+clone_repo() {
+  local args=(clone --depth 1 --single-branch --no-tags)
+  if [ -n "$REF" ]; then
+    args+=(--branch "$REF")
+  fi
+  if [ "$TRACE" != "1" ]; then
+    args+=(--quiet)
+  fi
+  say "cloning https://github.com/$REPO.git, the wait is capped at ${CLONE_TIMEOUT}s"
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30 \
+    timeout "$CLONE_TIMEOUT" git "${args[@]}" "https://github.com/$REPO.git" "$WORK/repo" >&2 </dev/null
+}
+
 fetch_source() {
+  local started
+  started="$(date +%s)"
   if [ -n "$SRC_DIR" ]; then
     [ -f "$SRC_DIR/Storage/obhod-install.sh" ] || die "there is no Storage/obhod-install.sh in $SRC_DIR"
     say "source: $SRC_DIR"
@@ -125,25 +181,21 @@ fetch_source() {
   fi
   WORK="$(mktemp -d)"
   if command -v git >/dev/null 2>&1; then
-    say "cloning https://github.com/$REPO.git"
-    if [ -n "$REF" ]; then
-      git clone --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$WORK/repo" >&2
-    else
-      git clone --depth 1 "https://github.com/$REPO.git" "$WORK/repo" >&2
+    if clone_repo; then
+      SRC="$WORK/repo"
+      step_done "$(( $(date +%s) - started ))"
+      return 0
     fi
-    SRC="$WORK/repo"
+    note "git clone did not finish, falling back to the branch archive"
+    rm -rf "$WORK/repo"
+  else
+    say "git is missing, the branch archive is used instead"
+  fi
+  if download_archive; then
+    step_done "$(( $(date +%s) - started ))"
     return 0
   fi
-  say "git is missing, downloading the branch archive ${REF:-default}"
-  mkdir -p "$WORK/repo"
-  curl -fsSL "https://codeload.github.com/$REPO/tar.gz/${REF:-HEAD}" -o "$WORK/repo.tar.gz"
-  if [ -n "${OBHOD_SHA256:-}" ]; then
-    actual="$(sha256sum "$WORK/repo.tar.gz" | cut -d' ' -f1)"
-    [ "$actual" = "$OBHOD_SHA256" ] || die "the source archive digest does not match"
-    say "source digest matches"
-  fi
-  tar -xzf "$WORK/repo.tar.gz" --strip-components=1 -C "$WORK/repo"
-  SRC="$WORK/repo"
+  die "the source could not be fetched: no git clone and no archive, check that github.com is reachable from this server"
 }
 
 sync_source() {
@@ -195,6 +247,9 @@ if [ "$DRY_RUN" = "1" ]; then
       say "env file: $ENV_PATH"
     fi
   fi
+  if [ "$TUI" = "1" ]; then
+    say "screen: python3 $DEST/Storage/obhod_setup.py ${ARGS[*]}"
+  fi
   say "command: bash $DEST/Storage/obhod-install.sh ${ARGS[*]}"
   exit 0
 fi
@@ -203,7 +258,8 @@ if [ "$NO_INSTALL" = "0" ] && [ "$CREDS" = "0" ] && ! tty_available; then
   die "there is no terminal for the input, pass BOT_TOKEN API_ID API_HASH ADMIN_ID through the environment"
 fi
 
-quiet_tty
+detach_stdin
+echo_off
 fetch_source
 [ -f "$SRC/Storage/obhod-install.sh" ] || die "there is no Storage/obhod-install.sh in the source"
 sync_source
@@ -212,6 +268,30 @@ say "files updated in $DEST"
 if [ "$NO_INSTALL" = "1" ]; then
   say "the install is skipped, run it by hand: bash $DEST/Storage/obhod-install.sh ${ARGS[*]}"
   exit 0
+fi
+
+if [ "$TUI" = "1" ] && tty_available; then
+  PY_BIN="$(command -v python3 || true)"
+  if [ -n "$PY_BIN" ] && [ -f "$DEST/Storage/obhod_setup.py" ]; then
+    TUI_ARGS=("${ARGS[@]}")
+    if [ "$CREDS" = "1" ]; then
+      if [ -z "$ENV_PATH" ]; then
+        WORK="${WORK:-$(mktemp -d)}"
+        ENV_PATH="$WORK/obhod.env"
+      fi
+      write_env_file "$ENV_PATH"
+      TUI_ARGS+=("--env-file=$ENV_PATH" "--yes")
+      unset BOT_TOKEN API_ID API_HASH ADMIN_ID OBHOD_TOKEN OBHOD_API_ID OBHOD_API_HASH OBHOD_ADMIN_ID
+    fi
+    echo_on
+    say "starting the setup screen"
+    exec "$PY_BIN" "$DEST/Storage/obhod_setup.py" "${TUI_ARGS[@]}"
+  fi
+  if [ -z "$PY_BIN" ]; then
+    say "python3 is missing, the plain installer is used instead"
+  else
+    say "the setup screen source is missing, the plain installer is used instead"
+  fi
 fi
 
 INSTALL_ARGS=("${ARGS[@]}")
@@ -237,7 +317,7 @@ else
   bash "$DEST/Storage/obhod-install.sh" "${INSTALL_ARGS[@]}" < /dev/null
 fi
 
-loud_tty
+echo_on
 say "done, check the service with systemctl status obhod"
 say "to update later run this script again with the same keys"
 say "sources on the server: $DEST"

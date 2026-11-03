@@ -8,6 +8,7 @@ from .ui import (
     bold,
     button,
     code,
+    details,
     heading,
     input_row,
     muted,
@@ -34,6 +35,8 @@ class DbgView:
     trace_text: str = ""
     emoji: bool = False
     owners: list[Any] = field(default_factory=list)
+    chebur: Any = None
+    chebur_target: str = ""
     lang: str = i18n.DEFAULT_LANGUAGE
 
     def tr(self) -> i18n.Translator:
@@ -66,6 +69,7 @@ def home(view: DbgView) -> Any:
         row(button(t("DBG_VK_BTN"), "dbg:vk", icon="world"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
         row(button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
         row(button(t("DBG_EMOJI_BTN"), "dbg:emoji", icon="star"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
+        row(button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield")),
         row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
     ]
     return screen(t("DBG_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="bug")
@@ -284,3 +288,77 @@ def trace_screen(view: DbgView, route: str, trace: str) -> Any:
     blocks = [quote(bold(view.error or t("DBG_ERR_TITLE"))), f"<p>{code(route[:48])}</p>", pre((trace or t("UI_NONE"))[-3400:])]
     buttons = [row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home"))]
     return screen(t("DBG_ERR_TITLE"), t("DBG_ERR_TRACE"), blocks, buttons, icon="fail")
+
+
+def chebur_screen(view: "DbgView") -> Any:
+    from . import chebur
+
+    t = view.tr()
+    blocks = banner(view, t)
+    answer = view.chebur
+    target = (answer.target if answer is not None and answer.target else view.chebur_target) or "-"
+    status_key = {
+        "registry": "CHK_ST_REGISTRY",
+        "tspu_block": "CHK_ST_TSPU",
+        "clean": "CHK_ST_CLEAN",
+        "partial": "CHK_ST_PARTIAL",
+        "uncertain": "CHK_ST_UNCERTAIN",
+        "unknown": "CHK_ST_UNKNOWN",
+    }.get(answer.verdict() if answer is not None else "unknown", "CHK_ST_UNKNOWN")
+    head_pairs = [
+        ("target", t("CHK_TARGET"), code(target)),
+        ("shield", t("CHK_VERDICT"), code(t(status_key))),
+    ]
+    if answer is not None and answer.registry is not None:
+        head_pairs.append(("world", t("CHK_SOURCE"), code(t("CHK_SOURCE_API"))))
+    blocks.append(table(head_pairs, (t("CHK_TITLE"), t("UI_VALUE"))))
+    if answer is None:
+        blocks.append(quote(muted(t("CHK_NO_ANSWER"))))
+    if answer is not None and answer.error:
+        blocks.append(quote(bold(answer.error)))
+    registry = answer.registry if answer is not None else None
+    if registry is not None:
+        rows_data = [
+            ("file", t("CHK_REGISTRY"), code(t("CHK_BLOCKED") if registry.blocked else t("CHK_CLEAN"))),
+            ("world", t("CHK_GEO"), code(registry.geo.label())),
+            ("target", t("CHK_IPS"), code(", ".join(registry.ips[:4]) or "-")),
+            ("module", t("CHK_SUBNETS"), code(", ".join(registry.subnets[:4]) or t("UI_NONE"))),
+            ("link", t("CHK_REVERSE"), code(", ".join(registry.reverse[:3]) or t("UI_NONE"))),
+            ("bell", t("CHK_COMPLAINTS"), code(registry.complaint_total())),
+        ]
+        if registry.cdn:
+            rows_data.append(("world", t("CHK_CDN"), code(", ".join(sorted(registry.cdn)[:4]))))
+        blocks.append(table(rows_data, (t("CHK_REGISTRY_TITLE"), t("UI_VALUE"))))
+        spark = registry.complaint_spark()
+        if spark and registry.complaint_total():
+            blocks.append(pre(t("CHK_SPARK") + "  " + " ".join(spark)))
+    live = answer.live if answer is not None else None
+    if live is not None:
+        counts = live.counts()
+        pairs = [
+            ("radar", t("CHK_PROBES"), code("%d / %d" % (len(live.results), live.online or 0))),
+            ("clock", t("CHK_ELAPSED"), code("%.1f s" % live.elapsed)),
+            ("chart", t("CHK_SHARE"), code("%d%%" % round(live.share() * 100))),
+        ]
+        for name in chebur.VERDICT_ORDER:
+            if counts.get(name):
+                pairs.append(("shield" if name in chebur.BLOCKING else "ok", t("CHK_V_" + name.upper()), code(counts[name])))
+        blocks.append(table(pairs, (t("CHK_LIVE_TITLE"), t("UI_VALUE"))))
+        blocking = live.providers_for("tspu_block") or live.providers_for("sni_block")
+        if blocking:
+            blocks.append(quote(muted(t("CHK_PROVIDERS", value=", ".join(blocking[:8])))))
+        if live.error:
+            blocks.append(quote(bold(live.error)))
+        if live.results:
+            lines = []
+            for item in live.results:
+                lines.append("%s %s (%s): %s" % (item.provider or "?", item.region or "-", item.asn or "-", ", ".join(item.verdicts) or "uncertain"))
+            blocks.append(details(t("CHK_DETAILS", count=len(live.results)), pre("\n".join(lines[:40]))))
+    blocks.append(quote(muted(t("CHK_NOTE"))))
+    buttons = [
+        row(button(t("CHK_BTN_CHECK"), "dbg:chk:check", icon="file")),
+        row(button(t("CHK_BTN_PROBE"), "dbg:chk:probe", icon="radar"), button(t("CHK_BTN_BOTH"), "dbg:chk:both", icon="scan")),
+        input_row(t("CHK_INPUT"), "dbg_chk_target", "-", view.lang),
+        row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
+    ]
+    return screen(t("CHK_TITLE"), t("CHK_SUBTITLE"), blocks, buttons, icon="shield")

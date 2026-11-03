@@ -450,6 +450,32 @@ install_venv() {
   fi
 }
 
+unit_runtime() {
+  local runtime="$PREFIX/venv/bin/python"
+  if [ -x "$runtime" ]; then
+    printf '%s\n' "$runtime"
+    return 0
+  fi
+  local system_python=""
+  system_python="$(command -v "$PYTHON_BIN" 2>/dev/null || true)"
+  if [ "$SKIP_DEPS" = "1" ] && [ -n "$system_python" ] && [ -x "$system_python" ]; then
+    printf '%s\n' "$system_python"
+    return 0
+  fi
+  printf '%s\n' "$runtime"
+  return 0
+}
+
+render_unit() {
+  local target="$1" runtime=""
+  [ -f "$UNIT_SRC" ] || die "unit template not found at $UNIT_SRC"
+  runtime="$(unit_runtime)"
+  if [ "$runtime" != "$PREFIX/venv/bin/python" ]; then
+    note_line "no virtual environment, the unit starts the system python at $runtime"
+  fi
+  sed -e "s|@PREFIX@/venv/bin/python|$runtime|g" -e "s|@PREFIX@|$PREFIX|g" -e "s|@ENV_FILE@|$ENV_FILE|g" -e "s|@STATE_DIR@|$STATE_DIR|g" "$UNIT_SRC" > "$target"
+}
+
 write_service() {
   [ -n "$SERVICE" ] || return 0
   if ! command -v systemctl >/dev/null 2>&1; then
@@ -461,7 +487,7 @@ write_service() {
   mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d
   mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system
   mkdir -p /var/lib/xray-manager /var/log/xray
-  sed -e "s|@PREFIX@|$PREFIX|g" -e "s|@ENV_FILE@|$ENV_FILE|g" -e "s|@STATE_DIR@|$STATE_DIR|g" "$UNIT_SRC" > "$SERVICE"
+  render_unit "$SERVICE"
   chmod 644 "$SERVICE"
   systemctl daemon-reload
   systemctl enable obhod.service >/dev/null 2>&1 || true
@@ -737,16 +763,18 @@ cmd_update() {
   say "updated"
 }
 
-case "$CMD" in
-  install) cmd_install ;;
-  update) cmd_update ;;
-  uninstall) cmd_uninstall ;;
-  reinstall) cmd_reinstall ;;
-  status) cmd_status ;;
-  start) cmd_service start ;;
-  stop) cmd_service stop ;;
-  restart) cmd_service restart ;;
-  logs) cmd_logs ;;
-  help) cmd_help ;;
-  *) die "unknown command: $CMD" ;;
-esac
+if [ "${OBHOD_LIB:-0}" != "1" ]; then
+  case "$CMD" in
+    install) cmd_install ;;
+    update) cmd_update ;;
+    uninstall) cmd_uninstall ;;
+    reinstall) cmd_reinstall ;;
+    status) cmd_status ;;
+    start) cmd_service start ;;
+    stop) cmd_service stop ;;
+    restart) cmd_service restart ;;
+    logs) cmd_logs ;;
+    help) cmd_help ;;
+    *) die "unknown command: $CMD" ;;
+  esac
+fi
