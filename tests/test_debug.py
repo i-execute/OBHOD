@@ -362,3 +362,40 @@ def test_the_vk_screen_names_the_announced_networks() -> None:
     html = dscreens.vk_screen(bot.debug.view()).build()
     assert "AS47541" in html
     assert "AS47764" in html
+
+
+def test_the_dpi_screen_opens_and_scans(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:dpi"))
+    body = last(bot)
+    assert "dbg:dpi:scan" in body
+    assert debug.dpi is None
+    run(debug.route(1, 2, "dbg:dpi:scan"))
+    body = last(bot)
+    assert debug.dpi is not None
+    assert debug.dpi.kernel.release
+    assert "dbg:dpi:scan" in body
+    assert bot.state.language in {"en", "ru", "zh"}
+
+
+def test_the_dpi_scan_is_rate_limited(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:dpi:scan"))
+    first = debug.dpi
+    run(debug.route(1, 2, "dbg:dpi:scan"))
+    assert debug.dpi is first
+    assert i18n.t("DBG_LIMIT", bot.state.language) in last(bot)
+
+
+def test_the_dpi_inputs_come_from_the_inbounds(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    from BOT.xray import new_inbound
+
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.fingerprint = "chrome"
+    bot.state.xray.add(inbound)
+    bot.state.xray.last_core = {"version": "v26.1.1"}
+    marks, networks, version = debug.dpi_inputs()
+    assert marks == ["chrome"]
+    assert networks == ["raw"]
+    assert version == "v26.1.1"

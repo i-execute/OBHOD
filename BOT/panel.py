@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import logging
 import os
@@ -8,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import chebur, dpi, i18n, inline, portguard, screens, subs, xscreens
+from . import i18n, inline, portguard, screens, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
 from .scan import CONCURRENCY, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit
@@ -17,9 +16,11 @@ from .xray import (
     DEFAULT_IGNOREIP,
     FINGERPRINTS,
     LOG_LEVELS,
+    MASS_FINGERPRINTS,
     NETWORKS,
     SECURITIES,
     SUB_SEGMENT_LEN,
+    SYNTHETIC_FINGERPRINTS,
     TUNNEL_HOST_RE,
     VERSION_CHOICES,
     VLESS_COMBOS,
@@ -96,11 +97,6 @@ class XrayPanel:
         self.results: list[ScanResult] = [ScanResult.from_dict(item) for item in bot.state.xray.scan_results]
         self.sub_state: dict[str, Any] = {}
         self.tunnel_key = self.load_tunnel_key()
-        self.dpi_host: chebur.Registry | None = None
-        self.dpi_error = ""
-        self.dpi_checked = ""
-        self.dpi_trap: Any = None
-        self.dpi_trap_error = ""
 
     @property
     def state(self) -> XrayState:
@@ -340,9 +336,6 @@ class XrayPanel:
             return
         if head == "logs":
             await self.logs(chat_id, msg_id, arg1)
-            return
-        if head == "dpi":
-            await self.dpi_action(chat_id, msg_id, arg1)
             return
         if head == "fit":
             await self.check_target(chat_id, msg_id, arg1)
@@ -872,72 +865,6 @@ class XrayPanel:
         self.save()
         await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=t("NOTICE_CORE_PURGED"))))
 
-    def dpi_report(self) -> Any:
-        report = dpi.audit(self.state.inbounds)
-        report.address = self.address()
-        report.trap = self.dpi_trap
-        report.trap_error = self.dpi_trap_error
-        if self.dpi_host is not None:
-            geo = self.dpi_host.geo
-            dpi.apply_hosting(report, geo.organisation, geo.asn, geo.location, report.address)
-        return report
-
-    async def dpi_action(self, chat_id: int, msg_id: int, action: str) -> None:
-        t = self.tr()
-        if action == "trap":
-            await self.dpi_scan(chat_id, msg_id)
-            return
-        if action == "trapfix":
-            await self.render(
-                chat_id,
-                msg_id,
-                xscreens.confirm_screen(self.view(), t("DPI_TRAP_CONFIRM_TITLE"), t("DPI_TRAP_CONFIRM_BODY"), "xr:dpi:trapfix2", "xr:dpi"),
-            )
-            return
-        if action == "trapfix2":
-            await self.dpi_scan(chat_id, msg_id, fix=True)
-            return
-        if action != "host":
-            await self.render(chat_id, msg_id, screens.dpi_screen(self.view(), self.dpi_report()))
-            return
-        host = self.address()
-        try:
-            chebur.clean_target(host)
-        except chebur.CheburError:
-            host = ""
-        if not host:
-            await self.render(chat_id, msg_id, screens.dpi_screen(self.view(notice=t("DPI_HOST_NONE")), self.dpi_report()))
-            return
-        await self.render(chat_id, msg_id, screens.dpi_screen(self.view(notice=t("DPI_CHECKED", value=host)), self.dpi_report()))
-        try:
-            registry = await asyncio.to_thread(chebur.check, host)
-        except chebur.CheburError as exc:
-            self.dpi_error = exc.message
-            self.dpi_host = None
-            await self.render(chat_id, msg_id, screens.dpi_screen(self.view(error=t("DPI_HOST_UNKNOWN")), self.dpi_report()))
-            return
-        self.dpi_host = registry
-        self.dpi_error = ""
-        self.dpi_checked = host
-        await self.render(chat_id, msg_id, screens.dpi_screen(self.view(notice=t("DPI_CHECKED", value=host)), self.dpi_report()))
-
-    async def dpi_scan(self, chat_id: int, msg_id: int, fix: bool = False) -> None:
-        t = self.tr()
-        await self.render(chat_id, msg_id, xscreens.busy_screen(t("DPI_TRAP_FIXING") if fix else t("DPI_TRAP_SCANNING"), self.bot.state.language))
-        try:
-            state = await (self.control.dpi_fix if fix else self.control.dpi_scan)(self.bot.state.ssh)
-        except RpcError as exc:
-            self.dpi_trap_error = exc.message
-            self.dpi_trap = None
-            await self.render(chat_id, msg_id, screens.dpi_screen(self.view(error=t("DPI_TRAP_UNKNOWN")), self.dpi_report()))
-            return
-        self.dpi_trap = state
-        self.dpi_trap_error = ""
-        notice = t("DPI_TRAP_CLEAN_NOTICE") if state.clean else t("DPI_TRAP_FOUND_NOTICE", count=state.count)
-        if fix and state.stripped:
-            notice = t("DPI_TRAP_FIXED", count=state.stripped)
-        await self.render(chat_id, msg_id, screens.dpi_screen(self.view(notice=notice), self.dpi_report()))
-
     async def logs(self, chat_id: int, msg_id: int, tail: str) -> None:
         size = 200
         if tail:
@@ -1149,6 +1076,10 @@ class XrayPanel:
             if text not in FINGERPRINTS:
                 raise PanelError("the fingerprint is not supported")
             inbound.fingerprint = text
+            if text in MASS_FINGERPRINTS:
+                return t("NOTICE_FINGERPRINT_MASS", value=text)
+            if text in SYNTHETIC_FINGERPRINTS:
+                return t("NOTICE_FINGERPRINT_SYNTHETIC", value=text)
             return t("NOTICE_FINGERPRINT", value=text)
         if ident == "xr_alpn":
             inbound.alpn = checked(valid_alpn, text)

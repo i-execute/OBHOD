@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import chebur, i18n, net, scripts
+from . import chebur, dpi, i18n, net, scripts
 from .ui import (
     bold,
     button,
@@ -37,6 +37,7 @@ class DbgView:
     owners: list[Any] = field(default_factory=list)
     chebur: Any = None
     chebur_target: str = ""
+    dpi: Any = None
     lang: str = i18n.DEFAULT_LANGUAGE
 
     def tr(self) -> i18n.Translator:
@@ -69,7 +70,7 @@ def home(view: DbgView) -> Any:
         row(button(t("DBG_VK_BTN"), "dbg:vk", icon="world"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
         row(button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
         row(button(t("DBG_EMOJI_BTN"), "dbg:emoji", icon="star"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
-        row(button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield")),
+        row(button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield"), button(t("DPI_BTN_OPEN"), "dbg:dpi", icon="warn")),
         row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
     ]
     return screen(t("DBG_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="bug")
@@ -429,3 +430,120 @@ def chebur_screen(view: "DbgView") -> Any:
         row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
     ]
     return screen(t("CHK_TITLE"), t("CHK_SUBTITLE"), blocks, buttons, icon="shield")
+
+def dpi_value(t: Any, item: Any) -> str:
+    return t("DPI_F_" + str(item.key).upper(), value=item.value, min=dpi.MIN_CORE_TAG)
+
+
+def dpi_quote(t: Any, report: Any) -> str:
+    if report is None:
+        return t("DPI_QUOTE_EMPTY")
+    level = report.level()
+    if level == "ok":
+        return t("DPI_QUOTE_OK")
+    first = ""
+    for item in report.findings:
+        if item.level != "ok":
+            first = dpi_value(t, item)
+            break
+    key = "DPI_QUOTE_BAD" if level == "bad" else "DPI_QUOTE_WARN"
+    return t(key, value=first[:110])
+
+
+def dpi_flag(t: Any, flag: int) -> str:
+    if flag < 0:
+        return "-"
+    return t("DPI_ON") if flag == 1 else t("DPI_OFF")
+
+
+def core_state(t: Any, report: Any) -> str:
+    if not report.core:
+        return "-"
+    return t("DPI_LEVEL_OK") if report.core_ok else t("DPI_LEVEL_BAD")
+
+
+def dpi_screen(view: "DbgView") -> Any:
+    t = view.tr()
+    report = view.dpi
+    blocks = banner(view, t)
+    level = report.level() if report is not None else "warn"
+    mark = {"bad": "shield", "warn": "warn"}.get(level, "ok")
+    blocks.append(
+        table(
+            [(mark, t("DPI_LEVEL"), code(t("DPI_LEVEL_" + level.upper())))],
+            (t("DPI_TITLE"), t("UI_VALUE")),
+        )
+    )
+    blocks.append(quote(bold(dpi_quote(t, report))))
+    if report is not None:
+        kernel = report.kernel
+        if kernel.fixed:
+            state = t("DPI_KERNEL_FIXED", value=kernel.series or "-")
+        elif kernel.known:
+            state = t("DPI_KERNEL_OLD")
+        else:
+            state = "-"
+        if kernel.listeners > 0:
+            listeners = kernel.listener_ports or str(kernel.listeners)
+        elif kernel.listeners == 0:
+            listeners = t("DPI_NONE")
+        else:
+            listeners = "-"
+        blocks.append(
+            table(
+                [
+                    (mark, t("DPI_KERNEL"), code(kernel.release or "-")),
+                    ("ok" if kernel.fixed else "warn", t("DPI_KERNEL_STATE"), code(state)),
+                    ("plug", t("DPI_MPTCP"), code(dpi_flag(t, kernel.mptcp))),
+                    ("plug", t("DPI_MIGRATE"), code(dpi_flag(t, kernel.migrate))),
+                    ("radar", t("DPI_LISTENERS"), code(listeners)),
+                ],
+                (t("DPI_KERNEL_TITLE"), t("UI_VALUE")),
+            )
+        )
+        blocks.append(
+            table(
+                [
+                    ("module", t("DPI_CORE"), code(report.core or "-")),
+                    ("module", t("DPI_CORE_MIN"), code(dpi.MIN_CORE_TAG)),
+                    ("bell", t("DPI_CORE_STATE"), code(core_state(t, report))),
+                    ("key", t("DPI_FINGERPRINTS"), code(", ".join(report.fingerprints) or t("DPI_NONE"))),
+                    ("route", t("DPI_NETWORKS"), code(", ".join(report.networks) or t("DPI_NONE"))),
+                ],
+                (t("DPI_CORE_TITLE"), t("UI_VALUE")),
+            )
+        )
+        owner = " ".join(part for part in (report.asn, report.organisation) if part) or "-"
+        blocks.append(
+            table(
+                [
+                    ("world", t("DPI_ORG"), code(owner)),
+                    ("warn" if report.hoster else "ok", t("DPI_HOSTER"), code(report.hoster or t("DPI_NONE"))),
+                    ("world", t("DPI_COUNTRY"), code(report.country or "-")),
+                ],
+                (t("DPI_HOST_TITLE"), t("UI_VALUE")),
+            )
+        )
+        found = [item for item in report.findings if item.level != "ok"]
+        if found:
+            blocks.append(
+                table(
+                    [
+                        ("shield" if item.level == "bad" else "warn", t("DPI_FIND_STATE"), code(dpi_value(t, item)))
+                        for item in found[:12]
+                    ],
+                    (t("DPI_FIND_TITLE"), t("UI_VALUE")),
+                )
+            )
+        blocks.append(details(t("DPI_FIX_TITLE"), pre(dpi.fix_text())))
+        blocks.append(quote(muted(t("DPI_FIX_NOTE"))))
+    blocks.append(quote(muted(t("DPI_NOTE"))))
+    buttons = [
+        row(button(t("DPI_BTN_RUN"), "dbg:dpi:scan", icon="scan")),
+        row(
+            button(t("DPI_BTN_OPEN"), "dbg:dpi:open", icon="shield"),
+            button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"),
+        ),
+        row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
+    ]
+    return screen(t("DPI_TITLE"), t("DPI_SUBTITLE"), blocks, buttons, icon="shield")

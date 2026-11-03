@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import cores, dpi as dpi_mod, i18n, xscreens
+from . import cores, i18n, xscreens
 from .guard import BanState, SshState
 from .store import State
 from .ui import (
@@ -142,7 +142,6 @@ def home(view: View) -> Any:
     core_buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cards]
     buttons = core_buttons + [
         row(button(t("NAV_SCANNER"), "xr:scan", icon="scan"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
-        row(button(t("NAV_DPI"), "xr:dpi", icon="shield")),
         row(button(t("CORE_NAV"), "core:show", icon="module"), button(t("NAV_DEBUG"), "dbg:home", icon="bug")),
         row(button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield"), button(t("NAV_SSHD"), "nav:sshd", icon="lock")),
         row(button(t("NAV_SSH"), "nav:ssh", icon="key"), button(t("NAV_SETTINGS"), "nav:settings", icon="settings")),
@@ -523,79 +522,3 @@ def subscription_hint(path: str, url: str, lang: str = i18n.DEFAULT_LANGUAGE) ->
     blocks.append(quote(muted(t("SUB_NOTE"))))
     buttons = [copy_html, row(button(t("UI_HOME"), "nav:home", icon="home"))]
     return screen(t("SUB_TITLE"), t("SUB_SUBTITLE"), blocks, buttons, icon="link")
-
-
-def dpi_screen(view: View, report: Any) -> Any:
-    t = view.tr()
-    blocks = banner(view, t)
-    head = [
-        ("shield", t("DPI_LEVEL"), code(t("DPI_LEVEL_" + report.level().upper()))),
-        ("module", t("HOME_LABEL_INBOUNDS"), code(len(report.inbounds))),
-    ]
-    if report.address:
-        head.append(("world", t("DPI_ADDRESS"), code(report.address)))
-    blocks.append(table(head, (t("DPI_TITLE"), t("UI_VALUE"))))
-    blocks.append(quote(bold(t("DPI_QUOTE"))))
-    if not report.inbounds:
-        blocks.append(quote(muted(t("DPI_NO_INBOUNDS"))))
-    for item in report.inbounds:
-        rows = [
-            ("route", t("DPI_NETWORK"), code("%s %s" % (item.network or "-", item.security or "-"))),
-            ("target", t("DPI_FP"), code(item.fingerprint or "-")),
-            ("world", t("DPI_SNI"), code(item.sni or "-")),
-            ("users", t("DPI_CLIENTS"), code(item.clients)),
-        ]
-        if item.flow:
-            rows.append(("star", t("DPI_FLOW"), code(item.flow)))
-        rows.append(("warn", t("DPI_RISKS"), code(len(item.risks))))
-        blocks.append(table(rows, ("%s %s" % (item.ident, item.remark or "-"), t("UI_VALUE"))))
-        for name in item.risks:
-            blocks.append(quote(muted(t("DPI_RISK_" + name.upper(), count=item.clients))))
-    if report.hosting_label or "hosting" in report.risks:
-        rows = [(t("DPI_HOST_ASN"), report.hosting_label or "-")]
-        rows.append((t("DPI_HOST_TITLE"), t("DPI_HOST_MATCH") if report.hosting else t("DPI_HOST_CLEAR")))
-        blocks.append(table([("world", label, code(value)) for label, value in rows], (t("DPI_HOST_TITLE"), t("UI_VALUE"))))
-        if report.hosting:
-            blocks.append(quote(bold(t("DPI_QUOTE_HOST", value=report.hosting_label or report.hosting))))
-        else:
-            blocks.append(quote(muted(t("DPI_QUOTE_HOST_OK"))))
-    advice = []
-    advice_keys = dpi_mod.ADVICE_KEYS
-    for name in report.risks:
-        key = "DPI_ADV_" + advice_keys.get(name, "SNI")
-        line = t(key)
-        if line not in advice:
-            advice.append(line)
-    trap = getattr(report, "trap", None)
-    if trap is not None or getattr(report, "trap_error", ""):
-        rows = [
-            ("module", t("DPI_TRAP_PATH"), code(trap.config_path if trap is not None else "-")),
-        ]
-        if trap is not None:
-            state = bold(t("DPI_TRAP_NONE")) if trap.clean else bold(t("DPI_TRAP_COUNT", count=trap.count))
-            rows.append(("shield", t("DPI_TRAP_STATE"), state))
-            if trap.found:
-                rows.append(("key", t("DPI_TRAP_KEYS"), code(", ".join(trap.keys()))))
-                rows.append(("route", t("DPI_TRAP_WHERE"), code(", ".join(trap.tags()))))
-        blocks.append(table(rows, (t("DPI_TRAP_TITLE"), t("UI_VALUE"))))
-        if trap is not None and trap.clean:
-            blocks.append(quote(muted(t("DPI_TRAP_QUOTE_CLEAN", interval=trap.interval))))
-        elif trap is not None:
-            blocks.append(quote(bold(t("DPI_TRAP_QUOTE_FOUND", interval=trap.interval))))
-        else:
-            blocks.append(quote(muted(t("DPI_TRAP_QUOTE_UNKNOWN"))))
-    advice.append(t("DPI_ADV_TWITCH"))
-    advice.append(t("DPI_ADV_TRAP"))
-    blocks.append(heading(t("DPI_ADVICE"), 3, icon="idea"))
-    blocks.append(bullet_list(advice))
-    blocks.append(quote(muted(t("DPI_QUOTE_TWITCH"))))
-    blocks.append(quote(muted(t("DPI_NOTE"))))
-    trap_row = [button(t("DPI_TRAP_BTN"), "xr:dpi:trap", icon="xray")]
-    if trap is not None and not trap.clean:
-        trap_row.append(button(t("DPI_TRAP_FIX_BTN"), "xr:dpi:trapfix", icon="warn"))
-    buttons = [
-        row(button(t("DPI_HOST_BTN"), "xr:dpi:host", icon="world"), *trap_row),
-        row(button(t("UI_REFRESH"), "xr:dpi", icon="refresh"), button(t("NAV_XRAY"), "xr:home", icon="xray")),
-        row(button(t("UI_HOME"), "nav:home", icon="home")),
-    ]
-    return screen(t("DPI_TITLE"), t("DPI_SUBTITLE"), blocks, buttons, icon="shield")

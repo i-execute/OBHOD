@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from . import chebur, cores, dscreens, fwguard, i18n, net, portguard, scripts, ui
+from . import chebur, cores, dpi, dscreens, fwguard, i18n, net, portguard, scripts, ui
 from .freeturn import FtError
 
 SCAN_COOLDOWN = 3.0
@@ -12,6 +12,7 @@ TRACE_COOLDOWN = 3.0
 VK_COOLDOWN = 10.0
 SCRIPTS_COOLDOWN = 5.0
 CHK_COOLDOWN = 4.0
+DPI_COOLDOWN = 8.0
 MAX_LOG = 12
 
 
@@ -34,6 +35,7 @@ class DebugPanel:
         self.marks: dict[str, float] = {}
         self.chebur: chebur.Answer | None = None
         self.chebur_target = ""
+        self.dpi: Any = None
 
     def tr(self) -> i18n.Translator:
         return i18n.translator(getattr(self.bot.state, "language", i18n.DEFAULT_LANGUAGE))
@@ -53,6 +55,7 @@ class DebugPanel:
             trace_text=self.trace_text,
             chebur=self.chebur,
             chebur_target=self.chebur_target,
+            dpi=self.dpi,
             emoji=self.bot.emoji_enabled,
             lang=self.tr().language,
         )
@@ -112,6 +115,9 @@ class DebugPanel:
                 return
             if head == "chk":
                 await self.chebur_action(chat_id, msg_id, arg1)
+                return
+            if head == "dpi":
+                await self.dpi_action(chat_id, msg_id, arg1)
                 return
             if head == "info":
                 await self.render(chat_id, msg_id, dscreens.info_screen(self.view(), self.clock()))
@@ -258,6 +264,51 @@ class DebugPanel:
         self.vk["guard"] = guard.to_dict() if hasattr(guard, "to_dict") else {}
         self.note("vk", "applied", str(len(cidrs)))
         await self.render(chat_id, msg_id, dscreens.vk_screen(self.view(notice=t("DBG_VK_CHANGED"))))
+
+    def dpi_inputs(self) -> tuple[list[str], list[str], str]:
+        xray = getattr(self.bot.state, "xray", None)
+        book = dict(getattr(xray, "last_core", {}) or {})
+        return dpi.collect(getattr(xray, "inbounds", []), book)
+
+    async def dpi_geo(self) -> dict[str, str]:
+        address = ""
+        try:
+            address = str(self.bot.address() or "")
+        except Exception:
+            address = ""
+        if not address:
+            return {}
+        try:
+            registry = await asyncio.to_thread(chebur.check, address)
+        except Exception:
+            return {}
+        geo = registry.geo
+        return {"asn": geo.asn, "organisation": geo.organisation, "country": geo.country}
+
+    async def dpi_action(self, chat_id: int, msg_id: int, stage: str) -> None:
+        t = self.tr()
+        if stage not in {"scan", "again"}:
+            await self.render(chat_id, msg_id, dscreens.dpi_screen(self.view()))
+            return
+        if not self.cooled("dpi", DPI_COOLDOWN):
+            await self.render(chat_id, msg_id, dscreens.dpi_screen(self.view(notice=t("DBG_LIMIT"))))
+            return
+        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        marks, networks, version = self.dpi_inputs()
+        state = await asyncio.to_thread(dpi.kernel_state)
+        geo = await self.dpi_geo()
+        self.dpi = dpi.assess(
+            fingerprints=marks,
+            networks=networks,
+            core=version,
+            asn=geo.get("asn", ""),
+            organisation=geo.get("organisation", ""),
+            country=geo.get("country", ""),
+            kernel=state,
+        )
+        self.note("dpi", self.dpi.level(), dpi.quote_summary(self.dpi)[:64])
+        self.remember("dpi %s" % dpi.quote_summary(self.dpi))
+        await self.render(chat_id, msg_id, dscreens.dpi_screen(self.view()))
 
     async def scripts_action(self, chat_id: int, msg_id: int, stage: str) -> None:
         if stage == "fetch":

@@ -141,9 +141,29 @@ so a ban can be told apart from a broken route. Every screen is rich HTML, every
 half a second first edits the message into a loading screen, and any failure is sent as a second message with
 the full traceback in a code block.
 
+## RKN exposure
+
+`Debug` also holds `RKN exposure`, which answers the question the october 2026 filter asks first: how does this
+server look from the outside. It reads the kernel release, `net.mptcp.enabled`, `net.ipv4.tcp_migrate_req` and
+`ss -Mln` (adding `-t` to that call hides exactly the sockets we look for), compares the release against the known
+fixed builds, takes the core version from the state report and the reality fingerprints and transports from the
+inbounds, and asks the registry for the asn, the owner and the country of the server address. The verdict is
+`clean`, `attention` or `danger`, opened by one quoted sentence: `the server is reachable for a remote root: ...`
+when an mptcp listener is up, `one weak spot is open: ...` for a mass fingerprint or a mass hosting subnet, and
+`engine and kernel look right, no mptcp listener, no mass fingerprint` otherwise. A kernel series that is not in
+the table is reported as untracked, never as patched. The findings block names the risk in words, and the
+`what to run` block prints the commands, including the two traps: `net.mptcp.enabled=0` plus
+`net.ipv4.tcp_migrate_req=0`, the nftables rule that drops tcp options as an interim only, and `ss -Mlnp` for the
+check. Nothing is applied from the screen, because the host wide switches touch other services.
+
+The generator side matches the screen: `sockopt.tcpMptcp` is `false` on every inbound, the default reality
+fingerprint is `firefox` and not the mass `chrome`, `360` and `qq` are accepted, and `client_config()` renders a
+client json with `mux` at `concurrency 8`, except under `xtls-rprx-vision`, where the core ignores mux and the json
+says so by leaving it out.
+
 ## Localization
 
-`BOT/strings.py` holds `EN`, `RU` and `ZH` with the same variables, 1010 today, with and without emoji.
+`BOT/strings.py` holds `EN`, `RU` and `ZH` with the same variables, 1255 today, with and without emoji.
 `BOT/i18n.py` looks a variable up by name, falls back to English, refuses a missing key or a forgotten
 placeholder and exposes `check_catalogs()` for the parity test. Raise messages, logs and shell output stay English.
 
@@ -166,7 +186,7 @@ placeholder and exposes `check_catalogs()` for the parity test. Raise messages, 
 ## Layout
 
 ```
-BOT/            app, panels, screens, cores, scripts, net, subs, commands, dbg, portguard, ui, i18n, strings
+BOT/            app, panels, screens, cores, scripts, net, subs, commands, dbg, dpi, portguard, ui, i18n, strings
 Storage/remote/ agents: xray, subscription server, fail2ban, ssh, freeturn
 tools/          policy assertions and the protection baseline
 tests/          the suite
@@ -184,10 +204,11 @@ changed, restarts after the answer is delivered and verifies the marker on the n
 python -m pytest
 ```
 
-2262 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
+2304 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
 subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
 xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
-the three catalogues with their placeholder parity, the cheburcheck client with a fake transport and a fake socket, and the hardening suites in `tests/test_security.py` and
+the three catalogues with their placeholder parity, the cheburcheck client with a fake transport and a fake socket, the dpi survey with a synthetic
+kernel state and the generator guards for sockopt, mux and the fingerprint, and the hardening suites in `tests/test_security.py` and
 `tests/test_pentest.py`. `tests/test_source.py` fails the build on a Python comment, docstring, emoji or long
 dash, and on any Cyrillic or CJK character outside `BOT/strings.py`.
 

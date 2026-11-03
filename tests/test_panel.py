@@ -1008,3 +1008,17 @@ def test_the_key_arrives_through_the_inline_button_and_never_through_a_message(t
     _, kind, index, payload = inline.parse_payload(body)
     value = inline.value_from_payload(token, kind, index, payload, bot.state.language)
     assert value == key
+
+
+def test_the_fingerprint_notice_warns_about_the_mass_one(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    bot.state.xray.add(inbound)
+    mass = item.set_field("xr_fingerprint", str(inbound.id), "chrome")
+    assert mass == i18n.t("NOTICE_FINGERPRINT_MASS", value="chrome")
+    assert item.set_field("xr_fingerprint", str(inbound.id), "firefox") == i18n.t("NOTICE_FINGERPRINT", value="firefox")
+    synth = item.set_field("xr_fingerprint", str(inbound.id), "randomized")
+    assert synth == i18n.t("NOTICE_FINGERPRINT_SYNTHETIC", value="randomized")
+    for name in ("360", "qq", "edge", "ios"):
+        assert name in item.set_field("xr_fingerprint", str(inbound.id), name)
+    assert inbound.fingerprint == "ios"

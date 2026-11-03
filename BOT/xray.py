@@ -52,7 +52,23 @@ VLESS_TICKETS = ("600s", "0s", "300-600s")
 VLESS_CLIENT_MODES = ("0rtt", "1rtt")
 XHTTP_MODES = ("auto", "packet-up", "stream-up", "stream-one")
 FLOWS = ("", "xtls-rprx-vision")
-FINGERPRINTS = ("firefox", "edge", "chrome", "safari", "ios", "android", "random", "randomized")
+FINGERPRINTS = (
+    "firefox",
+    "edge",
+    "chrome",
+    "safari",
+    "ios",
+    "android",
+    "360",
+    "qq",
+    "random",
+    "randomized",
+)
+DEFAULT_FINGERPRINT = "firefox"
+MASS_FINGERPRINTS = ("chrome",)
+SYNTHETIC_FINGERPRINTS = ("randomized",)
+MUX_CONCURRENCY = 8
+VISION_FLOW = "xtls-rprx-vision"
 VLESS_HANDSHAKE = "mlkem768x25519plus"
 DEFAULT_DEST = "www.cloudflare.com:443"
 DEFAULT_SNI = "www.cloudflare.com"
@@ -492,7 +508,7 @@ class XrayInbound:
     sni: str = DEFAULT_SNI
     short_ids: list[str] = field(default_factory=list)
     spider_x: str = ""
-    fingerprint: str = "firefox"
+    fingerprint: str = DEFAULT_FINGERPRINT
     mldsa65_seed: str = ""
     mldsa65_verify: str = ""
     pq_mode: str = ""
@@ -557,7 +573,7 @@ class XrayInbound:
 
     def stream(self) -> dict[str, Any]:
         network = "tcp" if self.network == "raw" else self.network
-        stream: dict[str, Any] = {"network": network, "security": self.security}
+        stream: dict[str, Any] = {"network": network, "security": self.security, "sockopt": sockopt_block()}
         if self.network == "raw":
             stream["tcpSettings"] = {"acceptProxyProtocol": False, "header": {"type": "none"}}
         if self.network == "grpc":
@@ -650,7 +666,7 @@ class XrayInbound:
             sni=str(data.get("sni", DEFAULT_SNI)),
             short_ids=[str(item) for item in data.get("short_ids") or []],
             spider_x=str(data.get("spider_x", "")),
-            fingerprint=str(data.get("fingerprint", "firefox")),
+            fingerprint=str(data.get("fingerprint", DEFAULT_FINGERPRINT) or DEFAULT_FINGERPRINT),
             mldsa65_seed=str(data.get("mldsa65_seed", "") or ""),
             mldsa65_verify=str(data.get("mldsa65_verify", "") or ""),
             pq_mode=str(data.get("pq_mode", "") or ""),
@@ -752,6 +768,82 @@ def routing_block(tag: str = API_TAG, dns_tag: str = "") -> dict[str, Any]:
     rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "blocked"})
     rules.append({"type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked"})
     return {"domainStrategy": "AsIs", "rules": rules}
+
+
+def sockopt_block() -> dict[str, Any]:
+    return {"tcpMptcp": False, "acceptProxyProtocol": False}
+
+
+def mux_block(flow: str = "") -> dict[str, Any]:
+    if (flow or "").strip() == VISION_FLOW:
+        return {}
+    return {"enabled": True, "concurrency": MUX_CONCURRENCY}
+
+
+def mux_ignored(flow: str = "") -> bool:
+    return (flow or "").strip() == VISION_FLOW
+
+
+def client_stream(inbound: XrayInbound) -> dict[str, Any]:
+    network = "tcp" if inbound.network == "raw" else inbound.network
+    stream: dict[str, Any] = {"network": network, "security": inbound.security, "sockopt": sockopt_block()}
+    if inbound.security == "reality":
+        stream["realitySettings"] = {
+            "serverName": inbound.sni or DEFAULT_SNI,
+            "fingerprint": inbound.fingerprint or DEFAULT_FINGERPRINT,
+            "publicKey": inbound.reality_public,
+            "shortId": (inbound.short_ids or [""])[0],
+            "spiderX": inbound.spider_x or "/",
+        }
+    elif inbound.security == "tls":
+        stream["tlsSettings"] = {
+            "serverName": inbound.sni,
+            "fingerprint": inbound.fingerprint or DEFAULT_FINGERPRINT,
+            "alpn": list(inbound.alpn or ["h2", "http/1.1"]),
+        }
+    return stream
+
+
+def client_config(inbound: XrayInbound, client: XrayClient, address: str, port: int | None = None) -> dict[str, Any]:
+    if not inbound.post_quantum():
+        raise XrayError("the inbound has no post quantum vless key pair")
+    outbound: dict[str, Any] = {
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": address,
+                    "port": int(port or inbound.port),
+                    "users": [
+                        {
+                            "id": client.ident,
+                            "encryption": inbound.encryption.encryption("0rtt"),
+                            "flow": client.flow if inbound.network == "raw" and inbound.security in {"reality", "tls"} else "",
+                        }
+                    ],
+                }
+            ]
+        },
+        "streamSettings": client_stream(inbound),
+        "tag": "proxy",
+    }
+    mux = mux_block(client.flow if inbound.network == "raw" else "")
+    if mux:
+        outbound["mux"] = mux
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {
+                "tag": "socks",
+                "listen": "127.0.0.1",
+                "port": 10808,
+                "protocol": "socks",
+                "settings": {"udp": True, "auth": "noauth"},
+            }
+        ],
+        "outbounds": [outbound, {"protocol": "freedom", "tag": "direct"}],
+        "routing": {"rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"}]},
+    }
 
 
 def outbound_block() -> list[dict[str, Any]]:
@@ -862,7 +954,7 @@ def _security_params(inbound: XrayInbound, params: dict[str, str]) -> None:
     if inbound.security == "reality":
         params["security"] = "reality"
         params["sni"] = inbound.sni or DEFAULT_SNI
-        params["fp"] = inbound.fingerprint or "firefox"
+        params["fp"] = inbound.fingerprint or DEFAULT_FINGERPRINT
         params["pbk"] = inbound.reality_public
         params["sid"] = (inbound.short_ids or [""])[0]
         if inbound.spider_x:
@@ -873,7 +965,7 @@ def _security_params(inbound: XrayInbound, params: dict[str, str]) -> None:
     if inbound.security == "tls":
         params["security"] = "tls"
         params["sni"] = inbound.sni
-        params["fp"] = inbound.fingerprint or "firefox"
+        params["fp"] = inbound.fingerprint or DEFAULT_FINGERPRINT
         if inbound.alpn:
             params["alpn"] = ",".join(inbound.alpn)
         return
