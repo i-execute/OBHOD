@@ -1,1 +1,1 @@
-goygram>=0.8.26
+goygram>=0.8.28
