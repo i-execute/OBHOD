@@ -352,7 +352,6 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
     blocks = banner(view, t)
     if not info.get("git"):
         blocks.append(quote(bold(t("UPD_NO_GIT"))))
-        blocks.append(quote(muted(t("UPD_NO_GIT_HINT"))))
         blocks.append(pre(code("curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo bash")))
         buttons = [row(button(t("UI_HOME"), "nav:home", icon="home"))]
         return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="update")
