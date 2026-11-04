@@ -55,16 +55,32 @@ echo_off() {
   if [ "$CREDS" = "1" ]; then
     return 0
   fi
-  if tty_available && stty -echo </dev/tty 2>/dev/null; then
-    ECHO_OFF=1
-    note "the terminal echo is off until the source is fetched, a paste made before the prompt stays invisible"
+  if [ "$STDIN_EATEN" = "1" ]; then
+    return 0
+  fi
+  if tty_available; then
+    if command -v timeout >/dev/null 2>&1; then
+      if timeout 2 stty -echo </dev/tty 2>/dev/null; then
+        ECHO_OFF=1
+        note "the terminal echo is off until the source is fetched, a paste made before the prompt stays invisible"
+      fi
+    else
+      if stty -echo </dev/tty 2>/dev/null; then
+        ECHO_OFF=1
+        note "the terminal echo is off until the source is fetched, a paste made before the prompt stays invisible"
+      fi
+    fi
   fi
   return 0
 }
 
 echo_on() {
   if [ "$ECHO_OFF" = "1" ]; then
-    stty echo </dev/tty 2>/dev/null || true
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 2 stty echo </dev/tty 2>/dev/null || true
+    else
+      stty echo </dev/tty 2>/dev/null || true
+    fi
     ECHO_OFF=0
   fi
   return 0
