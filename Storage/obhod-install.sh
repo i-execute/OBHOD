@@ -38,6 +38,7 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 trap '[ -n "${_SPINNER_PID:-}" ] && kill "$_SPINNER_PID" 2>/dev/null; loud_tty' EXIT
+
 ui_init() {
   COLOR=0
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${OBHOD_NO_UI:-0}" != "1" ] && [ "${TERM:-dumb}" != "dumb" ]; then
@@ -78,7 +79,7 @@ STEP_TOTAL=0
   }
   spinner_ok() {
     local msg="$1" extra="${2:-}"
-    if [ -n "$_SPINNER_PID" ]; then kill "$_SPINNER_PID" 2>/dev/null || true; wait "$_SPINNER_PID" 2>/dev/null || true; _SPINNER_PID=""; printf '\r  %s[ok]%s %s' "$C_OK" "$C_RESET" "$msg" >&2; [ -n "$extra" ] && printf ' %s%s%s' "$C_DIM" "$extra" "$C_RESET" >&2; printf '          \n' >&2; else printf '      %sok%s %s\n' "$C_OK" "$C_RESET" "$msg" >&2; fi
+    if [ -n "$_SPINNER_PID" ]; then kill "$_SPINNER_PID" 2>/dev/null || true; wait "$_SPINNER_PID" 2>/dev/null || true; _SPINNER_PID=""; printf '\r  %sv%s %s' "$C_OK" "$C_RESET" "$msg" >&2; [ -n "$extra" ] && printf ' %s%s%s' "$C_DIM" "$extra" "$C_RESET" >&2; printf '          \n' >&2; else printf '      %sok%s %s\n' "$C_OK" "$C_RESET" "$msg" >&2; fi
   }
   spinner_fail() {
     local msg="$1"; if [ -n "$_SPINNER_PID" ]; then kill "$_SPINNER_PID" 2>/dev/null || true; wait "$_SPINNER_PID" 2>/dev/null || true; _SPINNER_PID=""; printf '\r  %sx%s %s          \n' "$C_BAD" "$C_RESET" "$msg" >&2; else printf '      %sxx%s %s\n' "$C_BAD" "$C_RESET" "$msg" >&2; fi
@@ -152,7 +153,7 @@ summary_box() {
     [ -n "$service_state" ] || service_state="unknown"
   fi
   if [ "$COLOR" = "1" ]; then
-    printf '\n  %s+== %sdone%s ==========================+%s\n' "$C_OK" "$C_BOLD" "$C_OK" "$C_RESET"
+    printf '\n  %s+= %sdone%s ===========================+%s\n' "$C_OK" "$C_BOLD" "$C_OK" "$C_RESET"
   else
     printf '\n  %s%sdone%s\n\n' "$C_OK" "$C_BOLD" "$C_RESET"
   fi

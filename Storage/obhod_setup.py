@@ -43,7 +43,7 @@ class Spinner:
     def ok(self, done_msg: str = "", extra: str = ""):
         if self._thr:
             self._stop.set(); self._thr.join(timeout=0.3)
-            sys.stdout.write("\r  \033[38;5;42m[ok]\033[0m %s" % (done_msg or self.msg))
+            sys.stdout.write("\r  \033[38;5;42mv\033[0m %s" % (done_msg or self.msg))
             if extra: sys.stdout.write(" \033[2m%s\033[0m" % extra)
             sys.stdout.write("          \n"); sys.stdout.flush()
         else:

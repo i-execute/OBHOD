@@ -11,7 +11,7 @@ from typing import Any
 
 from goygram import GoyGram
 
-from . import commands, cores, dscreens, ftscreens, i18n, inline, notify, screens, ui, xscreens
+from . import commands, cores, dscreens, ftscreens, i18n, inline, notify, screens, tools, ui, xscreens
 from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
@@ -756,6 +756,9 @@ class Bot:
     async def route(self, chat_id: int, msg_id: int, data: str) -> None:
         parts = data.split(":")
         head = parts[0] if parts else ""
+        if data.startswith("tools:"):
+            await self.tools_action(chat_id, msg_id, data)
+            return
         if head == "nav":
             await self.navigate(chat_id, msg_id, parts[1] if len(parts) > 1 else "home")
             return
@@ -835,6 +838,9 @@ class Bot:
             return
         if page == "core":
             await self.render(chat_id, msg_id, ftscreens.core_screen(self.freeturn.view()))
+            return
+        if page == "tools":
+            await self.render(chat_id, msg_id, tools.home(self.debug.view()))
             return
         if page == "update":
             await self.update_action(chat_id, msg_id, "show", "")
@@ -1024,6 +1030,27 @@ class Bot:
             await self.harden(chat_id, root=value)
             return
         await self.render(chat_id, msg_id, screens.sshd_screen(self.view()))
+
+    async def tools_action(self, chat_id: int, msg_id: int, data: str) -> None:
+        parts=data.split(":")
+        action=parts[1] if len(parts)>1 else "home"
+        sub=parts[2] if len(parts)>2 else ""
+        if action=="home": await self.render(chat_id, msg_id, tools.home(self.debug.view())); return
+        if action=="scan":
+            if sub=="go": await self.debug.route(chat_id, msg_id, "dbg:scan:go")
+            else: await self.render(chat_id, msg_id, tools.scan_screen(self.debug.view())); return
+        if action in ("chebur","chk"):
+            if sub=="probe": await self.debug.route(chat_id, msg_id, "dbg:chk:probe")
+            else: await self.render(chat_id, msg_id, tools.chebur_screen(self.debug.view())); return
+        if action=="dpi":
+            if sub=="scan": await self.debug.route(chat_id, msg_id, "dbg:dpi:scan")
+            else: await self.render(chat_id, msg_id, tools.dpi_screen(self.debug.view())); return
+        if action=="ddos":
+            if sub=="probe": await self.debug.route(chat_id, msg_id, "dbg:dd:probe")
+            else: await self.render(chat_id, msg_id, tools.ddos_screen(self.debug.view())); return
+        if action=="fw": await self.render(chat_id, msg_id, tools.fw_screen(self.debug.view())); return
+        if action in ("fortress","pentest"): await self.render(chat_id, msg_id, tools.fortress_screen(self.debug.view())); return
+        await self.render(chat_id, msg_id, tools.home(self.debug.view()))
 
     async def harden(self, chat_id: int, port: int = 0, password: str = "", root: str = "") -> None:
         actor = self.admin_id

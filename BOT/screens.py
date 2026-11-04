@@ -140,11 +140,11 @@ def home(view: View) -> Any:
     core_buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cards]
     buttons = core_buttons + [
         row(button(t("NAV_SCANNER"), "xr:scan", icon="scan"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
-        row(button(t("CORE_NAV"), "core:show", icon="module"), button(t("NAV_DEBUG"), "dbg:home", icon="bug")),
-        row(button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield"), button(t("NAV_SSHD"), "nav:sshd", icon="lock")),
-        row(button(t("NAV_SSH"), "nav:ssh", icon="key"), button(t("NAV_SETTINGS"), "nav:settings", icon="settings")),
-        row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("NAV_LANGUAGE"), "nav:lang", icon="language")),
-        row(button(t("NAV_HELP"), "nav:help", icon="docs")),
+        row(button("Tools", "tools:home", icon="tools"), button(t("CORE_NAV"), "core:show", icon="module")),
+        row(button(t("NAV_DEBUG"), "dbg:home", icon="bug"), button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield")),
+        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_SSH"), "nav:ssh", icon="key")),
+        row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_UPDATE"), "upd:show", icon="update")),
+        row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), button(t("NAV_HELP"), "nav:help", icon="docs")),
     ]
     return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="home")
 
