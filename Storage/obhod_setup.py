@@ -7,6 +7,56 @@ import shutil
 import subprocess
 import sys
 import time
+try:
+    from rich.console import Console
+    RICH_AVAILABLE = True
+    console = Console()
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
+import threading
+_SPIN_FRAMES = [chr(47), chr(45), chr(92), chr(124)]
+_SPIN_FRAMES_ASCII = ["/","-","\\","|"]
+class Spinner:
+    def __init__(self, msg: str):
+        self.msg = msg
+        self._stop = threading.Event()
+        self._thr: threading.Thread | None = None
+        self._use_rich = False
+    def __enter__(self):
+        if COLOR and sys.stdout.isatty():
+            frames = _SPIN_FRAMES if sys.stdout.encoding and "utf" in sys.stdout.encoding.lower() else _SPIN_FRAMES_ASCII
+            def _run():
+                import time
+                i=0
+                while not self._stop.is_set():
+                    sys.stdout.write("\r  %s %s   " % (frames[i % len(frames)], self.msg))
+                    sys.stdout.flush()
+                    i+=1
+                    time.sleep(0.08)
+            self._thr = threading.Thread(target=_run, daemon=True)
+            self._thr.start()
+        else:
+            print("      .. " + self.msg)
+        return self
+    def ok(self, done_msg: str = "", extra: str = ""):
+        if self._thr:
+            self._stop.set(); self._thr.join(timeout=0.3)
+            sys.stdout.write("\r  \033[38;5;42m[ok]\033[0m %s" % (done_msg or self.msg))
+            if extra: sys.stdout.write(" \033[2m%s\033[0m" % extra)
+            sys.stdout.write("          \n"); sys.stdout.flush()
+        else:
+            print("      \033[38;5;42mok\033[0m " + (done_msg or self.msg))
+    def fail(self, msg: str = ""):
+        if self._thr:
+            self._stop.set(); self._thr.join(timeout=0.3)
+            sys.stdout.write("\r  \033[38;5;203mx\033[0m %s          \n" % (msg or self.msg)); sys.stdout.flush()
+        else:
+            print("      \033[38;5;203mxx\033[0m " + (msg or self.msg))
+    def __exit__(self, *a):
+        if self._thr and not self._stop.is_set():
+            self.ok()
 from pathlib import Path
 
 OK = "ok"
@@ -16,6 +66,15 @@ INFO = "info"
 TITLE = "OBHOD setup"
 DEFAULT_PREFIX = "/opt/obhod"
 SECRET_ENV = ("BOT_TOKEN", "API_HASH")
+THEME = {
+    "border": "38;5;141",
+    "header": "1;38;5;45",
+    "accent": "38;5;44",
+    "ok": "38;5;42",
+    "warn": "38;5;214",
+    "bad": "38;5;203",
+    "dim": "38;5;244",
+}
 TOKEN_RE = re.compile(r"^[0-9]{5,}:[A-Za-z0-9_-]{30,}$")
 HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
@@ -49,7 +108,10 @@ def paint(text: str, code: str) -> str:
 
 def head(text: str) -> None:
     print()
-    print(paint(text, "1;38;5;45"))
+    width = 56
+    print(paint("  +" + "=" * width + "+", "38;5;45"))
+    print(paint("  | " + text.ljust(width-1) + "|", "1;38;5;45"))
+    print(paint("  +" + "=" * width + "+", "38;5;45"))
 
 
 def line(kind: str, text: str) -> None:
@@ -110,28 +172,61 @@ class Setup:
         out = sys.stdout
         out.write("  %s" % prompt)
         out.flush()
-        if secret and hasattr(stream, "fileno") and os.isatty(stream.fileno()):
-            import termios
-            import tty as ttymod
-
-            fd = stream.fileno()
-            old = termios.tcgetattr(fd)
+        if secret:
             try:
-                ttymod.setcbreak(fd)
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-                attrs = termios.tcgetattr(fd)
-                attrs[3] = attrs[3] & ~termios.ECHO
-                termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
-                value = stream.readline().strip()
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            out.write("\n")
+                import termios
+                import tty as ttymod
+                fd = stream.fileno()
+                if not os.isatty(fd):
+                    value = stream.readline().strip()
+                    return value or current
+                old = termios.tcgetattr(fd)
+                value = ""
+                try:
+                    ttymod.setraw(fd)
+                    attrs = termios.tcgetattr(fd)
+                    attrs[3] = attrs[3] & ~termios.ECHO
+                    termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
+                    while True:
+                        ch = os.read(fd, 1).decode('utf-8', errors='ignore')
+                        if ch in ('\n', '\r'):
+                            out.write("\n")
+                            out.flush()
+                            break
+                        elif ch == '\x7f' or ch == '\x08':
+                            if value:
+                                value = value[:-1]
+                                out.write("\b \b")
+                                out.flush()
+                        elif ch == '\x03':
+                            raise KeyboardInterrupt
+                        elif ch == '\x15':
+                            while value:
+                                value = value[:-1]
+                                out.write("\b \b")
+                            out.flush()
+                        elif ch:
+                            value += ch
+                            out.write(ch if len(value) <= 6 else "*")
+                            out.flush()
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                return value or current
+            except Exception:
+                try:
+                    value = stream.readline().strip()
+                    return value or current
+                except:
+                    return current
         else:
-            value = stream.readline().strip()
-        return value or current
+            try:
+                value = stream.readline().strip()
+            except:
+                value = ""
+            return value or current
 
     def read_credentials(self) -> bool:
-        head("2. telegram credentials")
+        head("  2. TELEGRAM CREDENTIALS  ")
         existing = self.read_env_file()
         for name in ("BOT_TOKEN", "API_ID", "API_HASH", "ADMIN_ID"):
             self.credentials[name] = existing.get(name, "")
@@ -266,9 +361,14 @@ class Setup:
         print("  config  %s" % self.env_file)
         print("  state   %s" % self.state_dir)
         head("1. checks")
-        if not self.check_python():
-            return 2
-        self.check_network()
+        with Spinner("checking python...") as sp:
+            ok = self.check_python()
+            sp.ok("python", "" if not ok else "")
+            if not ok:
+                return 2
+        with Spinner("checking network...") as sp:
+            net_ok = self.check_network()
+            sp.ok("network", "ok" if net_ok else "limited")
         if not self.read_credentials():
             return 2
         self.write_env_file()

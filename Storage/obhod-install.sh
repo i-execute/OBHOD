@@ -37,8 +37,7 @@ done
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-trap 'loud_tty' EXIT
-
+trap '[ -n "${_SPINNER_PID:-}" ] && kill "$_SPINNER_PID" 2>/dev/null; loud_tty' EXIT
 ui_init() {
   COLOR=0
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${OBHOD_NO_UI:-0}" != "1" ] && [ "${TERM:-dumb}" != "dumb" ]; then
@@ -63,8 +62,27 @@ ui_init() {
     C_BAD=""
     C_HEAD=""
   fi
-  STEP_TOTAL=0
+STEP_TOTAL=0
   STEP_NOW=0
+  _SPINNER_PID=""
+  _SPN_I=0
+  _SPN_FRAMES=('/' '-' '\' '|' '/' '-' '\' '|' '/' '-')
+  if ! locale charmap 2>/dev/null | grep -qi utf-8; then _SPN_FRAMES=('/' '-' '\\' '|'); fi
+  spinner_start() {
+    local msg="$1"
+    if [ -t 2 ] && [ "$COLOR" = "1" ]; then
+      ( idx=0; while true; do printf '\r  %s %s%s   ' "${_SPN_FRAMES[idx % ${#_SPN_FRAMES[@]}]}" "$C_DIM" "$msg" >&2; idx=$((idx+1)); sleep 0.08; done ) & _SPINNER_PID=$!; disown 2>/dev/null || true
+    else
+      printf '      .. %s\n' "$msg" >&2
+    fi
+  }
+  spinner_ok() {
+    local msg="$1" extra="${2:-}"
+    if [ -n "$_SPINNER_PID" ]; then kill "$_SPINNER_PID" 2>/dev/null || true; wait "$_SPINNER_PID" 2>/dev/null || true; _SPINNER_PID=""; printf '\r  %s[ok]%s %s' "$C_OK" "$C_RESET" "$msg" >&2; [ -n "$extra" ] && printf ' %s%s%s' "$C_DIM" "$extra" "$C_RESET" >&2; printf '          \n' >&2; else printf '      %sok%s %s\n' "$C_OK" "$C_RESET" "$msg" >&2; fi
+  }
+  spinner_fail() {
+    local msg="$1"; if [ -n "$_SPINNER_PID" ]; then kill "$_SPINNER_PID" 2>/dev/null || true; wait "$_SPINNER_PID" 2>/dev/null || true; _SPINNER_PID=""; printf '\r  %sx%s %s          \n' "$C_BAD" "$C_RESET" "$msg" >&2; else printf '      %sxx%s %s\n' "$C_BAD" "$C_RESET" "$msg" >&2; fi
+  }
 }
 
 hr() {
@@ -77,9 +95,16 @@ banner() {
     mode="dev install, no root, no systemd"
   fi
   printf '\n'
-  printf '  %s%sOBHOD%s\n' "$C_HEAD" "$C_BOLD" "$C_RESET"
-  printf '  %stelegram control bot over xray-core%s\n' "$C_DIM" "$C_RESET"
-  printf '  %s%s%s\n\n' "$C_ACC" "$mode" "$C_RESET"
+  if [ "$COLOR" = "1" ]; then
+    printf '  %s+======================================+%s\n' "$C_HEAD" "$C_RESET"
+    printf '  %s|%s  %sOBHOD%s                          %s|%s\n' "$C_HEAD" "$C_RESET" "$C_BOLD" "$C_HEAD" "$C_RESET" "$C_RESET"
+    printf '  %s|%s  telegram control bot over xray-core %s|%s\n' "$C_HEAD" "$C_DIM" "$C_HEAD" "$C_RESET"
+    printf '  %s+======================================+%s\n' "$C_HEAD" "$C_RESET"
+  else
+    printf '  %s%sOBHOD%s\n' "$C_HEAD" "$C_BOLD" "$C_RESET"
+    printf '  %stelegram control bot over xray-core%s\n' "$C_DIM" "$C_RESET"
+  fi
+  printf '  %s/ %s%s\n\n' "$C_ACC" "$mode" "$C_RESET"
 }
 
 kv() {
@@ -89,12 +114,19 @@ kv() {
 step() {
   STEP_NOW=$((STEP_NOW + 1))
   local total=""
+  local bar=""
   if [ "$STEP_TOTAL" -gt 0 ]; then
     total="$STEP_NOW/$STEP_TOTAL"
+    local filled=$((STEP_NOW * 20 / STEP_TOTAL))
+    local empty=$((20 - filled))
+    bar=" ["
+    for i in $(seq 1 $filled); do bar="${bar}#"; done
+    for i in $(seq 1 $empty); do bar="${bar}."; done
+    bar="${bar}]"
   else
     total="*"
   fi
-  printf '\n%s[%s]%s %s%s%s\n' "$C_ACC" "$total" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+  printf '\n%s[%s]%s %s%s%s%s\n' "$C_ACC" "$total" "$C_RESET" "$C_BOLD" "$*" "$C_DIM" "$bar" "$C_RESET"
 }
 
 note_line() {
@@ -119,7 +151,11 @@ summary_box() {
     service_state="$(systemctl is-active obhod.service 2>/dev/null || true)"
     [ -n "$service_state" ] || service_state="unknown"
   fi
-  printf '\n  %s%sdone%s\n\n' "$C_OK" "$C_BOLD" "$C_RESET"
+  if [ "$COLOR" = "1" ]; then
+    printf '\n  %s+== %sdone%s ==========================+%s\n' "$C_OK" "$C_BOLD" "$C_OK" "$C_RESET"
+  else
+    printf '\n  %s%sdone%s\n\n' "$C_OK" "$C_BOLD" "$C_RESET"
+  fi
   kv "payload" "$PREFIX"
   kv "config" "$ENV_FILE"
   kv "state" "$STATE_DIR"
@@ -131,7 +167,11 @@ summary_box() {
     kv "logs" "journalctl -u obhod -f"
     kv "open" "/help in the bot from the admin account"
   fi
-  printf '\n'
+  if [ "$COLOR" = "1" ]; then
+    printf '  %s+======================================+%s\n\n' "$C_OK" "$C_RESET"
+  else
+    printf '\n'
+  fi
 }
 
 count_files() {
@@ -267,11 +307,50 @@ read_value() {
   fi
   printf '%s' "$prompt" >&2
   if [ "$silent" = "1" ]; then
+    value=""
     if [ -t 0 ]; then
-      read -rs value || true
+      exec 3<&0
+    elif [ -r /dev/tty ]; then
+      exec 3</dev/tty
     else
-      read -rs value </dev/tty || true
+      if [ -t 0 ]; then read -rs value || true; else read -rs value </dev/tty || true; fi
+      printf '\n' >&2
+      [ -z "$value" ] && value="$current"
+      printf '%s' "$value"
+      return 0
     fi
+    old_stty=""
+    if command -v stty >/dev/null 2>&1; then
+      old_stty=$(stty -g <&3 2>/dev/null || true)
+      stty -echo <&3 2>/dev/null || true
+      if command -v timeout >/dev/null 2>&1; then
+        trap 'timeout 1 stty "$old_stty" <&3 2>/dev/null || true; printf "\n" >&2' EXIT INT TERM
+      else
+        trap 'stty "$old_stty" <&3 2>/dev/null || true; printf "\n" >&2' EXIT INT TERM
+      fi
+    fi
+    while IFS= read -rs -n1 char <&3 2>/dev/null; do
+      if [ -z "$char" ]; then
+        break
+      elif [ "$char" = "$(printf '\177')" ] || [ "$char" = "$(printf '\b')" ]; then
+        if [ -n "$value" ]; then
+          value="${value%?}"
+          printf '\b \b' >&2
+        fi
+      elif [ "$char" = "$(printf '\003')" ]; then
+        printf '\n' >&2
+        [ -n "$old_stty" ] && stty "$old_stty" <&3 2>/dev/null || true
+        trap - EXIT INT TERM
+        exec 3<&-
+        kill -INT $$
+      else
+        value="$value$char"
+        if [ ${#value} -le 6 ]; then printf '%s' "$char" >&2; else printf '*' >&2; fi
+      fi
+    done
+    [ -n "$old_stty" ] && stty "$old_stty" <&3 2>/dev/null || true
+    trap - EXIT INT TERM
+    exec 3<&-
     printf '\n' >&2
   else
     if [ -t 0 ]; then
@@ -431,7 +510,7 @@ install_payload() {
       rm -rf "$stale"
     fi
   done
-  cp -a "$PAYLOAD_DIR/BOT" "$PREFIX/BOT"
+  spinner_start "copying payload..."; cp -a "$PAYLOAD_DIR/BOT" "$PREFIX/BOT"; spinner_ok "payload" "$PREFIX/BOT"
   mkdir -p "$PREFIX/Storage/remote"
   cp -a "$PAYLOAD_DIR/Storage/remote/." "$PREFIX/Storage/remote/"
   if [ -f "$PAYLOAD_DIR/requirements.txt" ]; then
@@ -482,16 +561,10 @@ install_venv() {
   if [ -t 1 ]; then
     quiet=()
   fi
-  if ! "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 2 "${quiet[@]}" --upgrade pip wheel; then
-    fail_line "pip could not upgrade itself"
-    note_line "check that $INDEX_URL is reachable from this server, or pass PIP_INDEX_URL with a mirror"
-    die "the python tooling did not install"
-  fi
-  if ! "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 2 "${quiet[@]}" -r "$PREFIX/requirements.txt"; then
-    fail_line "the dependencies did not install"
-    note_line "check that $INDEX_URL is reachable from this server, or pass PIP_INDEX_URL with a mirror"
-    die "the python dependencies did not install"
-  fi
+  spinner_start "upgrading pip & wheel..."
+  if ! "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 2 "${quiet[@]}" --upgrade pip wheel; then spinner_fail "pip upgrade failed"; fail_line "pip could not upgrade itself"; note_line "check that $INDEX_URL is reachable from this server, or pass PIP_INDEX_URL with a mirror"; die "the python tooling did not install"; fi; spinner_ok "pip & wheel" "up to date"
+  spinner_start "installing dependencies (goygram ~1 MB)..."
+  if ! "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 2 "${quiet[@]}" -r "$PREFIX/requirements.txt"; then spinner_fail "dependencies failed"; fail_line "the dependencies did not install"; note_line "check that $INDEX_URL is reachable from this server, or pass PIP_INDEX_URL with a mirror"; die "the python dependencies did not install"; fi; spinner_ok "dependencies" "installed"
 }
 
 unit_runtime() {
