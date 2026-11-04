@@ -507,7 +507,7 @@ def test_the_installer_echoes_nothing_while_the_credentials_are_typed() -> None:
     assert "read_value 'telegram api_hash: '" in block
     assert script.count("quiet_tty") >= 2
     assert "trap 'loud_tty' EXIT" in script
-    assert "token: hidden, api_id:" in script
+    assert "token: $(mask_token" in script
 
 
 def test_pip_is_bounded_and_never_silent_by_default() -> None:

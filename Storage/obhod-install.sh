@@ -208,6 +208,31 @@ loud_tty() {
   return 0
 }
 
+mask_token() {
+  local v="$1"
+  if [ -z "$v" ]; then
+    printf ''
+    return
+  fi
+  case "$v" in
+    *:*) printf '%s:****' "${v%%:*}" ;;
+    *) printf '****' ;;
+  esac
+}
+
+mask_hash() {
+  local v="$1"
+  if [ -z "$v" ]; then
+    printf ''
+    return
+  fi
+  if [ "${#v}" -le 8 ]; then
+    printf '****'
+  else
+    printf '%s****%s' "${v:0:4}" "${v: -4}"
+  fi
+}
+
 read_value() {
   local prompt="$1" current="$2" value="" silent="${3:-0}"
   if [ "$ASSUME_YES" = "1" ] && [ -n "$current" ]; then
@@ -217,9 +242,28 @@ read_value() {
   if ! tty_present; then
     die "there is no terminal to read the credentials, pipe the script into bash is not enough, run bash $0 ${CMD} from a terminal or pass --env-file with the keys"
   fi
+  local hint=""
+  if [ -n "$current" ] && [ "$silent" = "1" ]; then
+    case "$prompt" in
+      *token*) hint=" [$(mask_token "$current")] " ;;
+      *hash*) hint=" [$(mask_hash "$current")] " ;;
+      *) hint=" [****] " ;;
+    esac
+    if [ "$ASSUME_YES" != "1" ]; then
+      printf '      current: %s\n' "$hint" >&2
+    fi
+  elif [ -n "$current" ]; then
+    hint=" [$current] "
+    if [ "$ASSUME_YES" != "1" ]; then
+      printf '      current: %s\n' "$current" >&2
+    fi
+  fi
   if [ "$silent" = "1" ]; then
     prompt="${prompt%: }"
-    prompt="$prompt (hidden): "
+    prompt="$prompt${hint}(hidden, enter to keep): "
+  else
+    prompt="${prompt%: }"
+    prompt="$prompt${hint}(enter to keep): "
   fi
   printf '%s' "$prompt" >&2
   if [ "$silent" = "1" ]; then
@@ -550,14 +594,25 @@ cmd_install() {
   api_id="$(env_get API_ID)"
   api_hash="$(env_get API_HASH)"
   admin_id="$(env_get ADMIN_ID)"
-  note_line "the terminal echo is off until all four values are in, a paste made before the prompt will not show up either"
+  if [ -n "$token" ] || [ -n "$api_id" ]; then
+    note_line "existing config at $ENV_FILE - press enter to keep current values"
+    if [ -n "$token" ]; then
+      note_line "current token: $(mask_token "$token")"
+    fi
+    if [ -n "$api_hash" ]; then
+      note_line "current api_hash: $(mask_hash "$api_hash")"
+    fi
+    note_line "current services in $STATE_DIR will be kept (use --purge-all to wipe)"
+  else
+    note_line "the terminal echo is off until all four values are in, a paste made before the prompt will not show up either"
+  fi
   quiet_tty
   token="$(read_value 'telegram bot token: ' "$token" 1)"
   api_id="$(read_value 'telegram api_id: ' "$api_id")"
   api_hash="$(read_value 'telegram api_hash: ' "$api_hash" 1)"
   admin_id="$(read_value 'admin telegram id: ' "$admin_id")"
   loud_tty
-  note_line "token: hidden, api_id: ${api_id:-missing}, admin id: ${admin_id:-missing}"
+  note_line "token: $(mask_token "$token"), api_id: ${api_id:-missing}, admin id: ${admin_id:-missing}"
   if [ -z "$token" ]; then
     fail_line "the bot token is required"
     die "bot token is required"
@@ -585,9 +640,13 @@ cmd_install() {
   REBUILD=0
   if install_exists; then
     REBUILD=1
-    note_line "a previous install was found, the old copy is removed and rewritten"
+    note_line "a previous install was found at $PREFIX"
+    if [ -d "$STATE_DIR" ]; then
+      note_line "state directory $STATE_DIR will be kept - xray/freeturn configs, clients and keys stay"
+      note_line "payload in $PREFIX will be refreshed, services will be updated not wiped"
+    fi
     stop_before_rebuild
-    ok_line "the old install is stopped and will be replaced"
+    ok_line "the old install is stopped and will be replaced (services kept)"
   else
     ok_line "there is nothing to replace, this is a clean install"
   fi

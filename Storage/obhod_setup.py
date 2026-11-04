@@ -20,6 +20,16 @@ TOKEN_RE = re.compile(r"^[0-9]{5,}:[A-Za-z0-9_-]{30,}$")
 HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
+def mask_secret(name: str, value: str) -> str:
+    if not value:
+        return "missing"
+    if name == "BOT_TOKEN" and ":" in value:
+        return value.split(":", 1)[0] + ":****"
+    if len(value) <= 8:
+        return "****"
+    return value[:4] + "****" + value[-4:]
+
+
 def use_color() -> bool:
     if os.environ.get("NO_COLOR"):
         return False
@@ -122,18 +132,29 @@ class Setup:
 
     def read_credentials(self) -> bool:
         head("2. telegram credentials")
-        note("the token and the hash stay invisible while you type, and never reach the shell history")
         existing = self.read_env_file()
         for name in ("BOT_TOKEN", "API_ID", "API_HASH", "ADMIN_ID"):
             self.credentials[name] = existing.get(name, "")
+        if any(existing.values()):
+            note("existing config at %s - press enter to keep current values" % self.env_file)
+            for name in ("BOT_TOKEN", "API_HASH"):
+                if existing.get(name):
+                    note("current %s: %s" % (name.lower(), mask_secret(name, existing[name])))
+            note("current services will be kept (state in %s)" % self.state_dir)
+        else:
+            note("the token and the hash stay invisible while you type, and never reach the shell history")
         try:
-            self.credentials["BOT_TOKEN"] = self.ask("telegram bot token: ", True, self.credentials["BOT_TOKEN"])
-            self.credentials["API_ID"] = self.ask("telegram api_id: ", False, self.credentials["API_ID"])
-            self.credentials["API_HASH"] = self.ask("telegram api_hash: ", True, self.credentials["API_HASH"])
-            self.credentials["ADMIN_ID"] = self.ask("admin telegram id: ", False, self.credentials["ADMIN_ID"])
+            tok_hint = " [%s]" % mask_secret("BOT_TOKEN", self.credentials["BOT_TOKEN"]) if self.credentials["BOT_TOKEN"] else ""
+            self.credentials["BOT_TOKEN"] = self.ask("telegram bot token%s: " % tok_hint, True, self.credentials["BOT_TOKEN"])
+            api_hint = " [%s]" % self.credentials["API_ID"] if self.credentials["API_ID"] else ""
+            self.credentials["API_ID"] = self.ask("telegram api_id%s: " % api_hint, False, self.credentials["API_ID"])
+            hash_hint = " [%s]" % mask_secret("API_HASH", self.credentials["API_HASH"]) if self.credentials["API_HASH"] else ""
+            self.credentials["API_HASH"] = self.ask("telegram api_hash%s: " % hash_hint, True, self.credentials["API_HASH"])
+            adm_hint = " [%s]" % self.credentials["ADMIN_ID"] if self.credentials["ADMIN_ID"] else ""
+            self.credentials["ADMIN_ID"] = self.ask("admin telegram id%s: " % adm_hint, False, self.credentials["ADMIN_ID"])
         except RuntimeError as exc:
             return bool(fail(str(exc)))
-        line(INFO, "token: hidden, api_id: %s, admin id: %s" % (self.credentials["API_ID"] or "missing", self.credentials["ADMIN_ID"] or "missing"))
+        line(INFO, "token: %s, api_id: %s, admin id: %s" % (mask_secret("BOT_TOKEN", self.credentials["BOT_TOKEN"]), self.credentials["API_ID"] or "missing", self.credentials["ADMIN_ID"] or "missing"))
         return self.validate_credentials()
 
     def validate_credentials(self) -> bool:

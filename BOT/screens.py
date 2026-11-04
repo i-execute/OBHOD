@@ -347,6 +347,8 @@ def sshd_screen(view: View) -> Any:
 
 def update_screen(view: View, info: dict[str, Any]) -> Any:
     t = view.tr()
+    if not info.get("git") and view.error and "not a git checkout" in view.error:
+        view = View(state=view.state, core=view.core, ban=view.ban, sshd=view.sshd, notice=view.notice, error="", busy=view.busy, lang=view.lang, emoji_default=view.emoji_default, ft_clients=view.ft_clients)
     blocks = banner(view, t)
     if not info.get("git"):
         blocks.append(quote(bold(t("UPD_NO_GIT"))))
