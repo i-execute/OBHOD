@@ -106,21 +106,36 @@ def paint(text: str, code: str) -> str:
     return "\033[%sm%s\033[0m" % (code, text)
 
 
+def term_width() -> int:
+    try:
+        w = shutil.get_terminal_size(fallback=(78, 24)).columns
+    except Exception:
+        w = 78
+    return max(40, min(w, 78)) - 2
+
+
+def clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
 def head(text: str) -> None:
     print()
-    width = 56
-    print(paint("  +" + "=" * width + "+", "38;5;45"))
-    print(paint("  | " + text.ljust(width-1) + "|", "1;38;5;45"))
-    print(paint("  +" + "=" * width + "+", "38;5;45"))
+    width = term_width()
+    label = clip(text, width - 4)
+    print(paint("  +" + "=" * (len(label) + 2) + "+", "38;5;45"))
+    print(paint("  | " + label + " |", "1;38;5;45"))
+    print(paint("  +" + "=" * (len(label) + 2) + "+", "38;5;45"))
 
 
 def line(kind: str, text: str) -> None:
     mark = {OK: ("ok", "38;5;42"), BAD: ("error", "38;5;203"), WARN: ("warn", "38;5;214"), INFO: ("..", "38;5;244")}[kind]
-    print("  %-6s %s" % (paint(mark[0], mark[1]), text))
+    print("  %-6s %s" % (paint(mark[0], mark[1]), clip(text, term_width() - 10)))
 
 
 def note(text: str) -> None:
-    print("         %s" % paint(text, "38;5;244"))
+    print("         %s" % paint(clip(text, term_width() - 12), "38;5;244"))
 
 
 def fail(text: str) -> int:

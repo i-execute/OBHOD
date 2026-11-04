@@ -318,7 +318,12 @@ class FtPanel:
             self.key_once = ""
         except FtError as exc:
             self.note("apply", "failed", exc.code)
-            await self.render(chat_id, msg_id, ftscreens.plan_screen(self.view(error=self.describe(exc))))
+            msg = self.describe(exc)
+            if exc.code == "internal" and "systemd" in msg.lower():
+                msg = msg + "  -  " + t("FT_HINT_METHOD")
+            if exc.code in {"needs_root", "no_systemd"}:
+                msg = self.describe(exc) + "  -  " + t("FT_HINT_METHOD")
+            await self.render(chat_id, msg_id, ftscreens.plan_screen(self.view(error=msg)))
             return
         self.state = state
         self.save()

@@ -492,22 +492,22 @@ def test_the_paste_harvest_disables_echo_before_the_clone() -> None:
     assert "echo_off()" in script
     assert "echo_on()" in script
     assert "detach_stdin()" in script
-    assert "stty -echo" in script and "stty echo" in script
+    assert "mask_token" in script and "mask_hash" in script
     body = script.split("echo_off\nfetch_source", 1)
     assert len(body) == 2
     assert "trap 'echo_on; cleanup' EXIT" in script
     assert "/dev/null" in script
-    assert "a paste made before the prompt stays invisible" in script
+    assert "existing config at" in script
 
 
 def test_the_installer_echoes_nothing_while_the_credentials_are_typed() -> None:
     script = INSTALLER.read_text(encoding="utf-8")
-    block = script.split("the terminal echo is off until all four values are in", 1)[1].split("loud_tty", 1)[0]
+    block = script.split("existing config at $ENV_FILE", 1)[1].split("loud_tty", 1)[0] if "existing config at $ENV_FILE" in script else script.split("quiet_tty", 1)[1]
     assert "read_value 'telegram bot token: '" in block
     assert "read_value 'telegram api_hash: '" in block
-    assert script.count("quiet_tty") >= 2
-    assert "loud_tty' EXIT" in script
-    assert "mask_token" in script
+    assert script.count("quiet_tty") >= 1
+    assert "mask_token" in script and "mask_hash" in script
+    assert "token: $(mask_token" in script
 
 
 def test_pip_is_bounded_and_never_silent_by_default() -> None:

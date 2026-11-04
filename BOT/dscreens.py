@@ -73,12 +73,10 @@ def home(view: DbgView) -> Any:
     blocks.append(f"<p>{muted(t('DBG_SUBTITLE'))}</p>")
     buttons = [
         row(button(t("DBG_SCAN_BTN"), "dbg:scan", icon="radar"), button(t("DBG_TRACE_BTN"), "dbg:trace", icon="route")),
-        row(button(t("DBG_VK_BTN"), "dbg:vk", icon="world"), button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file")),
-        row(button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug")),
-        row(button(t("DBG_EMOJI_BTN"), "dbg:info", icon="star"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
+        row(button(t("DBG_VK_BTN"), "dbg:vk", icon="world"), button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug")),
         row(button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield"), button(t("DPI_BTN_OPEN"), "dbg:dpi", icon="warn")),
-        row(button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell"), button(t("HP_BTN_OPEN"), "dbg:hp", icon="target")),
-        row(button(t("DDOS_BTN_OPEN"), "dbg:dd", icon="shield")),
+        row(button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
+        row(button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell"), button(t("HP_BTN_OPEN"), "dbg:hp", icon="target"), button(t("DDOS_BTN_OPEN"), "dbg:dd", icon="shield")),
         row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
     ]
     return screen(t("DBG_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="bug")
@@ -265,7 +263,7 @@ def busy(view: DbgView, text: str) -> Any:
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(muted(text or t("LOADING_BODY"))))
-    return screen(t("LOADING_TITLE"), t("BUSY_SUBTITLE"), blocks, [row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"))], icon="loading")
+    return screen(t("LOADING_TITLE"), t("BUSY_SUBTITLE"), blocks, [row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home"))], icon="loading")
 
 
 def crash_screen(view: DbgView, route: str, trace: str) -> Any:

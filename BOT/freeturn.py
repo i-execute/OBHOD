@@ -454,6 +454,14 @@ class FtConfig:
             "version": self.version,
         }
 
+    @property
+    def port(self) -> int:
+        return int(self.listen_port)
+
+    @port.setter
+    def port(self, value: int) -> None:
+        self.listen_port = int(value)
+
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "FtConfig":
         data = raw or {}

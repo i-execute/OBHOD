@@ -139,12 +139,8 @@ def home(view: View) -> Any:
         blocks.append(table(rows, (t("HOME_TABLE_HEADER"), t("HOME_TABLE_HEADER2"))))
     core_buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cards]
     buttons = core_buttons + [
-        row(button(t("NAV_SCANNER"), "xr:scan", icon="scan"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
-        row(button("Tools", "tools:home", icon="tools"), button(t("CORE_NAV"), "core:show", icon="module")),
-        row(button(t("NAV_DEBUG"), "dbg:home", icon="bug"), button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield")),
-        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_SSH"), "nav:ssh", icon="key")),
-        row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_UPDATE"), "upd:show", icon="update")),
-        row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), button(t("NAV_HELP"), "nav:help", icon="docs")),
+        row(button("Tools", "tools:home", icon="tools"), button(t("NAV_UPDATE"), "upd:show", icon="update")),
+        row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_HELP"), "nav:help", icon="docs")),
     ]
     return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="home")
 
@@ -237,6 +233,8 @@ def settings(view: View) -> Any:
         input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
         input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
         input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),
+        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_SSH"), "nav:ssh", icon="key")),
+        row(button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield"), button(t("NAV_DEBUG"), "dbg:home", icon="bug")),
         row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language")),
         row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]
@@ -352,6 +350,7 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
     blocks = banner(view, t)
     if not info.get("git"):
         blocks.append(quote(bold(t("UPD_NO_GIT"))))
+        blocks.append(f"<p>{muted(t('UPD_NO_GIT_HINT'))}</p>")
         blocks.append(pre(code("curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo bash")))
         buttons = [row(button(t("UI_HOME"), "nav:home", icon="home"))]
         return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="update")
@@ -466,7 +465,7 @@ def denied(lang: str = i18n.DEFAULT_LANGUAGE) -> Any:
 def error_screen(view: View, title: str, message: str) -> Any:
     t = view.tr()
     blocks = [quote(bold(message))]
-    buttons = [row(button(t("UI_HOME"), "nav:home", icon="home"), button(t("NAV_XRAY"), "xr:home", icon="xray"))]
+    buttons = [row(button(t("UI_HOME"), "nav:home", icon="home"))]
     return screen(title, t("UI_ACTION_FAILED"), blocks, buttons, icon="fail")
 
 

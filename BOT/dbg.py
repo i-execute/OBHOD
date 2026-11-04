@@ -271,7 +271,7 @@ class DebugPanel:
         if not cidrs:
             await self.render(chat_id, msg_id, dscreens.vk_screen(self.view(error=t("DBG_VK_SAME"))))
             return
-        port = int(getattr(getattr(self.bot.state, "freeturn", None), "config", None).port or 0) if getattr(self.bot.state, "freeturn", None) else 0
+        port = int(getattr(getattr(self.bot.state, "freeturn", None), "config", None).listen_port or 0) if getattr(self.bot.state, "freeturn", None) else 0
         if not port:
             await self.render(chat_id, msg_id, dscreens.vk_screen(self.view(error=t("FT_ERR_NOT_INSTALLED"))))
             return

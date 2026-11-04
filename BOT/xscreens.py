@@ -152,10 +152,9 @@ def home(view: XrayView) -> Any:
     else:
         blocks.append(quote(muted(t("XR_HOME_EMPTY"))))
     buttons = [
-        row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("NAV_SCANNER"), "xr:scan", icon="scan")),
-        row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("NAV_CORE"), "xr:core", icon="xray")),
-        row(button(t("DOM_TITLE"), "xr:dom", icon="world")),
-        row(button(t("NAV_LOGS"), "xr:logs", icon="logs"), button(t("XR_BTN_CHECK"), "xr:check", icon="scan")),
+        row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
+        row(button(t("DOM_TITLE"), "xr:dom", icon="world"), button(t("XR_BTN_CHECK"), "xr:check", icon="scan")),
+        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
     ]
     if state.inbounds:
         buttons.insert(2, row(*[button(t("XR_BTN_OPEN", remark=item.remark), f"xr:in:{item.id}", icon="module") for item in state.inbounds[:3]]))

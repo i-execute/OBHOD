@@ -51,38 +51,37 @@ detach_stdin() {
   return 0
 }
 
+mask_token() {
+  local v="$1"
+  if [ -z "$v" ]; then printf ''; return; fi
+  case "$v" in *:*) printf '%s:****' "${v%%:*}" ;; *) printf '****' ;; esac
+}
+mask_hash() {
+  local v="$1"
+  if [ -z "$v" ]; then printf ''; return; fi
+  if [ "${#v}" -le 8 ]; then printf '****'; else printf '%s****%s' "${v:0:4}" "${v: -4}"; fi
+}
+env_get() {
+  local key="$1" path="${2:-${ENV_PATH:-/etc/obhod/obhod.env}}"
+  [ -r "$path" ] || return 0
+  awk -F= -v k="$key" '$1==k { sub(/^[^=]*=/, ""); print; exit }' "$path"
+}
+existing_env_path() {
+  if [ -n "${ENV_PATH:-}" ]; then printf '%s' "$ENV_PATH"; return; fi
+  for p in "/etc/obhod/obhod.env" "/opt/obhod/.env" "/opt/obhod/obhod.env" "/etc/obhod.env"; do
+    if [ -f "$p" ]; then printf '%s' "$p"; return; fi
+  done
+  printf '%s' "/etc/obhod/obhod.env"
+}
+
 echo_off() {
-  if [ "$CREDS" = "1" ]; then
-    return 0
-  fi
-  if [ "$STDIN_EATEN" = "1" ]; then
-    return 0
-  fi
-  if tty_available; then
-    if command -v timeout >/dev/null 2>&1; then
-      if timeout 2 stty -echo </dev/tty 2>/dev/null; then
-        ECHO_OFF=1
-        note "the terminal echo is off until the source is fetched, a paste made before the prompt stays invisible"
-      fi
-    else
-      if stty -echo </dev/tty 2>/dev/null; then
-        ECHO_OFF=1
-        note "the terminal echo is off until the source is fetched, a paste made before the prompt stays invisible"
-      fi
-    fi
+  if [ "$CREDS" = "0" ] && tty_available; then
+    note "secret input will show masked as **** (first 6 chars visible) - paste is safe"
   fi
   return 0
 }
 
 echo_on() {
-  if [ "$ECHO_OFF" = "1" ]; then
-    if command -v timeout >/dev/null 2>&1; then
-      timeout 2 stty echo </dev/tty 2>/dev/null || true
-    else
-      stty echo </dev/tty 2>/dev/null || true
-    fi
-    ECHO_OFF=0
-  fi
   return 0
 }
 
@@ -253,9 +252,16 @@ if [ "$DRY_RUN" = "1" ]; then
   fi
   say "step: syncing the files into $DEST"
   if [ "$CREDS" = "1" ]; then
-    say "credentials: from the environment"
+    say "credentials: from the environment $(mask_token "$TOKEN") api_id:${API_ID:-missing} $(mask_hash "$API_HASH")"
   else
-    say "credentials: asked in the terminal"
+    _ep="$(existing_env_path)"
+    if [ -f "$_ep" ]; then
+      say "existing config at $_ep - press enter to keep current values"
+      _t="$(env_get BOT_TOKEN "$_ep")"; [ -n "$_t" ] && say "current token: $(mask_token "$_t")"
+      _h="$(env_get API_HASH "$_ep")"; [ -n "$_h" ] && say "current api_hash: $(mask_hash "$_h")"
+      say "current services will be kept (state in /var/lib/obhod or OBHOD_STATE_DIR)"
+    fi
+    say "credentials: asked in the terminal (masked as ****, first 6 chars visible while typing)"
   fi
   if [ -n "$ENV_PATH" ]; then
     if [ "$CREDS" = "1" ]; then
@@ -319,9 +325,14 @@ if [ "$CREDS" = "1" ]; then
   write_env_file "$ENV_PATH"
   INSTALL_ARGS+=("--env-file=$ENV_PATH" "--yes")
   unset BOT_TOKEN API_ID API_HASH ADMIN_ID OBHOD_TOKEN OBHOD_API_ID OBHOD_API_HASH OBHOD_ADMIN_ID
-  say "credentials: from the environment"
+  say "credentials: from the environment $(mask_token "$TOKEN") api_id:${API_ID:-missing} admin:${ADMIN_ID:-missing}"
 else
-  say "credentials: asked in the terminal"
+  _ep2="$(existing_env_path)"
+  if [ -f "$_ep2" ]; then
+    say "existing config at $_ep2 - press enter to keep current values ($(mask_token "$(env_get BOT_TOKEN "$_ep2")") / $(mask_hash "$(env_get API_HASH "$_ep2")"))"
+    say "current services will be kept"
+  fi
+  say "credentials: asked in the terminal (masked as ****)"
 fi
 
 say "starting the installer"

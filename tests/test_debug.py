@@ -43,7 +43,6 @@ def test_the_home_screen_opens(tmp_path: Path) -> None:
     assert i18n.t("DBG_SCAN_BTN") in html
     assert i18n.t("DBG_VK_BTN") in html
     assert i18n.t("DBG_SCRIPTS_BTN") in html
-    assert i18n.t("DBG_EMOJI_BTN") in html
 
 
 def test_a_scan_runs_and_reports(tmp_path: Path) -> None:

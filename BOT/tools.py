@@ -29,7 +29,7 @@ def home(v: Any) -> Any:
         row(button(t("TOOLS_SCAN"), "tools:scan", icon="radar"), button(t("TOOLS_CHEBUR"), "tools:chebur", icon="shield")),
         row(button(t("TOOLS_DPI"), "tools:dpi", icon="warn"), button(t("TOOLS_DDOS"), "tools:ddos", icon="shield")),
         row(button(t("TOOLS_FW"), "tools:fw", icon="shield"), button(t("TOOLS_FORTRESS"), "tools:fortress", icon="shield")),
-        row(button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("NAV_DEBUG"), "dbg:home", icon="bug"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("TOOLS_TITLE"), t("TOOLS_SCREEN_SUB"), blocks, buttons, icon="tools")
 

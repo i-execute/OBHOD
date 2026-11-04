@@ -67,7 +67,7 @@ old long names `/whitelist_bypass_wg_vk_call_raskur` and `/vless_rkn_raw_tcp_xht
 
 ## Subscriptions
 
-3x-ui style, but only with a permanent name: `https://<host>.<tailnet>.ts.net/<64 chars>/<64 chars>`.
+the subscription url form: `https://<host>/<64 chars>/<64 chars>`.
 Without a domain there is no endpoint at all: the `Subscriptions` screen hides apply, sync, stop and rotate,
 the panel answers with a notice, the bot skips the push even when forced, and the agent refuses
 `sub-install` and `sub-sync` with `no_domain`, so no file and no unit is written. The listener binds
@@ -98,21 +98,6 @@ before every apply, so the metrics listener moves off `11111` when a 3x-ui insta
 owned by someone else is reported with the process name and the inbound is moved instead of the owner.
 The vless encryption screen offers the six 3x-ui kinds, `mlkem768x25519plus.<native|xorpub|random>.<x25519|mlkem768>`,
 and the keys come from `xray vlessenc` on the server, so the auth half is real and not a label.
-
-## A permanent name
-
-The subscription keeps the bare ip out of the url. The Xray home screen has a `domain` button that installs
-tailscale from its signed repository, takes a hostname, and runs
-`tailscale funnel --bg --https=443 http://127.0.0.1:<sub port>`. The name is `<hostname>.<tailnet>.ts.net`, it
-survives reboots and ip changes, the certificate is real, the port stays on loopback and vless inbounds never go
-through the tunnel. While the tunnel is on the subscription url is `https://<hostname>/<64>/<64>` with no port,
-and while it is off the url does not exist.
-The `tskey-auth-` key never travels through the chat: the `auth key` button opens the inline field, the picked
-result carries an encoded payload instead of the key, and the key itself is written to `<state dir>/tunnel.key`
-with mode `0600` and shown on the screen as `tskey-auth-k7...pnCe`. It is never stored in `state.json`, never in
-a log and never in a rendered screen. Turning the tunnel off takes the subscription service down with it.
-Behind any local proxy the server reads the visitor from `X-Forwarded-For`, falling back to `CF-Connecting-IP`
-only for a loopback peer, so one visitor cannot outrun the 60 a minute limit by faking a header.
 
 ## Firewall
 
@@ -193,14 +178,6 @@ every listening socket and names what a scanner would call a panel, an open core
 an unexpected daemon. A clean box shows nothing; anything else is a reason to close a port before the subnet gets
 blocked with it.
 
-## Notifications
-
-`notifications` in the same menu decides what reaches the owner: a port scan (twelve distinct ports from one
-address inside five minutes), ssh brute force (ten failures inside ten minutes), a new ban, a honeypot touch, a
-subscription flood and a core event. Each kind has its own switch and cooldown, addresses are deduplicated, and the
-queue is bounded, so an attack cannot become a message flood. Delivery goes to `admin_id` and to nobody else: with
-no owner claimed the events are collected and never sent. `send a test` proves the path end to end.
-
 ## Localization
 
 `BOT/strings.py` holds `EN`, `RU` and `ZH` with the same variables, 1370 today, with and without emoji.
@@ -242,23 +219,3 @@ tests/          the suite
 `Update` works on the source checkout the bot runs from, offers `Latest commit` and `Latest release`, checks the
 new tree with `compileall` and rolls back a tree that does not compile, installs dependencies only when the file
 changed, restarts after the answer is delivered and verifies the marker on the next start.
-
-## Tests
-
-```
-python -m pytest
-```
-
-2443 tests cover the post quantum strings, links, config generation, state, subscriptions and the running
-subscription server, the scanner, every screen and callback route, the admin gate, the fail2ban files, the ssh,
-xray and freeturn agents, the script cache, the core registry, the port guard, the commands, the loading states,
-the three catalogues with their placeholder parity, the cheburcheck client with a fake transport and a fake socket, the dpi survey with a synthetic
-kernel state, the generator guards for sockopt, mux and the fingerprint, the honeypot with a live socket, its own
-protocol facades and a log injection battery, the notification engine with its cooldowns and its owner-only delivery,
-the emoji invariants against the vendored pack, the anti flood ruleset, the agent that writes and rolls it back,
-the exposure probe, and the hardening suites in `tests/test_security.py` and
-`tests/test_pentest.py`. `tests/test_source.py` fails the build on a Python comment, docstring, emoji or long
-dash, and on any Cyrillic or CJK character outside `BOT/strings.py`.
-
-`.github/workflows` runs the suite, the security jobs and CodeQL on every push;
-`python tools/obhod_watchdog.py verify` must pass before a merge and `seal` accepts a new baseline.

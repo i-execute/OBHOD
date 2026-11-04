@@ -81,8 +81,32 @@ class Config:
 
     @staticmethod
     def load(env_path: str | os.PathLike[str] | None = None) -> "Config":
-        path = Path(env_path or os.environ.get("OBHOD_ENV", "/etc/obhod/obhod.env"))
-        values = _env_file(path)
+        candidates: list[Path] = []
+        if env_path is not None:
+            candidates.append(Path(env_path))
+        elif os.environ.get("OBHOD_ENV"):
+            candidates.append(Path(os.environ["OBHOD_ENV"]))
+        else:
+            candidates.append(Path("/etc/obhod/obhod.env"))
+            for p in (
+                Path.cwd() / "obhod.env",
+                Path.cwd() / ".env",
+                Path(__file__).resolve().parent.parent / "obhod.env",
+                Path(__file__).resolve().parent.parent / ".env",
+                Path.home() / ".obhod.env",
+                Path.home() / ".config" / "obhod" / "obhod.env",
+            ):
+                if p not in candidates:
+                    candidates.append(p)
+        values: dict[str, str] = {}
+        used: Path | None = None
+        for cand in candidates:
+            data = _env_file(cand)
+            if data:
+                values = data
+                used = cand
+                break
+        path = used or candidates[0]
         for key, value in os.environ.items():
             if key.startswith("OBHOD_") or key in {
                 "BOT_TOKEN",

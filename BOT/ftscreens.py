@@ -112,10 +112,8 @@ def home(view: FtView) -> Any:
     buttons = [
         row(button(t("FT_BTN_CHECK"), "ft:check", icon="scan"), button(t("FT_BTN_PLAN"), "ft:plan", icon="tools")),
         row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")),
-        row(button(t("FT_BTN_STOP"), "ft:stop", icon="stop"), button(t("FT_BTN_RESTART"), "ft:restart", icon="restart")),
-        row(button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"), button(t("FT_BTN_SHARE"), "ft:share", icon="gift")),
-        row(button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
-        row(button(t("CORE_NAV"), "core:show", icon="module"), button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"), button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
+        row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"), icon="tunnel")
 
@@ -156,7 +154,13 @@ def plan_screen(view: FtView) -> Any:
     t = view.tr()
     plan = view.plan
     blocks = banner(view, t)
-    blocks.append(quote(muted(t("FT_CONFIG_NOTE"))))
+    if not view.error:
+        blocks.append(f"<p>{muted(t('FT_CONFIG_NOTE'))}</p>")
+    else:
+        if view.state and getattr(view.state, "logs", None):
+            last = view.state.logs[-1] if view.state.logs else ""
+            if last:
+                blocks.append(f"<p>{muted('log:')} {code((last or '')[:180])}</p>")
     pairs = [
         ("settings", t("FT_FIELD_METHOD"), code(plan.method)),
         ("settings", t("FT_FIELD_BACKEND"), code(plan.backend)),
