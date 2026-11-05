@@ -195,8 +195,7 @@ def test_sync_skips_git_files(tmp_path: Path) -> None:
     result = run(tmp_path, "--no-install", f"--dir={target}", env={"OBHOD_SRC_DIR": str(source)})
     assert result.returncode == 0, result.stderr
     assert (target / "keep.txt").is_file()
-    assert not (target / ".gitignore").exists()
-    assert not (target / ".git").exists()
+    assert (target / ".git").is_dir()
     assert not (target / "__pycache__").exists()
 
 
@@ -315,7 +314,7 @@ def test_no_secrets_in_output(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("flag", ["--dry-run", "--no-install"])
 def test_unknown_positional_goes_to_installer(tmp_path: Path, flag: str) -> None:
-    result = run(tmp_path, flag, "--prefix=/tmp/x", env={"OBHOD_SRC_DIR": str(ROOT)})
+    result = run(tmp_path, flag, "--prefix=/tmp/x", env={"OBHOD_SRC_DIR": str(ROOT), "OBHOD_DIR": str(tmp_path / "src")})
     assert result.returncode in {0, 1}
     if result.returncode == 0:
         assert "--prefix=/tmp/x" in result.stdout

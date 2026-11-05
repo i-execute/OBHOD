@@ -506,12 +506,14 @@ check_python() {
 install_payload() {
   mkdir -p "$PREFIX"
   local stale
-  for stale in "$PREFIX/BOT" "$PREFIX/Storage" "$PREFIX/requirements.txt" "$PREFIX/.obhod-src"; do
+  for stale in "$PREFIX/BOT" "$PREFIX/Storage" "$PREFIX/requirements.txt" "$PREFIX/.obhod-src" "$PREFIX/tests" "$PREFIX/tools"; do
     if [ -e "$stale" ]; then
       rm -rf "$stale"
     fi
   done
   spinner_start "copying payload..."; cp -a "$PAYLOAD_DIR/BOT" "$PREFIX/BOT"; spinner_ok "payload" "$PREFIX/BOT"
+  if [ -d "$PAYLOAD_DIR/tools" ]; then cp -a "$PAYLOAD_DIR/tools" "$PREFIX/tools"; fi
+  if [ -d "$PAYLOAD_DIR/tests" ]; then cp -a "$PAYLOAD_DIR/tests" "$PREFIX/tests"; fi
   mkdir -p "$PREFIX/Storage/remote"
   cp -a "$PAYLOAD_DIR/Storage/remote/." "$PREFIX/Storage/remote/"
   if [ -f "$PAYLOAD_DIR/requirements.txt" ]; then

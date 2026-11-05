@@ -237,9 +237,8 @@ class Updater:
         return info
 
     async def reinstall(self) -> str:
-        script = "/usr/local/bin/obhod-get" 
-        args = ["bash", script, "--yes"] if Path(script).is_file() else ["bash", "-c", "curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | bash -s -- --yes"]
-        out = await self._run(args, 600)
+        args = ["systemd-run", "--wait", "--collect", "--pipe", "--unit=obhod-reinstall", "bash", "-c", "curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | bash -s -- --yes"]
+        out = await self._run(args, 900)
         text = str(out.text or "")
         if int(out.code or 0) != 0:
             raise UpdateError("the reinstall failed: %s" % text[-300:])

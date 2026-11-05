@@ -218,7 +218,7 @@ sync_source() {
     rm -rf "$DEST"
   fi
   mkdir -p "$DEST"
-  tar -cf - -C "$SRC" --exclude='.git*' --exclude='.venv' --exclude='__pycache__' --exclude='.pytest_cache' . | tar -xf - -C "$DEST"
+  tar -cf - -C "$SRC" --exclude='.venv' --exclude='__pycache__' --exclude='.pytest_cache' . | tar -xf - -C "$DEST"
   : > "$DEST/.obhod-src"
   chmod 600 "$DEST/.obhod-src"
 }
