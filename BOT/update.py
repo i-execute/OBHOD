@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -16,6 +17,8 @@ from typing import Any
 
 from . import releases
 from .shell import LocalShell, ShellError
+
+log = logging.getLogger("obhod.update")
 
 REPO = "i-execute/OBHOD"
 BRANCH = "main"
@@ -767,24 +770,30 @@ class Updater:
         result = UpdateResult(mode=mode)
         before = await self.read()
         result.source = before.commit
+        log.info("update %s starts from %s at %s", mode, before.commit[:12], self.root)
         fetched = await self._git("fetch", "--prune", "--tags", REMOTE)
         result.steps.append("fetch from %s" % REMOTE)
+        log.info("update fetch from %s: code=%s %s", REMOTE, fetched.code, clean_output(fetched.text)[:200])
         if int(fetched.code or 0) != 0:
             result.message = "the fetch failed: %s" % clean_output(fetched.text)
+            log.warning("update %s stopped, the fetch failed: %s", mode, result.message)
             return result
         info = await self.read()
         info.release, info.release_error = await self._release()
         target, subject = await self._resolve(mode, info)
         result.target = target[:7]
         result.subject = subject
+        log.info("update %s target %s %s, release %s", mode, target[:12], subject[:80], info.release or info.release_error or "none")
         if same_commit(target, before.commit):
             result.ok = True
             result.message = "already up to date"
+            log.info("update %s reports already up to date at %s", mode, before.commit[:12])
             return result
         await self._reset(target, result.steps)
         compiled, output = await self._compile()
         result.steps.append("syntax check passed" if compiled else "syntax check failed")
         if not compiled:
+            log.warning("update %s stopped, the tree does not compile: %s", mode, clean_output(output)[:300])
             await self._reset(before.commit, result.steps)
             result.rollback = True
             result.message = "the new tree does not compile, the rollback to %s is done: %s" % (
@@ -797,6 +806,7 @@ class Updater:
             installed, output = await self._install_deps()
             result.steps.append("dependencies synced" if installed else "the dependency sync failed")
             if not installed:
+                log.warning("update %s stopped, the dependency sync failed: %s", mode, clean_output(output)[:300])
                 await self._reset(before.commit, result.steps)
                 result.rollback = True
                 result.message = "the dependencies did not install, the rollback to %s is done: %s" % (

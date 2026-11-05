@@ -8,7 +8,7 @@
     "BOT/releases.py": "40a2889d052d706f3538183bc67ba0ef87888009cb4ec4b4e642b8bdeec5541e",
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
     "BOT/shell.py": "9fab9536eee40a0d0f367082130f73da5d5ced3333462c96108afab9dbe37626",
-    "BOT/update.py": "4aeefc77fcfabbbcb671f7a6534100172151d6e41578746d8810d322af40f220",
+    "BOT/update.py": "b5260d59204659bc713523e14971dd1a4aeb53844bcd1563e85a156ed0fd9943",
     "Storage/remote/fail2ban_agent.py": "e9852f965e217a639a61aa372e54f973ba993da9baefdcc9b5d23b393d002be0",
     "Storage/remote/freeturn_agent.py": "ee7c27c4d38d4f5ba4327b8e89853d35a1b00a4a7c068db91e8335872ca5328a",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",

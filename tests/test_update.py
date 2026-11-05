@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -689,3 +690,13 @@ def test_a_can_update_flag_decides_the_in_place_promise(tmp_path: Path, monkeypa
     ).to_html()
     assert i18n.t("UPD_NOT_IN_PLACE").split("{")[0] in html
     assert i18n.t("UPD_RETRY_HINT") not in html
+
+
+def test_the_update_writes_its_reason_to_the_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="obhod.update")
+    monkeypatch.setattr(releases, "latest_tag_any", lambda repo: release())
+    updater, shell = build(tmp_path / "src", BASE)
+    asyncio.run(updater.apply("commit"))
+    text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "update commit starts from" in text
+    assert "update commit target" in text
