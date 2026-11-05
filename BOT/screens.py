@@ -396,6 +396,8 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
             )
         )
         writable = facts.get("dest_write")
+        protected = dict(facts.get("protected") or {})
+        flags = dict(facts.get("root_flags") or {})
         blocks.append(
             table(
                 [
@@ -407,9 +409,13 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
             )
         )
         blocks.append(f"<p>{muted(t('UPD_NO_GIT_HINT'))}</p>")
-        if writable:
+        if flags.get("path"):
+            blocks.append(quote(muted(t("UPD_RO_MOUNT", path=str(flags.get("path")), fstype=str(flags.get("fstype") or t("UI_NONE")), options=str(flags.get("options") or "")))))
+        if protected.get("inside") == "yes":
+            blocks.append(quote(muted(t("UPD_PROTECTED", unit=code("obhod.service")))))
+        if writable and not flags:
             blocks.append(quote(muted(t("UPD_RETRY_HINT"))))
-        else:
+        if not writable or flags:
             blocks.append(quote(muted(t("UPD_RUN_AS_ROOT"))))
             blocks.append(pre(str(facts.get("command") or "")))
         buttons = [
@@ -470,9 +476,10 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
         message = t("UPD_DONE_PLAIN")
     if ok:
         body = t("UPD_DONE", commit=code(commit), subject=subject or code(message))
+        blocks.append(quote(bold(body)))
     else:
-        body = t("UPD_FAILED", error=body_text(message or t("UPD_NOTHING_DONE")))
-    blocks.append(quote(bold(body)))
+        prefix = str(t("UPD_FAILED", error="")).rstrip(": ").strip()
+        blocks.append(quote(f"<b>{prefix}</b> {body_text(message or t('UPD_NOTHING_DONE'))}"))
     steps = [muted(str(item)) for item in result.get("steps") or []]
     if steps:
         blocks.append(f"<p>{bold(t('UPD_STEPS_DONE'))}</p>")
@@ -485,7 +492,18 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
         blocks.append(quote(muted(t("UPD_RESTART"))))
     if result.get("log"):
         blocks.append(pre("\n".join(str(item) for item in result["log"])))
-    if not ok and result.get("readonly"):
+    failure = dict(result.get("failure") or {})
+    if not ok and failure:
+        rows = []
+        if failure.get("step"):
+            rows.append(("route", t("UPD_FAIL_STEP"), code(str(failure.get("step")))))
+        if failure.get("path"):
+            rows.append(("folder", t("UPD_FAIL_PATH"), code(str(failure.get("path")))))
+        rows.append(("warn", t("UPD_FAIL_WHY"), code(str(failure.get("detail") or failure.get("message") or t("UI_NONE")))))
+        blocks.append(table(rows, (t("UI_PARAM"), t("UI_VALUE"))))
+        if failure.get("log"):
+            blocks.append(pre("\n".join(str(item) for item in failure.get("log") or [])))
+    if not ok and result.get("readonly") and (result.get("system") or {}).get("root"):
         system = dict(result.get("system") or {})
         blocks.append(quote(muted(t("UPD_READONLY_WHY", dir=str(system.get("root") or t("UI_NOT_SET")), reason=str(system.get("root_reason") or t("UI_NONE"))))))
         blocks.append(f"<p>{muted(t('UPD_RUN_AS_ROOT'))}</p>")

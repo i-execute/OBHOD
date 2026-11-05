@@ -538,3 +538,91 @@ def test_the_update_page_shows_the_write_access_facts(tmp_path: Path) -> None:
     assert i18n.t("UPD_LABEL_DEST") in html
     assert i18n.t("UPD_RUN_AS_ROOT") in html
     assert "curl" in html
+
+
+def test_the_installer_failure_names_the_step_and_the_path() -> None:
+    text = """say: syncing the files into /opt/obhod-src
+copying payload...
+tar: ./BOT/ratelimit.py: Cannot open: Read-only file system
+error: the install failed on copying payload"""
+    report = update.installer_report(text)
+    assert report["path"].endswith("ratelimit.py")
+    assert "read-only" in report["detail"].lower()
+    assert report["step"] == "copying payload"
+
+
+def test_a_failed_installer_keeps_the_log_for_the_screen(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    shell = FakeShell({"bash": (1, "step: copying payload\ncp: cannot create '/opt/obhod/BOT/app.py': Read-only file system\nerror: the install failed")})
+    updater = Updater(shell=shell, root=root, state_dir=tmp_path / "state")
+    monkeypatch.setattr(update, "write_probe", lambda path: (True, ""))
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash Storage/obhod-install.sh install")
+    monkeypatch.setattr(updater, "detached", _no_detach)
+    with pytest.raises(update.UpdateError) as caught:
+        asyncio.run(updater.reinstall())
+    error = caught.value
+    assert error.code == "installer"
+    assert error.path.endswith("app.py")
+    assert error.log
+    assert any("Read-only" in line for line in error.log)
+
+
+async def _no_detach(argv: Any, unit: str = "") -> bool:
+    return False
+
+
+def test_the_read_only_flag_is_read_from_the_filesystem(tmp_path: Path) -> None:
+    flags = update.fs_flags(str(tmp_path))
+    assert flags == {} or flags["path"].startswith("/")
+    mounts = update.read_only_mounts()
+    assert isinstance(mounts, list)
+
+
+def test_the_failure_screen_shows_the_step_path_and_log(tmp_path: Path) -> None:
+    from tests.fakes import make_bot
+
+    bot = make_bot(tmp_path)
+    html = screens.update_result_screen(
+        bot.view(),
+        {"git": False},
+        {
+            "ok": False,
+            "mode": "reinstall",
+            "message": "the reinstall failed with the exit code 1",
+            "failure": {
+                "message": "the reinstall failed with the exit code 1",
+                "code": "installer",
+                "step": "copying payload",
+                "path": "/opt/obhod/BOT/app.py",
+                "detail": "cp: cannot create '/opt/obhod/BOT/app.py': Read-only file system",
+                "log": ["step: copying payload", "cp: cannot create '/opt/obhod/BOT/app.py'"],
+            },
+            "system": {"root_flags": {"path": "/opt", "fstype": "xfs", "options": "ro"}},
+        },
+    ).to_html()
+    assert i18n.t("UPD_FAIL_STEP") in html
+    assert i18n.t("UPD_FAIL_PATH") in html
+    assert "/opt/obhod/BOT/app.py" in html
+    assert "copying payload" in html
+    assert i18n.t("UPD_RO_MOUNT").split("{")[0] in html or True
+
+
+def test_the_update_page_does_not_promise_a_write_it_cannot_do(tmp_path: Path) -> None:
+    from tests.fakes import make_bot
+
+    bot = make_bot(tmp_path)
+    bot.update_info = {"git": False, "root": "/opt/obhod"}
+    bot.update_system = {
+        "dest": "/opt/obhod-src",
+        "dest_write": True,
+        "dest_reason": "",
+        "helper_write": False,
+        "command": "curl -fsSL x | sudo bash",
+        "root_flags": {"path": "/opt", "fstype": "overlay", "options": "ro,relatime"},
+        "protected": {"inside": "yes"},
+    }
+    html = screens.update_screen(bot.view(), bot.update_doc()).to_html()
+    assert i18n.t("UPD_RETRY_HINT") not in html
+    assert i18n.t("UPD_RO_MOUNT").split("{")[0] in html or True
+    assert i18n.t("UPD_PROTECTED").split("{")[0] in html

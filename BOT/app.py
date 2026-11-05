@@ -1093,6 +1093,13 @@ class Bot:
         try:
             if mode == "reinstall":
                 await self.refresh_system()
+                probe_ok, probe_reason = True, ""
+                try:
+                    probe_ok, probe_reason = await self.updater.probe_reinstall()
+                except UpdateError as exc:
+                    probe_ok, probe_reason = False, exc.message
+                if not probe_ok:
+                    raise UpdateError(probe_reason or "the reinstall cannot start", "readonly")
                 tail = await self.updater.reinstall()
                 self.update_info = {"git": False}
                 self.update_error = ""
@@ -1106,13 +1113,24 @@ class Bot:
             self.update_error = exc.message
             if mode == "reinstall":
                 await self.refresh_system()
-                result = self.update_doc()
-                result["hint"] = self.updater.reinstall_command(str(self.updater.env_file()) if self.updater.env_file().is_file() else "")
-                result["readonly"] = getattr(exc, "code", "") == "readonly"
+                hint = self.updater.reinstall_command(str(self.updater.env_file()) if self.updater.env_file().is_file() else "")
+                code_value = getattr(exc, "code", "") or "failed"
                 await self.render(
                     chat_id,
                     msg_id,
-                    screens.update_result_screen(self.view(), self.update_info, {"ok": False, "mode": mode, "message": exc.message, "hint": result["hint"], "readonly": result["readonly"], "system": result["system"]}),
+                    screens.update_result_screen(
+                        self.view(),
+                        self.update_info,
+                        {
+                            "ok": False,
+                            "mode": mode,
+                            "message": exc.message,
+                            "hint": hint,
+                            "readonly": code_value in {"readonly", "blocked"},
+                            "failure": exc.to_dict() if hasattr(exc, "to_dict") else {"message": exc.message, "code": code_value},
+                            "system": dict(self.update_system),
+                        },
+                    ),
                 )
                 return
             await self.render(chat_id, msg_id, screens.update_screen(self.view(error=exc.message), self.update_info))
