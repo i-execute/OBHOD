@@ -413,9 +413,10 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
             blocks.append(quote(muted(t("UPD_RO_MOUNT", path=str(flags.get("path")), fstype=str(flags.get("fstype") or t("UI_NONE")), options=str(flags.get("options") or "")))))
         if protected.get("inside") == "yes":
             blocks.append(quote(muted(t("UPD_PROTECTED", unit=code("obhod.service")))))
-        if writable and not flags:
+        if facts.get("can_update"):
             blocks.append(quote(muted(t("UPD_RETRY_HINT"))))
-        if not writable or flags:
+        else:
+            blocks.append(quote(muted(t("UPD_NOT_IN_PLACE", reason=str(facts.get("why_not") or t("UI_NONE"))))))
             blocks.append(quote(muted(t("UPD_RUN_AS_ROOT"))))
             blocks.append(pre(str(facts.get("command") or "")))
         buttons = [
@@ -480,6 +481,9 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
     else:
         prefix = str(t("UPD_FAILED", error="")).rstrip(": ").strip()
         blocks.append(quote(f"<b>{prefix}</b> {body_text(message or t('UPD_NOTHING_DONE'))}"))
+    failure = dict(result.get("failure") or {})
+    if not ok and failure.get("copy_ok"):
+        blocks.append(quote(bold(t("UPD_COPY_DONE"))))
     steps = [muted(str(item)) for item in result.get("steps") or []]
     if steps:
         blocks.append(f"<p>{bold(t('UPD_STEPS_DONE'))}</p>")
@@ -492,7 +496,6 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
         blocks.append(quote(muted(t("UPD_RESTART"))))
     if result.get("log"):
         blocks.append(pre("\n".join(str(item) for item in result["log"])))
-    failure = dict(result.get("failure") or {})
     if not ok and failure:
         rows = []
         if failure.get("step"):
@@ -510,7 +513,7 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
         if result.get("hint"):
             blocks.append(pre(str(result.get("hint"))))
     elif not ok and result.get("hint"):
-        blocks.append(f"<p>{muted(t('UPD_RETRY_HINT'))}</p>")
+        blocks.append(f"<p>{muted(t('UPD_ACTION_NEEDED'))}</p>")
         blocks.append(pre(str(result.get("hint"))))
     buttons = [
         row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),

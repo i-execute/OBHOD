@@ -457,3 +457,27 @@ def test_a_read_only_destination_is_explained_instead_of_a_tar_trace(tmp_path: P
     assert "root shell" in result.stderr
     assert "function not implemented" not in result.stderr
     assert "tar:" not in result.stderr
+
+
+def test_a_read_only_env_directory_does_not_abort_the_run(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "Storage").mkdir()
+    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir()
+    env_file = env_dir / "obhod.env"
+    env_dir.chmod(0o555)
+    try:
+        result = run(
+            tmp_path,
+            f"--dir={tmp_path / 'dest'}",
+            f"--env-file={env_file}",
+            env={"OBHOD_SRC_DIR": str(source), **creds()},
+        )
+    finally:
+        env_dir.chmod(0o755)
+    assert result.returncode == 0, result.stderr
+    assert "read-only" in result.stderr.lower() or "could not be written" in result.stderr.lower()
+    assert "files updated in" in result.stdout
+    assert "starting the installer" in result.stdout

@@ -45,7 +45,7 @@ PREVIEW_FILES = 8
 
 
 class UpdateError(Exception):
-    def __init__(self, message: str, code: str = "", detail: str = "", path: str = "", step: str = "", log: list[str] | None = None) -> None:
+    def __init__(self, message: str, code: str = "", detail: str = "", path: str = "", step: str = "", log: list[str] | None = None, copy_ok: bool = False) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
@@ -53,6 +53,7 @@ class UpdateError(Exception):
         self.path = path
         self.step = step
         self.log = list(log or [])
+        self.copy_ok = bool(copy_ok)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +63,7 @@ class UpdateError(Exception):
             "path": self.path,
             "step": self.step,
             "log": list(self.log),
+            "copy_ok": self.copy_ok,
         }
 
 
@@ -158,17 +160,38 @@ def clean_output(text: str) -> str:
     return (text or "").strip()[:TAIL]
 
 
+BLOCKED_TARGETS = ("/etc/obhod", "/opt/obhod", "/usr/local/bin", "/etc/systemd/system", "/var/lib/obhod")
+
+
+def blocked_target(line: str) -> str:
+    for item in BLOCKED_TARGETS:
+        if item in str(line or ""):
+            return item
+    return ""
+
+
+def code_blocked(detail: str) -> str:
+    low = str(detail or "").lower()
+    if not any(hint in low for hint in READONLY_HINTS):
+        return ""
+    if blocked_target(detail) in BLOCKED_TARGETS:
+        return "blocked"
+    return "installer"
+
+
 def plain_error(text: str) -> str:
     body = " ".join(str(text or "").split())
-    if "function not implemented" in body.lower():
-        return (
-            "the service could not write its own files (the sandbox forbids that write), "
-            "so an in-bot reinstall cannot replace /opt/obhod; run get.sh from a normal root shell"
-        )
-    if "read-only file system" in body.lower():
-        return "a file is on a read-only mount, the unit needs the write access to the install directory"
+    low = body.lower()
+    where = blocked_target(body)
+    suffix = " (%s)" % where if where else ""
+    if "function not implemented" in low:
+        return "the sandbox refused the write%s, run get.sh from a normal root shell" % suffix
+    if "read-only file system" in low or "read-only mount" in low:
+        return "the sandbox refused the write%s, run get.sh from a normal root shell" % suffix
     return body[:200]
 
+
+COPY_FAIL_MARKS = ("tar: ", "cp: ", "could not be copied", "cannot create", "cannot open", "cannot remove")
 
 READONLY_HINTS = ("function not implemented", "read-only file system", "cannot open", "operation not permitted", "cannot remove", "permission denied")
 
@@ -267,6 +290,15 @@ def read_only_mounts() -> list[dict[str, str]]:
 def installer_report(text: str) -> dict[str, str]:
     lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
     detail = ""
+    copy_failed = ""
+    seen_copy = False
+    for line in lines:
+        low = line.lower()
+        if "copied " in low or "files updated in" in low:
+            seen_copy = True
+            continue
+        if any(mark in low for mark in COPY_FAIL_MARKS):
+            copy_failed = line
     for line in reversed(lines):
         low = line.lower()
         if any(hint in low for hint in READONLY_HINTS):
@@ -279,11 +311,14 @@ def installer_report(text: str) -> dict[str, str]:
                 break
     if not detail and lines:
         detail = lines[-1]
-    return {
+    report = {
         "detail": detail[:300],
         "path": failed_path(detail),
         "step": failed_step(text),
+        "copy_ok": bool(seen_copy and not copy_failed),
+        "copy_detail": copy_failed[:200],
     }
+    return report
 
 
 def installer_failure(text: str) -> str:
@@ -512,6 +547,17 @@ class Updater:
             "protected": await asyncio.to_thread(unit_protects, self.unit),
         }
 
+    async def can_update(self) -> tuple[bool, str]:
+        info = await self.describe()
+        if not info.get("root_write"):
+            return False, str(info.get("root_reason") or "the install directory is not writable")
+        if str((info.get("protected") or {}).get("inside")) == "yes":
+            return False, "the service runs inside a strict sandbox"
+        flags = info.get("root_flags") or {}
+        if flags.get("path"):
+            return False, "the install directory is on a read-only mount %s" % flags.get("path")
+        return True, ""
+
     async def probe_reinstall(self) -> tuple[bool, str]:
         writable, reason = await self.preflight()
         if not writable:
@@ -600,13 +646,15 @@ class Updater:
         if int(out.code or 0) == 0:
             return text
         report = installer_report(text)
+        blocked = code_blocked(report["detail"])
         raise UpdateError(
             "the reinstall failed with the exit code %d: %s" % (int(out.code or 0), report["detail"] or "no output"),
-            "installer",
+            blocked or "installer",
             detail=report["detail"],
             path=report["path"],
             step=report["step"],
             log=installer_log(text),
+            copy_ok=report["copy_ok"],
         )
 
     async def preview(self, mode: str) -> dict[str, Any]:

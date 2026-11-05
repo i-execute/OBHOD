@@ -351,15 +351,54 @@ sync_source() {
 
 write_env_file() {
   local path="$1"
-  mkdir -p "$(dirname "$path")"
-  umask 077
-  {
-    printf 'BOT_TOKEN=%s\n' "$TOKEN"
-    printf 'API_ID=%s\n' "$API_ID"
-    printf 'API_HASH=%s\n' "$API_HASH"
-    printf 'ADMIN_ID=%s\n' "$ADMIN_ID"
-  } > "$path"
-  chmod 600 "$path"
+  if ! mkdir -p "$(dirname "$path")" 2>/dev/null; then
+    note "the env directory $(dirname "$path") could not be created"
+    return 1
+  fi
+  if ! ( umask 077; {
+      printf 'BOT_TOKEN=%s\n' "$TOKEN"
+      printf 'API_ID=%s\n' "$API_ID"
+      printf 'API_HASH=%s\n' "$API_HASH"
+      printf 'ADMIN_ID=%s\n' "$ADMIN_ID"
+    } > "$path" ) 2>/dev/null; then
+    note "the env file $path could not be written: $(dirname "$path") is on a read-only mount"
+    return 1
+  fi
+  chmod 600 "$path" 2>/dev/null || true
+  return 0
+}
+
+runtime_writable() {
+  local path="$1"
+  local dir
+  dir="$(dirname "$path")"
+  if [ -w "$dir" ] && [ ! -e "$path" ]; then
+    return 0
+  fi
+  if [ -w "$path" ]; then
+    return 0
+  fi
+  return 1
+}
+
+pick_runtime_env() {
+  if [ -n "${OBHOD_ENV_FILE:-}" ]; then
+    return 0
+  fi
+  local candidate
+  local existing
+  existing="$(existing_env_path)"
+  if runtime_writable "$existing"; then
+    ENV_PATH="$existing"
+    return 0
+  fi
+  for candidate in "/etc/obhod/obhod.env" "/opt/obhod/obhod.env" "/var/lib/obhod/obhod.env"; do
+    if runtime_writable "$candidate"; then
+      ENV_PATH="$candidate"
+      return 0
+    fi
+  done
+  return 0
 }
 
 check_dest
@@ -392,8 +431,9 @@ if [ "$DRY_RUN" = "1" ]; then
   fi
   if [ -n "$ENV_PATH" ]; then
     if [ "$CREDS" = "1" ]; then
-      write_env_file "$ENV_PATH"
-      say "env file: $ENV_PATH"
+      if write_env_file "$ENV_PATH"; then
+        say "env file: $ENV_PATH"
+      fi
     fi
   fi
   if [ "$TUI" = "1" ]; then
@@ -427,10 +467,14 @@ if [ "$TUI" = "1" ] && tty_available; then
     TUI_ARGS=("${ARGS[@]}")
     if [ "$CREDS" = "1" ]; then
       if [ -z "$ENV_PATH" ]; then
+        pick_runtime_env
+      fi
+      if [ -z "$ENV_PATH" ] || ! write_env_file "$ENV_PATH"; then
         WORK="${WORK:-$(mktemp -d)}"
         ENV_PATH="$WORK/obhod.env"
+        write_env_file "$ENV_PATH" || die "the env file could not be written anywhere, pass --env-file to a writable path"
+        note "the system env directory is read-only, the config is passed from $ENV_PATH"
       fi
-      write_env_file "$ENV_PATH"
       TUI_ARGS+=("--env-file=$ENV_PATH" "--yes")
       unset BOT_TOKEN API_ID API_HASH ADMIN_ID OBHOD_TOKEN OBHOD_API_ID OBHOD_API_HASH OBHOD_ADMIN_ID
     fi
@@ -448,10 +492,14 @@ fi
 INSTALL_ARGS=("${ARGS[@]}")
 if [ "$CREDS" = "1" ]; then
   if [ -z "$ENV_PATH" ]; then
+    pick_runtime_env
+  fi
+  if [ -z "$ENV_PATH" ] || ! write_env_file "$ENV_PATH"; then
     WORK="${WORK:-$(mktemp -d)}"
     ENV_PATH="$WORK/obhod.env"
+    write_env_file "$ENV_PATH" || die "the env file could not be written anywhere, pass --env-file to a writable path"
+    note "the system env directory is read-only, the config is passed from $ENV_PATH"
   fi
-  write_env_file "$ENV_PATH"
   INSTALL_ARGS+=("--env-file=$ENV_PATH" "--yes")
   unset BOT_TOKEN API_ID API_HASH ADMIN_ID OBHOD_TOKEN OBHOD_API_ID OBHOD_API_HASH OBHOD_ADMIN_ID
   say "credentials: from the environment $(mask_token "$TOKEN") api_id:${API_ID:-missing} admin:${ADMIN_ID:-missing}"

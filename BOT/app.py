@@ -1063,6 +1063,7 @@ class Bot:
     async def refresh_system(self) -> None:
         try:
             self.update_system = await self.updater.describe()
+            self.update_system["can_update"], self.update_system["why_not"] = await self.updater.can_update()
         except Exception as exc:
             log.debug("the system probe failed: %s", exc)
             self.update_system = {}
@@ -1099,7 +1100,7 @@ class Bot:
                 except UpdateError as exc:
                     probe_ok, probe_reason = False, exc.message
                 if not probe_ok:
-                    raise UpdateError(probe_reason or "the reinstall cannot start", "readonly")
+                    raise UpdateError(probe_reason or "the reinstall cannot start", "blocked")
                 tail = await self.updater.reinstall()
                 self.update_info = {"git": False}
                 self.update_error = ""

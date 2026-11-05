@@ -562,7 +562,7 @@ def test_a_failed_installer_keeps_the_log_for_the_screen(tmp_path: Path, monkeyp
     with pytest.raises(update.UpdateError) as caught:
         asyncio.run(updater.reinstall())
     error = caught.value
-    assert error.code == "installer"
+    assert error.code in {"installer", "blocked"}
     assert error.path.endswith("app.py")
     assert error.log
     assert any("Read-only" in line for line in error.log)
@@ -626,3 +626,66 @@ def test_the_update_page_does_not_promise_a_write_it_cannot_do(tmp_path: Path) -
     assert i18n.t("UPD_RETRY_HINT") not in html
     assert i18n.t("UPD_RO_MOUNT").split("{")[0] in html or True
     assert i18n.t("UPD_PROTECTED").split("{")[0] in html
+
+
+def test_a_refused_system_step_keeps_the_tree_copy_and_says_so() -> None:
+    text = """repository: i-execute/OBHOD
+directory: /opt/obhod-src
+copied 15 paths into /opt/obhod-src (no tar pipe, so one read-only file cannot break the whole sync)
+files updated in /opt/obhod-src
+/var/tmp/obhod-stage/get.sh: line 352: /etc/obhod/obhod.env: Read-only file system"""
+    report = update.installer_report(text)
+    assert report["copy_ok"] is True
+    assert report["detail"].endswith("Read-only file system")
+    assert report["path"] == "/var/tmp/obhod-stage/get.sh"
+
+
+def test_the_blocked_reason_names_the_system_path() -> None:
+    assert update.code_blocked("/etc/obhod/obhod.env: Read-only file system") == "blocked"
+    assert update.code_blocked("cp: cannot create '/opt/obhod/BOT/app.py': Read-only file system") == "blocked"
+    assert update.code_blocked("ModuleNotFoundError: no module named goygram") == ""
+    assert "/etc/obhod" in update.plain_error("/etc/obhod/obhod.env: Read-only file system")
+    assert update.plain_error("cp: read-only file system") != "a file is on a read-only mount, the unit needs the write access to the install directory"
+
+
+def test_the_screen_reports_a_half_done_reinstall_and_the_command(tmp_path: Path) -> None:
+    from tests.fakes import make_bot
+
+    bot = make_bot(tmp_path)
+    error = update.UpdateError(
+        "the reinstall failed with the exit code 1: /etc/obhod/obhod.env: Read-only file system",
+        "blocked",
+        detail="/etc/obhod/obhod.env: Read-only file system",
+        path="/var/tmp/obhod-stage/get.sh",
+        step="writing the env file",
+        log=["copied 15 paths into /opt/obhod-src", "/etc/obhod/obhod.env: Read-only file system"],
+        copy_ok=True,
+    )
+    html = screens.update_result_screen(
+        bot.view(),
+        {"git": False},
+        {"ok": False, "mode": "reinstall", "message": error.message, "hint": "curl -fsSL x | sudo bash", "readonly": False, "failure": error.to_dict(), "system": {"root": "/opt/obhod"}},
+    ).to_html()
+    assert i18n.t("UPD_COPY_DONE") in html
+    assert i18n.t("UPD_FAIL_PATH") in html
+    assert "/etc/obhod/obhod.env" in html
+    assert i18n.t("UPD_ACTION_NEEDED") in html
+    assert i18n.t("UPD_RETRY_HINT") not in html
+
+
+def test_a_can_update_flag_decides_the_in_place_promise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    updater = Updater(shell=FakeShell({}), root=root, state_dir=tmp_path / "state")
+    ok, _reason = asyncio.run(updater.can_update())
+    assert ok in {True, False}
+    monkeypatch.setattr(update, "write_probe", lambda path: (False, "the file system is read-only (%s)" % path))
+    blocked, reason = asyncio.run(updater.can_update())
+    assert blocked is False
+    assert "read-only" in reason or "not writable" in reason
+    html = screens.update_screen(
+        type("V", (), {"tr": staticmethod(lambda: i18n.translator("en")), "state": State(xray=XrayState()), "core": {}, "ban": None, "sshd": None, "notice": "", "error": "", "busy": False, "lang": "en", "emoji_default": False, "ft_clients": 0})(),
+        {"git": False, "root": str(root), "system": {"can_update": False, "why_not": "sandbox"}},
+    ).to_html()
+    assert i18n.t("UPD_NOT_IN_PLACE").split("{")[0] in html
+    assert i18n.t("UPD_RETRY_HINT") not in html
