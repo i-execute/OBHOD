@@ -16,6 +16,7 @@ class Wire:
         self.edits = 0
         self.sent: list[str] = []
         self.fail_edit = False
+        self.fail_send = False
 
     async def edit_rich(self, chat_id: int, msg_id: int, rich: Any, via: str | None = None, **kw: Any) -> None:
         if self.fail_edit:
@@ -23,6 +24,8 @@ class Wire:
         self.edits += 1
 
     async def send_rich(self, chat_id: int, rich: Any, via: str | None = None, **kw: Any) -> None:
+        if self.fail_send:
+            raise RuntimeError("the chat is gone")
         self.sent.append(str(rich))
 
     async def delete_msg(self, chat_id: int, msg_ids: Any, **kw: Any) -> bool:
@@ -85,6 +88,14 @@ def make_wire_bot(tmp_path: Path, updater: Any = None) -> tuple[Bot, Wire]:
     bot.freeturn.control = IdleControl()
     bot.updater = updater or CountingUpdater()
     return bot, wire
+
+
+class _BadNotify:
+    def __getattr__(self, name: str) -> Any:
+        def _call(*args: Any, **kwargs: Any) -> Any:
+            raise ValueError("the notifier is broken")
+
+        return _call
 
 
 def press(bot: Bot, data: str, msg_id: int = 5, from_id: int = 7) -> None:
@@ -206,3 +217,80 @@ def test_the_update_check_is_not_repeated_on_each_navigation(tmp_path: Path) -> 
     for index in range(6):
         press(bot, "nav:update", msg_id=index + 1)
     assert updater.checks <= 2
+
+
+def test_a_broken_handler_never_reaches_the_dispatcher(tmp_path: Path) -> None:
+    bot, wire = make_wire_bot(tmp_path)
+    bot.debug.route = _explode
+    press(bot, "dbg:chk:check")
+    assert wire.edits >= 1
+    assert bot.jobs == {}
+    assert bot.is_busy() is False
+
+
+def test_a_broken_handler_on_any_prefix_is_caught(tmp_path: Path) -> None:
+    bot, wire = make_wire_bot(tmp_path)
+    bot.tools_action = _explode
+    press(bot, "tools:home")
+    assert wire.edits >= 1
+    assert bot.jobs == {}
+
+
+async def _explode(*args: Any, **kwargs: Any) -> None:
+    raise ValueError("boom")
+
+
+def test_a_long_action_does_not_hold_the_dispatcher(tmp_path: Path) -> None:
+    class Slow(CountingUpdater):
+        async def apply(self, mode: str) -> Any:
+            await asyncio.sleep(0.4)
+            return await super().apply(mode)
+
+    updater = Slow()
+    bot, wire = make_wire_bot(tmp_path, updater=updater)
+
+    async def scenario() -> float:
+        heavy = asyncio.create_task(bot.on_callback(FakeEvent(data="upd:commit:go", msg_id=5, from_id=7)))
+        await asyncio.sleep(0.05)
+        started = time.monotonic()
+        await bot.on_callback(FakeEvent(data="nav:help", msg_id=6, from_id=7))
+        spent = time.monotonic() - started
+        await asyncio.wait_for(heavy, 3)
+        await bot.idle(5)
+        return spent
+
+    spent = asyncio.run(scenario())
+    assert spent < 0.3
+    assert updater.applied == 1
+    assert bot.is_busy() is False
+
+
+def test_a_render_that_failed_is_not_remembered_and_is_retried(tmp_path: Path) -> None:
+    bot, wire = make_wire_bot(tmp_path)
+    wire.fail_edit = True
+    wire.fail_send = True
+    press(bot, "nav:settings")
+    assert bot.render_seen == {}
+    wire.fail_edit = False
+    wire.fail_send = False
+    press(bot, "nav:settings")
+    assert bot.render_seen
+    assert wire.edits >= 1 or wire.sent
+
+
+def test_a_dead_notifier_does_not_kill_the_poll_loop(tmp_path: Path) -> None:
+    bot, wire = make_wire_bot(tmp_path)
+    bot.notify = _BadNotify()
+
+    async def scenario() -> bool:
+        loop = asyncio.create_task(bot.notify_loop(0.01))
+        await asyncio.sleep(0.1)
+        alive = not loop.done()
+        loop.cancel()
+        try:
+            await loop
+        except asyncio.CancelledError:
+            pass
+        return alive
+
+    assert asyncio.run(scenario()) is True

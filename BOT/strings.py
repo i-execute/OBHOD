@@ -137,10 +137,6 @@ class EN:
     LANG_NOTE = "the choice is stored by the bot and applies to every next message"
     LANG_CHANGED = "interface language changed to {name}"
 
-    ERR_CRASH_TITLE = "Failure"
-    ERR_INPUT_TITLE = "Input error"
-    ERR_TITLE = "Error"
-
     DENIED_TITLE = "Access denied"
     ERR_INPUT_TITLE = "Input rejected"
     ERR_CRASH_TITLE = "Unexpected error"
@@ -1612,9 +1608,6 @@ class RU:
     LANG_NOTE = "выбор хранится в боте и применяется ко всем следующим сообщениям"
     LANG_CHANGED = "язык интерфейса изменен на {name}"
 
-    ERR_CRASH_TITLE = "Сбой"
-    ERR_INPUT_TITLE = "Ошибка ввода"
-    ERR_TITLE = "Ошибка"
 
     DENIED_TITLE = "Доступ закрыт"
     ERR_INPUT_TITLE = "Ввод отклонен"
@@ -3086,10 +3079,6 @@ class ZH:
     LANG_CURRENT = "当前"
     LANG_NOTE = "选择保存在机器人中，并应用到之后的所有消息"
     LANG_CHANGED = "界面语言已切换为{name}"
-
-    ERR_CRASH_TITLE = "故障"
-    ERR_INPUT_TITLE = "输入错误"
-    ERR_TITLE = "错误"
 
     DENIED_TITLE = "访问被拒绝"
     ERR_INPUT_TITLE = "输入被拒绝"

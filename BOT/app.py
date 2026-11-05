@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import re
 import socket
 import time
 from typing import Any
@@ -62,6 +63,8 @@ def is_navigation(data: str) -> bool:
     if data in NAV_ROUTES:
         return True
     return False
+
+CONFIRM_STEPS = re.compile(r"^(upd:(commit|release)|fb:(install|reset)|xr:(core|subs:rebuild)|ft:(apply|restart))")
 
 def is_expensive(data: str) -> bool:
     if data.startswith(("nav:", "lang:")):
@@ -452,19 +455,26 @@ class Bot:
         last = self.render_seen.get(key)
         if last and last[0] == digest and now - last[1] < RENDER_QUIET:
             return
+        if msg_id:
+            try:
+                await self.app.edit_rich(chat_id, msg_id, rich, via="mt")
+                self.remember_render(key, digest, now)
+                return
+            except Exception as exc:
+                log.warning("edit failed: %s", exc)
+        if not msg_id or self.quiet("send:%d" % key[0], RENDER_QUIET):
+            try:
+                await self.send(chat_id, rich)
+                self.remember_render(key, digest, now)
+            except Exception as exc:
+                log.warning("send failed: %s", exc)
+
+    def remember_render(self, key: tuple[int, int], digest: str, now: float) -> None:
         self.render_seen[key] = (digest, now)
         if len(self.render_seen) > RENDER_CACHE:
             extra = len(self.render_seen) - RENDER_CACHE
             for item in sorted(self.render_seen.items(), key=lambda pair: pair[1][1])[:extra]:
                 self.render_seen.pop(item[0], None)
-        if msg_id:
-            try:
-                await self.app.edit_rich(chat_id, msg_id, rich, via="mt")
-                return
-            except Exception as exc:
-                log.warning("edit failed: %s", exc)
-        if not msg_id or self.quiet("send:%d" % key[0], RENDER_QUIET):
-            await self.send(chat_id, rich)
 
     def answered(self, evt: object) -> bool:
         return bool(getattr(evt, "_obhod_answered", False))
@@ -753,7 +763,7 @@ class Bot:
         chat_id = int(getattr(evt, "chat_id", 0) or 0)
         msg_id = int(getattr(evt, "msg_id", 0) or 0)
         who = int(getattr(evt, "from_id", 0) or 0)
-        if self.is_busy() and not is_navigation(data):
+        if self.is_busy() and not is_navigation(data) and not CONFIRM_STEPS.match(data):
             if self.quiet("busy", BUSY_QUIET):
                 await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
             return
@@ -771,12 +781,12 @@ class Bot:
                 if self.quiet("rate:%d" % int(getattr(evt, "from_id", 0) or 0), RATE_QUIET):
                     await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
                 return
-        if self.busy and not is_expensive(data) and not is_navigation(data):
+        if self.busy and not is_expensive(data) and not is_navigation(data) and not CONFIRM_STEPS.match(data):
             if self.quiet("busy", BUSY_QUIET):
                 await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
             return
         busy = False
-        if is_expensive(data):
+        if is_expensive(data) or CONFIRM_STEPS.match(data):
             busy = self.busy_begin()
             if not busy:
                 if self.quiet("busy", BUSY_QUIET):
@@ -788,10 +798,14 @@ class Bot:
             except Exception as exc:
                 log.debug("the loading screen failed: %s", exc)
         await self.answer_click(evt)
-        job = self.handle_callback(chat_id, msg_id, data)
-        await self.track(job, data)
-        if busy:
-            await self.busy_wait()
+        await self.track(self.finish(self.handle_callback(chat_id, msg_id, data), busy), data)
+
+    async def finish(self, job: Any, busy: bool) -> None:
+        try:
+            await job
+        finally:
+            if busy:
+                self.busy_end()
 
     async def busy_wait(self) -> None:
         await self.idle()
@@ -869,6 +883,23 @@ class Bot:
         return text not in LOADING_SKIP
 
     async def route(self, chat_id: int, msg_id: int, data: str) -> None:
+        try:
+            await self.dispatch(chat_id, msg_id, data)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.exception("the route %s failed", str(data)[:40])
+            self.audit.note(self.admin_id, str(data)[:32], "crash")
+            try:
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    screens.error_screen(self.view(), self.tr()("ERR_CRASH_TITLE"), f"{type(exc).__name__}: {exc}"),
+                )
+            except Exception as finer:
+                log.warning("the crash screen was not shown: %s", finer)
+
+    async def dispatch(self, chat_id: int, msg_id: int, data: str) -> None:
         parts = data.split(":")
         head = parts[0] if parts else ""
         if data.startswith("tools:"):
