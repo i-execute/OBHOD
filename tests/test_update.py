@@ -419,7 +419,11 @@ def test_reinstall_runs_get_sh_and_reports_tail(tmp_path: Path, monkeypatch: pyt
     text = asyncio.run(updater.reinstall())
     assert any("systemd-run" in " ".join(item) for item in shell.calls)
     assert "background" in text
-    assert "--property=Type=oneshot" in " ".join(shell.argv_of("systemd-run")[0])
+    launched = shell.argv_of("systemd-run")
+    reinstall_calls = [item for item in launched if "--unit=obhod-reinstall" in item]
+    assert reinstall_calls and "--property=Type=oneshot" in " ".join(reinstall_calls[0])
+    timer = [item for item in launched if "--unit=obhod-self-update-timer" in item]
+    assert timer and "systemctl" in timer[0] and "restart" in timer[0]
 
 
 def test_reinstall_failure_raises_with_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -440,9 +444,35 @@ def test_reinstall_prefers_the_detached_unit(tmp_path: Path, monkeypatch: pytest
     updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
     text = asyncio.run(updater.reinstall())
     assert "background" in text
+    assert "obhod-reinstall" in text
     launched = shell.argv_of("systemd-run")
-    assert launched and "--unit=obhod-reinstall" in launched[0]
+    assert launched
+    assert "--no-block" in launched[0]
+    reinstall_calls = [item for item in launched if "--unit=obhod-reinstall" in item]
+    restart_calls = [item for item in launched if "--unit=obhod-self-update-timer" in item]
+    assert reinstall_calls and restart_calls
+    assert "systemctl" in restart_calls[0] and "restart" in restart_calls[0]
     assert not [item for item in shell.calls if "bash" == item[0] and any("get.sh" in part for part in item)]
+
+
+def test_a_plain_restart_is_queued_without_blocking_the_bot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(update.shutil, "which", lambda name: "/usr/bin/" + name if name in {"systemd-run", "systemctl"} else None)
+    shell = FakeShell({"systemd-run": (0, "")})
+    updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
+    assert asyncio.run(updater._restart()) is True
+    launched = shell.argv_of("systemd-run")
+    timer = [item for item in launched if "--unit=obhod-self-update-timer" in item]
+    assert timer and "systemctl" in timer[0] and "restart" in timer[0] and "--on-active=" in " ".join(timer[0])
+    assert "--no-block" in " ".join(timer[0])
+
+
+def test_a_plain_restart_falls_back_when_the_detach_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(update.shutil, "which", lambda name: "/usr/bin/" + name if name in {"systemd-run", "systemctl"} else None)
+    shell = FakeShell({"systemd-run": (1, "Failed to connect to bus"), "systemctl": (0, "")})
+    updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
+    assert asyncio.run(updater._restart()) is True
+    plain = shell.argv_of("systemctl")
+    assert plain and "--no-block" in plain[-1]
 
 
 def test_reinstall_rejects_a_foreign_get_script(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -569,7 +599,7 @@ def test_a_failed_installer_keeps_the_log_for_the_screen(tmp_path: Path, monkeyp
     assert any("Read-only" in line for line in error.log)
 
 
-async def _no_detach(argv: Any, unit: str = "") -> bool:
+async def _no_detach(argv: Any, unit: str = "", after: str = "") -> bool:
     return False
 
 

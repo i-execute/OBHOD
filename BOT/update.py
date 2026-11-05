@@ -35,6 +35,7 @@ STAGE_ENV = "OBHOD_STAGE_DIR"
 STAGE_DIR = "/var/tmp/obhod-stage"
 DEST_DIR = "/opt/obhod-src"
 REINSTALL_UNIT = "obhod-reinstall"
+SELF_UNIT = "obhod-self-update"
 KEPT_UNTRACKED = (".venv", ".env")
 COMPILE_TARGETS = ("BOT", "Storage/remote", "tools")
 MODES = ("commit", "release")
@@ -601,22 +602,38 @@ class Updater:
         info.update(await self.system_flags())
         return info
 
-    async def detached(self, argv: list[str], unit: str = REINSTALL_UNIT) -> bool:
+    async def detached(self, argv: list[str], unit: str = REINSTALL_UNIT, after: str = "") -> bool:
         if shutil.which("systemd-run") is None:
             return False
-        out = await self._run(
-            [
+        if after:
+            timer = [
                 "systemd-run",
                 "--quiet",
                 "--collect",
-                "--unit=" + unit,
-                "--property=Type=oneshot",
-                "--property=StandardOutput=journal",
-                "--property=StandardError=journal",
-                *argv,
-            ],
-            UNIT_TIMEOUT,
-        )
+                "--no-block",
+                "--on-active=%d" % RESTART_DELAY,
+                "--unit=%s-timer" % SELF_UNIT,
+                "systemctl",
+                "restart",
+                after,
+            ]
+            queued = await self._run(timer, UNIT_TIMEOUT)
+            if int(queued.code or 0) != 0:
+                log.warning("the delayed restart could not be queued: %s", clean_output(queued.text)[:200])
+        request = [
+            "systemd-run",
+            "--quiet",
+            "--collect",
+            "--no-block",
+            "--unit=" + unit,
+            "--property=Type=oneshot",
+            "--property=StandardOutput=journal",
+            "--property=StandardError=journal",
+            *argv,
+        ]
+        out = await self._run(request, UNIT_TIMEOUT)
+        if int(out.code or 0) != 0:
+            log.warning("the detached unit %s did not start: %s", unit, clean_output(out.text)[:200])
         return int(out.code or 0) == 0
 
     async def reinstall(self, on_log: Any = None) -> str:
@@ -640,9 +657,9 @@ class Updater:
         args = ["bash", str(script), "install", "--yes"]
         if env_file.is_file():
             args.append("--env-file=%s" % env_file)
-        detached = await self.detached(args)
+        detached = await self.detached(args, REINSTALL_UNIT, self.unit)
         if detached:
-            return "the reinstall is running in the background, the service restarts itself when it is done"
+            return "the reinstall is running in the background as %s, the output goes to the journal under that unit name, the service restarts itself when it is done" % REINSTALL_UNIT
         out = await self._run(args, REINSTALL_TIMEOUT)
 
         text = str(out.text or "")
@@ -746,22 +763,10 @@ class Updater:
         if shutil.which("systemctl") is None:
             return False
         if shutil.which("systemd-run") is not None:
-            argv = [
-                "systemd-run",
-                "--quiet",
-                "--collect",
-                "--on-active=%d" % RESTART_DELAY,
-                "--unit=obhod-self-update",
-                "systemctl",
-                "restart",
-                self.unit,
-            ]
-        else:
-            argv = ["systemctl", "restart", "--no-block", self.unit]
-        try:
-            out = await self._run(argv, UNIT_TIMEOUT)
-        except UpdateError:
-            return False
+            queued = await self.detached([], SELF_UNIT, self.unit)
+            if queued:
+                return True
+        out = await self._run(["systemctl", "restart", "--no-block", self.unit], UNIT_TIMEOUT)
         return int(out.code or 0) == 0
 
     async def apply(self, mode: str) -> UpdateResult:
