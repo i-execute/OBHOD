@@ -380,6 +380,7 @@ def sshd_screen(view: View) -> Any:
 
 def update_screen(view: View, info: dict[str, Any]) -> Any:
     t = view.tr()
+    facts = dict(info.get("system") or {})
     if not info.get("git") and view.error and "not a git checkout" in view.error:
         view = View(state=view.state, core=view.core, ban=view.ban, sshd=view.sshd, notice=view.notice, error="", busy=view.busy, lang=view.lang, emoji_default=view.emoji_default, ft_clients=view.ft_clients)
     blocks = banner(view, t)
@@ -394,8 +395,23 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
                 (t("UI_PARAM"), t("UI_VALUE")),
             )
         )
+        writable = facts.get("dest_write")
+        blocks.append(
+            table(
+                [
+                    ("folder", t("UPD_LABEL_DEST"), code(facts.get("dest") or t("UI_NOT_SET"))),
+                    ("key", t("UPD_LABEL_WRITE"), code(t("UPD_WRITE_OK") if writable else t("UPD_WRITE_BLOCKED", reason=str(facts.get("dest_reason") or t("UI_NONE"))))),
+                    ("shield", t("UPD_LABEL_HELPER"), code(t("UPD_WRITE_OK") if facts.get("helper_write") else t("UI_OFF"))),
+                ],
+                (t("UI_PARAM"), t("UI_VALUE")),
+            )
+        )
         blocks.append(f"<p>{muted(t('UPD_NO_GIT_HINT'))}</p>")
-        blocks.append(quote(muted(t("UPD_RUN_FROM_SHELL"))))
+        if writable:
+            blocks.append(quote(muted(t("UPD_RETRY_HINT"))))
+        else:
+            blocks.append(quote(muted(t("UPD_RUN_AS_ROOT"))))
+            blocks.append(pre(str(facts.get("command") or "")))
         buttons = [
             row(button(t("UPD_REINSTALL_BTN"), "upd:reinstall", icon="update")),
             row(button(t("UI_HOME"), "nav:home", icon="home")),
@@ -469,6 +485,15 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
         blocks.append(quote(muted(t("UPD_RESTART"))))
     if result.get("log"):
         blocks.append(pre("\n".join(str(item) for item in result["log"])))
+    if not ok and result.get("readonly"):
+        system = dict(result.get("system") or {})
+        blocks.append(quote(muted(t("UPD_READONLY_WHY", dir=str(system.get("root") or t("UI_NOT_SET")), reason=str(system.get("root_reason") or t("UI_NONE"))))))
+        blocks.append(f"<p>{muted(t('UPD_RUN_AS_ROOT'))}</p>")
+        if result.get("hint"):
+            blocks.append(pre(str(result.get("hint"))))
+    elif not ok and result.get("hint"):
+        blocks.append(f"<p>{muted(t('UPD_RETRY_HINT'))}</p>")
+        blocks.append(pre(str(result.get("hint"))))
     buttons = [
         row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]

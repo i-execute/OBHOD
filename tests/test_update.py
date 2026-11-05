@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from BOT import releases, screens
+from BOT import i18n, releases, screens
 from BOT.shell import ShellOutput
 from BOT.store import State
 from BOT import update
@@ -470,3 +470,71 @@ def test_the_installer_failure_becomes_a_plain_hint() -> None:
     hint = update.installer_failure("en: Function not implemented\n" + text)
     assert "run get.sh from a normal root shell" in hint
     assert "Errno" not in hint
+
+
+def test_reinstall_refuses_and_explains_a_read_only_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod-install.sh install")
+    shell = FakeShell({"systemd-run": (0, "must not run")})
+    root = tmp_path / "src"
+    root.mkdir()
+    updater = Updater(shell=shell, root=root, state_dir=tmp_path / "state")
+    monkeypatch.setattr(update, "write_probe", lambda path: (False, "the file system is read-only"))
+    with pytest.raises(update.UpdateError) as caught:
+        asyncio.run(updater.reinstall())
+    assert caught.value.code == "readonly"
+    assert "root shell" in caught.value.message
+    assert shell.calls == []
+
+
+def test_the_system_probe_explains_every_write_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    updater = Updater(shell=FakeShell({}), root=root, state_dir=tmp_path / "state")
+    info = asyncio.run(updater.describe())
+    assert info["dest"].startswith("/")
+    assert info["root"] == str(root)
+    assert info["root_write"] is True
+    assert isinstance(info["dest_write"], bool)
+    assert info["dest_reason"] == "" or info["dest_write"] is False
+    assert "curl" in str(info["command"])
+
+
+def test_a_read_only_root_is_detected_before_the_script_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    updater = Updater(shell=FakeShell({}), root=root, state_dir=tmp_path / "state")
+
+    def probe(path: Any) -> tuple[bool, str]:
+        return (str(path) == str(root), "")
+
+    monkeypatch.setattr(update, "write_probe", lambda path: (False, "operation not permitted (%s)" % path) if str(path) == str(root) else (True, ""))
+    ok, reason = asyncio.run(updater.preflight())
+    assert ok is False
+    assert "operation not permitted" in reason
+    assert probe is not None
+
+
+def test_a_failed_reinstall_shows_the_command_to_run(tmp_path: Path) -> None:
+    from tests.fakes import make_bot
+
+    bot = make_bot(tmp_path)
+    bot.update_system = {"root": "/opt/obhod", "root_reason": "the file system is read-only", "dest": "/opt/obhod-src", "dest_write": False}
+    html = screens.update_result_screen(
+        bot.view(),
+        {"git": False},
+        {"ok": False, "mode": "reinstall", "message": "the reinstall failed", "readonly": True, "hint": "curl -fsSL x | sudo bash -s -- install --yes", "system": bot.update_system},
+    ).to_html()
+    assert "curl" in html
+    assert i18n.t("UPD_RUN_AS_ROOT") in html
+
+
+def test_the_update_page_shows_the_write_access_facts(tmp_path: Path) -> None:
+    from tests.fakes import make_bot
+
+    bot = make_bot(tmp_path)
+    bot.update_info = {"git": False, "root": "/opt/obhod", "unit_state": "active"}
+    bot.update_system = {"dest": "/opt/obhod-src", "dest_write": False, "dest_reason": "the file system is read-only", "helper_write": False, "command": "curl -fsSL x | sudo bash"}
+    html = screens.update_screen(bot.view(), bot.update_doc()).to_html()
+    assert i18n.t("UPD_LABEL_DEST") in html
+    assert i18n.t("UPD_RUN_AS_ROOT") in html
+    assert "curl" in html

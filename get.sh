@@ -9,6 +9,7 @@ ENV_PATH="${OBHOD_ENV_FILE:-}"
 DRY_RUN=0
 NO_INSTALL=0
 TUI=1
+DEST_FIXED=0
 ARGS=()
 WORK=""
 
@@ -28,6 +29,25 @@ check_dest() {
   case "$DEST" in
     */../*|*/..) die "OBHOD_DIR must not contain .." ;;
   esac
+  return 0
+}
+
+pick_writable_dest() {
+  if [ -n "${OBHOD_DIR:-}" ] || [ "${DEST_FIXED:-0}" = "1" ]; then
+    return 0
+  fi
+  local candidate
+  for candidate in "/opt/obhod-src" "/usr/local/share/obhod-src" "/var/lib/obhod-src" "/home/obhod-src"; do
+    mkdir -p "$candidate" 2>/dev/null || continue
+    if touch "$candidate/.obhod-write-test" 2>/dev/null; then
+      rm -f "$candidate/.obhod-write-test"
+      DEST="$candidate"
+      return 0
+    fi
+    if [ -d "$candidate" ] && [ "$(ls -A "$candidate" 2>/dev/null | wc -l)" = "0" ]; then
+      rmdir "$candidate" 2>/dev/null || true
+    fi
+  done
   return 0
 }
 
@@ -101,7 +121,7 @@ for item in "$@"; do
   case "$item" in
     --ref=*) REF="${item#*=}" ;;
     --repo=*) REPO="${item#*=}" ;;
-    --dir=*) DEST="${item#*=}" ;;
+    --dir=*) DEST="${item#*=}"; DEST_FIXED=1 ;;
     --src=*) SRC_DIR="${item#*=}" ;;
     --env-file=*) ENV_PATH="${item#*=}" ;;
     --dry-run) DRY_RUN=1 ;;
@@ -213,28 +233,120 @@ fetch_source() {
   die "the source could not be fetched: no git clone and no archive, check that github.com is reachable from this server"
 }
 
+helper_is_writable() {
+  local target="$1"
+  if [ -e "$target" ]; then
+    [ -w "$target" ] || return 1
+    local owner
+    owner="$(stat -c '%u:%g' "$target" 2>/dev/null || echo "")"
+    local me
+    me="$(id -u):$(id -g)"
+    local root_id="0:0"
+    if [ "$owner" = "$me" ] || [ "$owner" = "$root_id" ]; then
+      return 0
+    fi
+    return 1
+  fi
+  local dir
+  dir="$(dirname "$target")"
+  [ -w "$dir" ]
+}
+
 install_helper() {
   [ "$NO_INSTALL" = "0" ] || return 0
+  local target="/usr/local/bin/obhod-get"
   if [ ! -f "$DEST/get.sh" ]; then
-    note "the helper /usr/local/bin/obhod-get is not installed, the bot fetches get.sh over https"
+    note "the helper $target is not installed, the bot fetches get.sh over https"
     return 0
   fi
-  if install -m 700 "$DEST/get.sh" /usr/local/bin/obhod-get 2>/dev/null; then
-    say "helper installed: /usr/local/bin/obhod-get"
-  else
-    note "the helper /usr/local/bin/obhod-get was not installed, the bot fetches get.sh over https"
+  if helper_is_writable "$target"; then
+    if install -m 700 "$DEST/get.sh" "$target" 2>/dev/null; then
+      say "helper installed: $target (the bot can update itself without a root shell)"
+    else
+      note "the helper $target was not installed, the bot keeps fetching get.sh over https"
+    fi
+    return 0
+  fi
+  if sudo -n install -m 700 "$DEST/get.sh" "$target" 2>/dev/null; then
+    say "helper installed with sudo: $target"
+    return 0
+  fi
+  note "the helper $target is owned by root and cannot be replaced from here, the bot keeps fetching get.sh over https"
+  note "to let the bot self-update, run once as root: install -m 700 $DEST/get.sh $target"
+  return 0
+}
+
+heal_dest() {
+  local missing=0
+  mkdir -p "$DEST" || return 1
+  if ! touch "$DEST/.obhod-write-test" 2>/dev/null; then
+    note "the directory $DEST is not writable"
+    return 1
+  fi
+  rm -f "$DEST/.obhod-write-test"
+  for item in BOT Storage get.sh; do
+    if [ ! -w "$DEST/$item" ] && [ -e "$DEST/$item" ]; then
+      missing=$((missing + 1))
+    fi
+  done
+  if [ "$missing" -gt 0 ]; then
+    say "some files in $DEST are read-only, the tree is recreated once"
+    rm -rf "$DEST" || true
+    mkdir -p "$DEST" || return 1
   fi
   return 0
 }
 
-sync_source() {
-  if [ -d "$DEST" ] && [ -e "$DEST/.obhod-src" ]; then
-    rm -rf "$DEST"
+copy_entry() {
+  local item="$1"
+  local name
+  name="$(basename -- "$item")"
+  if [ -d "$item" ]; then
+    rm -rf "${DEST:?}/$name" 2>/dev/null || true
+    cp -a "$item" "$DEST/" 2>/dev/null && return 0
+    mkdir -p "$DEST/$name" 2>/dev/null || return 1
+    cp -a "$item/." "$DEST/$name/" 2>/dev/null && return 0
+    return 1
   fi
-  mkdir -p "$DEST"
-  tar -cf - -C "$SRC" --exclude='.venv' --exclude='__pycache__' --exclude='.pytest_cache' . | tar -xf - -C "$DEST"
-  : > "$DEST/.obhod-src"
-  chmod 600 "$DEST/.obhod-src"
+  rm -f "${DEST:?}/$name" 2>/dev/null || true
+  cp -a "$item" "$DEST/$name" 2>/dev/null && return 0
+  cp -f "$item" "$DEST/$name" 2>/dev/null && return 0
+  return 1
+}
+
+sync_source() {
+  if ! heal_dest; then
+    die "the directory $DEST cannot be written: the service unit keeps it read-only, run get.sh from a root shell over ssh, or stop the service first (systemctl stop obhod)"
+  fi
+  if [ -e "$DEST/.obhod-src" ]; then
+    if ! rm -rf "$DEST" 2>/dev/null; then
+      note "some old files in $DEST refused to be removed, they are overwritten one by one"
+    fi
+  fi
+  mkdir -p "$DEST" || die "the directory $DEST could not be created"
+  local copied=0
+  local failed=()
+  local item
+  for item in "$SRC"/* "$SRC"/.[!.]*; do
+    [ -e "$item" ] || continue
+    case "$(basename -- "$item")" in
+      .venv|__pycache__|.pytest_cache|.obhod-src) continue ;;
+    esac
+    if copy_entry "$item"; then
+      copied=$((copied + 1))
+    else
+      failed+=("$(basename -- "$item")")
+    fi
+  done
+  if [ "${#failed[@]}" -gt 0 ]; then
+    note "these paths could not be copied into $DEST: ${failed[*]}"
+    note "a read-only file inside $DEST is the usual reason, the rest of the tree was updated"
+    return 1
+  fi
+  say "copied $copied paths into $DEST (no tar pipe, so one read-only file cannot break the whole sync)"
+  : > "$DEST/.obhod-src" 2>/dev/null || true
+  chmod 600 "$DEST/.obhod-src" 2>/dev/null || true
+  return 0
 }
 
 write_env_file() {
@@ -251,6 +363,7 @@ write_env_file() {
 }
 
 check_dest
+pick_writable_dest
 need_tools
 say "repository: $REPO"
 say "branch: ${REF:-default}"
@@ -298,7 +411,9 @@ detach_stdin
 echo_off
 fetch_source
 [ -f "$SRC/Storage/obhod-install.sh" ] || die "there is no Storage/obhod-install.sh in the source"
-sync_source
+if ! sync_source; then
+  die "the files were not updated completely: look at the list above, fix the permissions in $DEST and run the script again"
+fi
 say "files updated in $DEST"
 
 if [ "$NO_INSTALL" = "1" ]; then

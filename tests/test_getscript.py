@@ -356,3 +356,104 @@ def test_the_installer_refuses_a_dangerous_target_directory(tmp_path: Path, valu
 def test_the_installer_accepts_a_directory_of_its_own(tmp_path: Path) -> None:
     result = run(tmp_path, "--no-install", "--dry-run", env={"OBHOD_DIR": str(tmp_path / "src"), "OBHOD_SRC_DIR": str(ROOT)})
     assert result.returncode == 0, result.stderr
+
+
+def test_sync_survives_a_file_that_cannot_be_written(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "BOT").mkdir()
+    (source / "BOT" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (source / "Storage").mkdir()
+    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    target = tmp_path / "dest"
+    target.mkdir()
+    (target / "BOT").mkdir()
+    frozen = target / "BOT" / "app.py"
+    frozen.write_text("old\n", encoding="utf-8")
+    result = run(tmp_path, "--no-install", f"--dir={target}", env={"OBHOD_SRC_DIR": str(source)})
+    assert result.returncode == 0, result.stderr
+    assert (target / "BOT" / "app.py").read_text(encoding="utf-8") == "print('hi')\n"
+    assert (target / "Storage" / "obhod-install.sh").is_file()
+    assert "no tar pipe" in result.stdout
+
+
+def test_sync_does_not_need_tar(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "BOT").mkdir()
+    (source / "BOT" / "app.py").write_text("ok\n", encoding="utf-8")
+    (source / "Storage").mkdir()
+    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    binaries = fake_root(tmp_path)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("cp", "mkdir", "rm", "chmod", "basename", "dirname", "touch", "ls", "wc", "id", "install", "sed", "grep", "mktemp", "date", "cat", "uname", "sleep"):
+        found = shutil.which(name)
+        if found:
+            (tools / name).symlink_to(found)
+    env = {
+        "PATH": f"{binaries}:{tools}",
+        "HOME": str(tmp_path),
+        "LANG": "C.UTF-8",
+        "OBHOD_SRC_DIR": str(source),
+    }
+    result = subprocess.run(
+        [BASH, str(SCRIPT), "--no-install", f"--dir={tmp_path / 'dest'}"],
+        cwd=str(ROOT),
+        env=env,
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "dest" / "BOT" / "app.py").is_file()
+
+
+def test_a_default_destination_is_picked_when_none_is_given(tmp_path: Path) -> None:
+    result = run(tmp_path, "--dry-run", env={"BOT_TOKEN": "1:A", "API_ID": "1", "API_HASH": "x" * 32})
+    assert result.returncode == 0, result.stderr
+    assert "directory: " in result.stdout
+    chosen = [line for line in result.stdout.splitlines() if line.startswith("directory: ")][0].split(": ", 1)[1]
+    assert chosen.startswith("/")
+    assert "obhod" in chosen
+
+
+def test_the_tree_is_rebuilt_when_a_file_inside_is_not_writable(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "BOT").mkdir()
+    (source / "BOT" / "app.py").write_text("new\n", encoding="utf-8")
+    (source / "Storage").mkdir()
+    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    target = tmp_path / "dest"
+    (target / "BOT").mkdir(parents=True)
+    frozen = target / "BOT" / "app.py"
+    frozen.write_text("old\n", encoding="utf-8")
+    frozen.chmod(0o444)
+    try:
+        result = run(tmp_path, "--no-install", f"--dir={target}", env={"OBHOD_SRC_DIR": str(source)})
+    finally:
+        frozen.chmod(0o644)
+    assert result.returncode == 0, result.stderr
+    assert (target / "BOT" / "app.py").read_text(encoding="utf-8") == "new\n"
+    assert (target / "Storage" / "obhod-install.sh").is_file()
+
+
+def test_a_read_only_destination_is_explained_instead_of_a_tar_trace(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "Storage").mkdir()
+    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    target = tmp_path / "dest"
+    target.mkdir()
+    target.chmod(0o555)
+    try:
+        result = run(tmp_path, "--no-install", f"--dir={target}", env={"OBHOD_SRC_DIR": str(source)})
+    finally:
+        target.chmod(0o755)
+    assert result.returncode == 1
+    assert "cannot be written" in result.stderr
+    assert "root shell" in result.stderr
+    assert "function not implemented" not in result.stderr
+    assert "tar:" not in result.stderr

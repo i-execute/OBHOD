@@ -30,6 +30,7 @@ GET_TIMEOUT = 30.0
 REINSTALL_TIMEOUT = 1800.0
 STAGE_ENV = "OBHOD_STAGE_DIR"
 STAGE_DIR = "/var/tmp/obhod-stage"
+DEST_DIR = "/opt/obhod-src"
 REINSTALL_UNIT = "obhod-reinstall"
 KEPT_UNTRACKED = (".venv", ".env")
 COMPILE_TARGETS = ("BOT", "Storage/remote", "tools")
@@ -44,9 +45,10 @@ PREVIEW_FILES = 8
 
 
 class UpdateError(Exception):
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, code: str = "") -> None:
         super().__init__(message)
         self.message = message
+        self.code = code
 
 
 @dataclass
@@ -154,13 +156,17 @@ def plain_error(text: str) -> str:
     return body[:200]
 
 
+READONLY_HINTS = ("function not implemented", "read-only file system", "cannot open", "operation not permitted", "cannot remove", "permission denied")
+
+
 def installer_failure(text: str) -> str:
     lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
     for line in lines:
         if line.startswith("error:") or line.startswith("the install"):
             return plain_error(line)
     for line in reversed(lines):
-        if "permission denied" in line.lower() or "function not implemented" in line.lower() or "read-only" in line.lower():
+        low = line.lower()
+        if any(hint in low for hint in READONLY_HINTS):
             return plain_error(line)
     return plain_error(lines[-1]) if lines else ""
 
@@ -190,6 +196,35 @@ def fetch_get_body(url: str, timeout: float = GET_TIMEOUT) -> str:
     if len(body) > GET_MAX:
         raise UpdateError("the get.sh body is larger than %d bytes" % GET_MAX)
     return body.decode("utf-8", "replace")
+
+
+SANDBOX_REASONS = {
+    1: "operation not permitted",
+    30: "the file system is read-only",
+    13: "permission denied",
+    38: "the kernel call is not implemented for this file system",
+    5: "the input/output failed",
+}
+
+
+def write_probe(path: Path) -> tuple[bool, str]:
+    target = Path(path)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return False, "%s (%s)" % (SANDBOX_REASONS.get(exc.errno or 0, exc.strerror or str(exc)), target)
+    probe = target / ".obhod-write-probe"
+    try:
+        handle = os.open(str(probe), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            os.write(handle, b"probe")
+            os.fsync(handle)
+        finally:
+            os.close(handle)
+        os.unlink(str(probe))
+    except OSError as exc:
+        return False, "%s (%s)" % (SANDBOX_REASONS.get(exc.errno or 0, exc.strerror or str(exc)), target)
+    return True, ""
 
 
 def same_commit(left: str, right: str) -> bool:
@@ -322,11 +357,42 @@ class Updater:
                 return text
         raise UpdateError("the get.sh script could not be fetched: %s" % (failure or "the body is empty"))
 
+    def dest(self) -> Path:
+        return Path(os.environ.get("OBHOD_DIR") or DEST_DIR)
+
+    def reinstall_command(self, env_file: str = "") -> str:
+        parts = ["curl -fsSL %s | sudo bash -s -- install --yes" % GET_URL]
+        if env_file:
+            parts[-1] += " --env-file=%s" % env_file
+        return parts[-1]
+
+    async def probe_write(self, path: Path) -> tuple[bool, str]:
+        return await asyncio.to_thread(write_probe, path)
+
+    async def preflight(self) -> tuple[bool, str]:
+        ok, reason = await self.probe_write(self.root)
+        if ok:
+            return True, ""
+        return False, reason
+
     async def describe(self) -> dict[str, Any]:
+        dest = self.dest()
+        dest_ok, dest_reason = await self.probe_write(dest)
+        root_ok, root_reason = await self.probe_write(self.root)
+        helper = self.get_script()
         info: dict[str, Any] = {
             "root": str(self.root),
             "unit_state": await self._unit_state(),
             "python": (self.root / "venv" / "bin" / "python").is_file() or (self.root / ".venv" / "bin" / "python").is_file(),
+            "dest": str(dest),
+            "dest_write": dest_ok,
+            "dest_reason": dest_reason,
+            "root_write": root_ok,
+            "root_reason": root_reason,
+            "helper": helper.is_file(),
+            "helper_write": helper.is_file() and os.access(helper, os.W_OK),
+            "user": os.getuid(),
+            "command": self.reinstall_command(str(self.env_file()) if self.env_file().is_file() else ""),
         }
         return info
 
@@ -349,6 +415,13 @@ class Updater:
         return int(out.code or 0) == 0
 
     async def reinstall(self, on_log: Any = None) -> str:
+        writable, reason = await self.preflight()
+        if not writable:
+            raise UpdateError(
+                "the bot cannot rewrite its own files in %s (%s), so the update is done from a root shell"
+                % (self.root, reason or "the unit keeps the tree read-only"),
+                "readonly",
+            )
         body = await self.fetch_get()
         script = self.stage_dir() / "get.sh"
         try:

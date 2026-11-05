@@ -118,6 +118,7 @@ class Bot:
         self.update_result: dict[str, object] = {}
         self.update_notice: dict[str, object] = {}
         self.update_error = ""
+        self.update_system: dict[str, Any] = {}
         self.app: GoyGram | None = None
         self.ban: BanState | None = None
         self.sshd: SshState | None = None
@@ -1011,7 +1012,7 @@ class Bot:
             steps = [t("UPD_STEP_FETCH"), t("UPD_STEP_RESET"), t("UPD_STEP_CHECK"), t("UPD_STEP_DEPS"), t("UPD_STEP_RESTART")]
             await self.render(chat_id, msg_id, screens.busy_screen(t("UPD_BUSY"), self.language, steps))
             await self.refresh_update()
-            await self.render(chat_id, msg_id, screens.update_screen(self.view(error=self.update_error), self.update_info))
+            await self.render(chat_id, msg_id, screens.update_screen(self.view(error=self.update_error), self.update_doc()))
             return
         if action in {"commit", "release"} and stage != "go":
             await self.refresh_update()
@@ -1054,7 +1055,21 @@ class Bot:
             return
         await self.render(chat_id, msg_id, screens.update_screen(self.view(), self.update_info))
 
+    def update_doc(self) -> dict[str, Any]:
+        doc = dict(self.update_info)
+        doc["system"] = dict(getattr(self, "update_system", {}) or {})
+        return doc
+
+    async def refresh_system(self) -> None:
+        try:
+            self.update_system = await self.updater.describe()
+        except Exception as exc:
+            log.debug("the system probe failed: %s", exc)
+            self.update_system = {}
+
     async def refresh_update(self) -> None:
+        if not self.update_system:
+            await self.refresh_system()
         if self.update_info and not self.quiet("upd:check", UPDATE_QUIET):
             return
         self.update_error = ""
@@ -1077,6 +1092,7 @@ class Bot:
         self.audit.note(self.admin_id, "upd:%s" % mode, "start")
         try:
             if mode == "reinstall":
+                await self.refresh_system()
                 tail = await self.updater.reinstall()
                 self.update_info = {"git": False}
                 self.update_error = ""
@@ -1089,7 +1105,15 @@ class Bot:
             self.audit.note(self.admin_id, "upd:%s" % mode, "failed")
             self.update_error = exc.message
             if mode == "reinstall":
-                await self.render(chat_id, msg_id, screens.update_result_screen(self.view(), self.update_info, {"ok": False, "mode": mode, "message": exc.message}))
+                await self.refresh_system()
+                result = self.update_doc()
+                result["hint"] = self.updater.reinstall_command(str(self.updater.env_file()) if self.updater.env_file().is_file() else "")
+                result["readonly"] = getattr(exc, "code", "") == "readonly"
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    screens.update_result_screen(self.view(), self.update_info, {"ok": False, "mode": mode, "message": exc.message, "hint": result["hint"], "readonly": result["readonly"], "system": result["system"]}),
+                )
                 return
             await self.render(chat_id, msg_id, screens.update_screen(self.view(error=exc.message), self.update_info))
             return
