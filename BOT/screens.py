@@ -350,9 +350,11 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
     blocks = banner(view, t)
     if not info.get("git"):
         blocks.append(quote(bold(t("UPD_NO_GIT"))))
-        blocks.append(f"<p>{muted(t('UPD_NO_GIT_HINT'))}</p>")
         blocks.append(pre(code("curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo bash")))
-        buttons = [row(button(t("UI_HOME"), "nav:home", icon="home"))]
+        buttons = [
+            row(button(t("UPD_REINSTALL_BTN"), "upd:reinstall", icon="update")),
+            row(button(t("UI_HOME"), "nav:home", icon="home")),
+        ]
         return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="update")
     branch = str(info.get("branch") or "")
     behind = int(info.get("behind", 0) or 0)
@@ -414,6 +416,8 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
         blocks.append(quote(muted(t("UPD_ROLLBACK", commit=code(str(result.get("source") or ""))))))
     if ok and result.get("restarted"):
         blocks.append(quote(muted(t("UPD_RESTART"))))
+    if result.get("log"):
+        blocks.append(pre("\n".join(str(item) for item in result["log"])))
     buttons = [
         row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]

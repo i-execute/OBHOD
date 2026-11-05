@@ -236,6 +236,15 @@ class Updater:
         info.release, info.release_error = await self._release()
         return info
 
+    async def reinstall(self) -> str:
+        script = "/usr/local/bin/obhod-get" 
+        args = ["bash", script, "--yes"] if Path(script).is_file() else ["bash", "-c", "curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | bash -s -- --yes"]
+        out = await self._run(args, 600)
+        text = str(out.text or "")
+        if int(out.code or 0) != 0:
+            raise UpdateError("the reinstall failed: %s" % text[-300:])
+        return text
+
     async def preview(self, mode: str) -> dict[str, Any]:
         info = await self.read()
         fetched = await self._git("fetch", "--prune", "--tags", REMOTE)

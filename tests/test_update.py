@@ -408,3 +408,19 @@ def test_a_release_tag_without_the_v_prefix_is_used(tmp_path: Path, monkeypatch:
     assert result.ok is True
     assert result.target == "4444ddd"
     assert [item for item in shell.calls if "reset" in item and "4444ddd" in item[-1]]
+
+
+def test_reinstall_runs_get_sh_and_reports_tail(tmp_path: Path) -> None:
+    shell = FakeShell({"get.sh": (0, "cloning\ndone in 1s\nservice restarted")})
+    updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
+    text = asyncio.run(updater.reinstall())
+    assert any("get.sh" in " ".join(item) for item in shell.calls)
+    assert "service restarted" in text
+
+
+def test_reinstall_failure_raises_with_tail(tmp_path: Path) -> None:
+    shell = FakeShell({"get.sh": (2, "curl: (28) timeout")})
+    updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
+    with pytest.raises(UpdateError) as exc:
+        asyncio.run(updater.reinstall())
+    assert "timeout" in exc.value.message

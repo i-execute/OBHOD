@@ -888,6 +888,12 @@ class Bot:
         if action in {"commit", "release"} and stage == "go":
             await self.run_update(chat_id, msg_id, action)
             return
+        if action == "reinstall":
+            if stage != "go":
+                await self.render(chat_id, msg_id, screens.update_confirm_screen(self.view(), self.update_info, {}, t("UPD_CONFIRM_REINSTALL"), "upd:reinstall:go"))
+                return
+            await self.run_update(chat_id, msg_id, "reinstall")
+            return
         await self.render(chat_id, msg_id, screens.update_screen(self.view(), self.update_info))
 
     async def refresh_update(self) -> None:
@@ -912,6 +918,12 @@ class Bot:
         await self.render(chat_id, msg_id, screens.busy_screen(t("UPD_BUSY"), self.language, steps))
         self.audit.note(self.admin_id, "upd:%s" % mode, "start")
         try:
+            if mode == "reinstall":
+                tail = await self.updater.reinstall()
+                self.update_info = {"git": False}
+                self.update_error = ""
+                await self.render(chat_id, msg_id, screens.update_result_screen(self.view(), self.update_info, {"ok": True, "mode": "reinstall", "log": tail.splitlines()[-12:]}))
+                return
             result = await self.updater.apply(mode)
         except UpdateError as exc:
             self.audit.note(self.admin_id, "upd:%s" % mode, "failed")
