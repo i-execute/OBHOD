@@ -213,6 +213,20 @@ fetch_source() {
   die "the source could not be fetched: no git clone and no archive, check that github.com is reachable from this server"
 }
 
+install_helper() {
+  [ "$NO_INSTALL" = "0" ] || return 0
+  if [ ! -f "$DEST/get.sh" ]; then
+    note "the helper /usr/local/bin/obhod-get is not installed, the bot fetches get.sh over https"
+    return 0
+  fi
+  if install -m 700 "$DEST/get.sh" /usr/local/bin/obhod-get 2>/dev/null; then
+    say "helper installed: /usr/local/bin/obhod-get"
+  else
+    note "the helper /usr/local/bin/obhod-get was not installed, the bot fetches get.sh over https"
+  fi
+  return 0
+}
+
 sync_source() {
   if [ -d "$DEST" ] && [ -e "$DEST/.obhod-src" ]; then
     rm -rf "$DEST"
@@ -345,6 +359,7 @@ else
 fi
 
 echo_on
+install_helper
 say "done, check the service with systemctl status obhod"
 say "to update later run this script again with the same keys"
 say "sources on the server: $DEST"

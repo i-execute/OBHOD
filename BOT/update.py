@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import shutil
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +23,14 @@ REMOTE = "origin"
 UNIT = "obhod.service"
 MARKER = "update.json"
 TAG_RE = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+$")
+GET_URL = "https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh"
+GET_HOSTS = ("raw.githubusercontent.com", "github.com", "codeload.github.com", "objects.githubusercontent.com")
+GET_MAX = 262144
+GET_TIMEOUT = 30.0
+REINSTALL_TIMEOUT = 1800.0
+STAGE_ENV = "OBHOD_STAGE_DIR"
+STAGE_DIR = "/var/tmp/obhod-stage"
+REINSTALL_UNIT = "obhod-reinstall"
 KEPT_UNTRACKED = (".venv", ".env")
 COMPILE_TARGETS = ("BOT", "Storage/remote", "tools")
 MODES = ("commit", "release")
@@ -130,6 +142,56 @@ def clean_output(text: str) -> str:
     return (text or "").strip()[:TAIL]
 
 
+def plain_error(text: str) -> str:
+    body = " ".join(str(text or "").split())
+    if "function not implemented" in body.lower():
+        return (
+            "the service could not write its own files (the sandbox forbids that write), "
+            "so an in-bot reinstall cannot replace /opt/obhod; run get.sh from a normal root shell"
+        )
+    if "read-only file system" in body.lower():
+        return "a file is on a read-only mount, the unit needs the write access to the install directory"
+    return body[:200]
+
+
+def installer_failure(text: str) -> str:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    for line in lines:
+        if line.startswith("error:") or line.startswith("the install"):
+            return plain_error(line)
+    for line in reversed(lines):
+        if "permission denied" in line.lower() or "function not implemented" in line.lower() or "read-only" in line.lower():
+            return plain_error(line)
+    return plain_error(lines[-1]) if lines else ""
+
+
+def allowed_get(url: str) -> bool:
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme != "https":
+        return False
+    host = (parts.hostname or "").lower()
+    return any(host == item or host.endswith("." + item) for item in GET_HOSTS)
+
+
+def fetch_get_body(url: str, timeout: float = GET_TIMEOUT) -> str:
+    if not allowed_get(url):
+        raise UpdateError("the get.sh address %s is not allowed" % url)
+    request = urllib.request.Request(url, headers={"User-Agent": "obhod-get/1", "Accept": "text/plain"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(GET_MAX + 1)
+    except urllib.error.HTTPError as exc:
+        raise UpdateError("the get.sh download answered http %d" % int(getattr(exc, "code", 0) or 0)) from None
+    except (OSError, ValueError):
+        raise UpdateError("the get.sh download did not finish, check that github is reachable") from None
+    if len(body) > GET_MAX:
+        raise UpdateError("the get.sh body is larger than %d bytes" % GET_MAX)
+    return body.decode("utf-8", "replace")
+
+
 def same_commit(left: str, right: str) -> bool:
     first = str(left or "").strip()
     second = str(right or "").strip()
@@ -207,7 +269,7 @@ class Updater:
         return info
 
     async def _release(self) -> tuple[str, str]:
-        tag, reason = releases.latest_tag_any(self.repo)
+        tag, reason = await asyncio.to_thread(releases.latest_tag_any, self.repo)
         if TAG_RE.match(tag or ""):
             return tag, ""
         return "", reason or "no_tag"
@@ -236,13 +298,80 @@ class Updater:
         info.release, info.release_error = await self._release()
         return info
 
-    async def reinstall(self) -> str:
-        args = ["systemd-run", "--wait", "--collect", "--pipe", "--unit=obhod-reinstall", "bash", "-c", "curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | bash -s -- --yes"]
-        out = await self._run(args, 900)
+    def get_script(self) -> Path:
+        return Path("/usr/local/bin/obhod-get")
+
+    def env_file(self) -> Path:
+        return Path(os.environ.get("OBHOD_ENV") or "/etc/obhod/obhod.env")
+
+    def stage_dir(self) -> Path:
+        return Path(os.environ.get(STAGE_ENV) or STAGE_DIR)
+
+    async def fetch_get(self) -> str:
+        cached = self.get_script()
+        failure = ""
+        try:
+            body = await asyncio.to_thread(fetch_get_body, GET_URL, GET_TIMEOUT)
+        except UpdateError as exc:
+            body, failure = "", exc.message
+        if body and "obhod-install.sh" in body:
+            return body
+        if cached.is_file():
+            text = cached.read_text(encoding="utf-8", errors="replace")
+            if "obhod-install.sh" in text:
+                return text
+        raise UpdateError("the get.sh script could not be fetched: %s" % (failure or "the body is empty"))
+
+    async def describe(self) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "root": str(self.root),
+            "unit_state": await self._unit_state(),
+            "python": (self.root / "venv" / "bin" / "python").is_file() or (self.root / ".venv" / "bin" / "python").is_file(),
+        }
+        return info
+
+    async def detached(self, argv: list[str], unit: str = REINSTALL_UNIT) -> bool:
+        if shutil.which("systemd-run") is None:
+            return False
+        out = await self._run(
+            [
+                "systemd-run",
+                "--quiet",
+                "--collect",
+                "--unit=" + unit,
+                "--property=Type=oneshot",
+                "--property=StandardOutput=journal",
+                "--property=StandardError=journal",
+                *argv,
+            ],
+            UNIT_TIMEOUT,
+        )
+        return int(out.code or 0) == 0
+
+    async def reinstall(self, on_log: Any = None) -> str:
+        body = await self.fetch_get()
+        script = self.stage_dir() / "get.sh"
+        try:
+            self.stage_dir().mkdir(parents=True, exist_ok=True)
+            os.chmod(self.stage_dir(), 0o700)
+            script.write_text(body, encoding="utf-8")
+            os.chmod(script, 0o700)
+        except OSError as exc:
+            raise UpdateError("the reinstall script could not be written to %s: %s" % (script, exc)) from None
+        env_file = self.env_file()
+        args = ["bash", str(script), "install", "--yes"]
+        if env_file.is_file():
+            args.append("--env-file=%s" % env_file)
+        detached = await self.detached(args)
+        if detached:
+            return "the reinstall is running in the background, the service restarts itself when it is done"
+        out = await self._run(args, REINSTALL_TIMEOUT)
+
         text = str(out.text or "")
-        if int(out.code or 0) != 0:
-            raise UpdateError("the reinstall failed: %s" % text[-300:])
-        return text
+        if int(out.code or 0) == 0:
+            return text
+        detail = installer_failure(text)
+        raise UpdateError("the reinstall failed with the exit code %d: %s" % (int(out.code or 0), detail or "no output"))
 
     async def preview(self, mode: str) -> dict[str, Any]:
         info = await self.read()

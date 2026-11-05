@@ -17,6 +17,22 @@ DDOS_COOLDOWN = 15.0
 NTF_COOLDOWN = 2.0
 HP_COOLDOWN = 5.0
 MAX_LOG = 12
+CHEBUR_LIMIT = 45.0
+REACH_LIMIT = 12.0
+DPI_LIMIT = 20.0
+VK_LIMIT = 40.0
+NET_LIMIT = 120.0
+
+
+OFFLINE_CODES = {"network", "timeout", "unreachable", "rate_limited", "http_000"}
+
+
+def offline(error: BaseException) -> bool:
+    code = str(getattr(error, "code", "") or "")
+    if code in OFFLINE_CODES:
+        return True
+    text = str(getattr(error, "message", "") or error or "").lower()
+    return any(word in text for word in ("network is unreachable", "unreachable", "timed out", "timeout", "temporary failure", "connection refused"))
 
 
 class DebugPanel:
@@ -193,7 +209,11 @@ class DebugPanel:
         await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("DBG_SCAN_RUNNING", target=target.text)))
         started = time.monotonic()
         try:
-            raw = await self.bot.freeturn.control.net_scan(target.text, ports)
+            raw = await asyncio.wait_for(self.bot.freeturn.control.net_scan(target.text, ports), NET_LIMIT)
+        except asyncio.TimeoutError:
+            self.scan = net.Answer(kind="scan", target=target.text, error=t("STUCK_TITLE"))
+            await self.render(chat_id, msg_id, dscreens.scan_screen(self.view()))
+            return
         except FtError as exc:
             self.scan = net.Answer(kind="scan", target=target.text, error=self.describe(exc))
             await self.render(chat_id, msg_id, dscreens.scan_screen(self.view()))
@@ -225,7 +245,11 @@ class DebugPanel:
         await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("DBG_TRACE_RUNNING", target=target.text)))
         started = time.monotonic()
         try:
-            raw = await self.bot.freeturn.control.net_trace(target.text, hops)
+            raw = await asyncio.wait_for(self.bot.freeturn.control.net_trace(target.text, hops), NET_LIMIT)
+        except asyncio.TimeoutError:
+            self.trace = net.Answer(kind="trace", target=target.text, error=t("STUCK_TITLE"))
+            await self.render(chat_id, msg_id, dscreens.trace_screen_view(self.view()))
+            return
         except FtError as exc:
             self.trace = net.Answer(kind="trace", target=target.text, error=self.describe(exc))
             await self.render(chat_id, msg_id, dscreens.trace_screen_view(self.view()))
@@ -248,7 +272,10 @@ class DebugPanel:
         t = self.tr()
         await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("DBG_VK_RUNNING")))
         fwguard.clear()
-        cidrs, reason = fwguard.vk_cidrs()
+        try:
+            cidrs, reason = await asyncio.wait_for(asyncio.to_thread(fwguard.vk_cidrs), VK_LIMIT)
+        except (OSError, asyncio.TimeoutError):
+            cidrs, reason = [], "unreachable"
         old = {str(item) for item in (self.vk.get("applied") or [])}
         fresh = set(cidrs)
         self.vk = {
@@ -322,8 +349,14 @@ class DebugPanel:
             return
         await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
         marks, networks, version = self.dpi_inputs()
-        state = await asyncio.to_thread(dpi.kernel_state)
-        geo = await self.dpi_geo()
+        try:
+            state = await asyncio.wait_for(asyncio.to_thread(dpi.kernel_state), DPI_LIMIT)
+        except (OSError, asyncio.TimeoutError, ValueError):
+            state = {}
+        try:
+            geo = await asyncio.wait_for(self.dpi_geo(), DPI_LIMIT)
+        except (OSError, asyncio.TimeoutError):
+            geo = {}
         self.dpi = dpi.assess(
             fingerprints=marks,
             networks=networks,
@@ -590,7 +623,10 @@ class DebugPanel:
             self.note("chk", "check_failed", exc.code)
             answer.error = exc.message
             answer.code = exc.code
-            answer.reach = await asyncio.to_thread(chebur.reach)
+            try:
+                answer.reach = await asyncio.wait_for(asyncio.to_thread(chebur.reach), REACH_LIMIT)
+            except (chebur.CheburError, OSError, asyncio.TimeoutError):
+                answer.reach = None
             self.chebur = answer
             self.remember("chk %s %s" % (host, exc.code))
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
@@ -608,7 +644,14 @@ class DebugPanel:
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
             return
         await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=t("CHK_RUNNING", value=answer.registry.geo.label()))))
-        live = await asyncio.to_thread(chebur.probe, answer.registry.context, chebur.PROBE_DEADLINE, None)
+        try:
+            live = await asyncio.wait_for(asyncio.to_thread(chebur.probe, answer.registry.context, chebur.PROBE_DEADLINE, None), CHEBUR_LIMIT)
+        except (chebur.CheburError, OSError, asyncio.TimeoutError) as exc:
+            reason = getattr(exc, "message", None) or "the live probe did not answer in %d seconds" % int(CHEBUR_LIMIT)
+            self.note("chk", "probe_failed", str(getattr(exc, "code", "timeout")))
+            self.remember("chk %s probe_failed" % host)
+            await self.render(chat_id, msg_id, dscreens.stub_screen(self.view(), t("CHK_BTN_PROBE"), reason, chebur.HOST, "dbg:chk:probe"))
+            return
         answer.live = live
         self.chebur = answer
         self.remember("chk %s %s" % (host, answer.verdict()))

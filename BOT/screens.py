@@ -42,7 +42,7 @@ class View:
 
     @property
     def emoji_on(self) -> bool:
-        return bool(self.emoji_default)
+        return ui_icons_on()
 
     @property
     def ssh_ready(self) -> bool:
@@ -108,22 +108,11 @@ def home(view: View) -> Any:
     t = view.tr()
     state = view.state
     xray = state.xray
-    cards = cores.snapshot(state, view.core, view.ft_clients)
     blocks = banner(view, t)
     blocks.append(f"<p>{ssh_line(view, t)}</p>")
-    summary = [
-        ("module", t("HOME_SUMMARY_ACTIVE"), code(t("CORE_NAME_%s" % cores.normalize(state.core).upper()))),
-        ("ok", t("HOME_SUMMARY_RUNNING"), code(cores.running_count(cards))),
-        ("save", t("HOME_SUMMARY_INSTALLED"), code(cores.installed_count(cards))),
-        ("info", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
-        ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
-        ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
-        ("shield", t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),
-    ]
-    blocks.append(table(summary, (t("HOME_SUMMARY_TITLE"), t("UI_VALUE"))))
-    blocks.append(table(core_rows(view, t), (t("HOME_CORE_TABLE"), t("HOME_CORE_TABLE2"))))
-    blocks.append(f"<p>{muted(t('HOME_CORE_HINT'))}</p>")
-    pairs = [
+    blocks.append(f"<p>{home_line(view, t)}</p>")
+    blocks.append(table(core_rows(view, t), (t("HOME_SUMMARY_TITLE"), t("HOME_CORE_TABLE2"))))
+    facts = [
         ("info", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
         ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
         ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
@@ -131,18 +120,65 @@ def home(view: View) -> Any:
         ("settings", t("HOME_LABEL_PROTOCOL"), code(xray.protocol_label())),
         ("settings", t("HOME_LABEL_ENCRYPTION"), code(xray.encryption_label())),
     ]
-    blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if xray.inbounds:
-        rows = [
-            ("xray", f"{item.id} {item.remark}", f"{item.port} {item.network} {item.security}") for item in xray.inbounds
-        ]
-        blocks.append(table(rows, (t("HOME_TABLE_HEADER"), t("HOME_TABLE_HEADER2"))))
-    core_buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cards]
-    buttons = core_buttons + [
-        row(button("Tools", "tools:home", icon="tools"), button(t("NAV_UPDATE"), "upd:show", icon="update")),
-        row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_HELP"), "nav:help", icon="docs")),
-    ]
+        facts.extend(("xray", f"{item.id} {item.remark}", code(f"{item.port} {item.network} {item.security}")) for item in xray.inbounds)
+    blocks.append(details(t("HOME_DETAILS"), table(facts, (t("UI_PARAM"), t("UI_VALUE")))))
+    buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cores.snapshot(state, view.core, view.ft_clients)]
+    buttons.append(row(button(t("TOOLS_TITLE"), "tools:home", icon="tools"), button(t("NAV_UPDATE"), "upd:show", icon="update")))
+    buttons.append(row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_HELP"), "nav:help", icon="docs")))
+    buttons.append(row(emoji_button(t, view), button(t("UI_REFRESH"), "nav:home", icon="refresh")))
     return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="home")
+
+
+def emoji_button(t: i18n.Translator, view: View) -> Any:
+    label = t("NAV_EMOJI_ON") if view.emoji_on else t("NAV_EMOJI_OFF")
+    return button(label, "nav:emoji", icon="star")
+
+
+def home_line(view: View, t: i18n.Translator) -> str:
+    cards = cores.snapshot(view.state, view.core, view.ft_clients)
+    running = cores.running_count(cards)
+    installed = cores.installed_count(cards)
+    return bold(t("HOME_SUMMARY_RUNNING")) + " " + code(running) + " " + muted(t("HOME_SUMMARY_INSTALLED") + " " + str(installed))
+
+
+def ui_icons_on() -> bool:
+    from . import ui
+
+    return bool(ui.icons_on())
+
+
+def stuck_screen(view: View, route: str, seconds: int = 240) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    blocks.append(quote(bold(t("STUCK_TITLE"))))
+    blocks.append(f"<p>{t('STUCK_BODY', seconds=code(seconds), route=code(route[:48]))}</p>")
+    blocks.append(quote(muted(t("STUCK_HINT"))))
+    buttons = [row(button(t("STUCK_DONE"), "nav:home", icon="home"), button(t("UI_REFRESH"), route, icon="refresh"))]
+    return screen(t("STUCK_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, icon="warn")
+
+
+def quick_screen(view: View) -> Any:
+    t = view.tr()
+    xray = view.state.xray
+    blocks = banner(view, t)
+    blocks.append(quote(muted(t("HOME_SUMMARY_ACTIVE"))))
+    facts = [
+        ("xray", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
+        ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
+        ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
+        ("shield", t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),
+        ("info", t("HOME_LABEL_PROTOCOL"), code(xray.protocol_label())),
+    ]
+    blocks.append(table(facts, (t("UI_PARAM"), t("UI_VALUE"))))
+    blocks.append(quote(muted(t("HOME_EMOJI_NOTE"))))
+    buttons = [
+        row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield")),
+        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_SSH"), "nav:ssh", icon="key")),
+        row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), emoji_button(t, view)),
+        row(button(t("UI_HOME"), "nav:home", icon="home")),
+    ]
+    return screen(t("NAV_QUICK"), t("HOME_SUBTITLE"), blocks, buttons, icon="star")
 
 
 def language_screen(view: View) -> Any:
@@ -222,7 +258,7 @@ def settings(view: View) -> Any:
     )
     blocks.append(quote(muted(t("XR_CHECK_NOTE"))))
     blocks.append(quote(muted(t("SET_NOTE_SUB_PATH"))))
-    blocks.append(quote(muted(t("SET_EMOJI_NOTE"))))
+    blocks.append(quote(muted(t("HOME_EMOJI_NOTE"))))
     buttons = [
         row(button(t("SET_VERSION_PINNED", version=xray.pinned()), "xr:core:ver:pin", icon="pin"), button(t("SET_VERSION_LATEST"), "xr:core:ver:latest", icon="update")),
         input_row(t("SET_LOG_LEVEL"), "xr_log_level", "-", view.lang),
@@ -233,9 +269,8 @@ def settings(view: View) -> Any:
         input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
         input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
         input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),
-        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_SSH"), "nav:ssh", icon="key")),
-        row(button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield"), button(t("NAV_DEBUG"), "dbg:home", icon="bug")),
-        row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language")),
+        row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), emoji_button(t, view)),
+        row(button(t("NAV_QUICK"), "nav:quick", icon="star"), button(t("NAV_DEBUG"), "dbg:home", icon="bug")),
         row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("SET_TITLE"), t("SET_SUBTITLE"), blocks, buttons, icon="settings")
@@ -350,7 +385,17 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
     blocks = banner(view, t)
     if not info.get("git"):
         blocks.append(quote(bold(t("UPD_NO_GIT"))))
-        blocks.append(pre(code("curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo bash")))
+        blocks.append(
+            table(
+                [
+                    ("info", t("UPD_LABEL_INSTALL"), code(info.get("root") or t("UI_NOT_SET"))),
+                    ("info", t("UPD_LABEL_SERVICE"), code(info.get("unit_state") or t("UI_NONE"))),
+                ],
+                (t("UI_PARAM"), t("UI_VALUE")),
+            )
+        )
+        blocks.append(f"<p>{muted(t('UPD_NO_GIT_HINT'))}</p>")
+        blocks.append(quote(muted(t("UPD_RUN_FROM_SHELL"))))
         buttons = [
             row(button(t("UPD_REINSTALL_BTN"), "upd:reinstall", icon="update")),
             row(button(t("UI_HOME"), "nav:home", icon="home")),
@@ -404,13 +449,19 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
     ok = bool(result.get("ok"))
     commit = str(result.get("target") or "")
     subject = str(result.get("subject") or "")
-    body = t("UPD_DONE", commit=code(commit), subject=subject) if ok else t("UPD_FAILED", error=body_text(result.get("message")))
+    message = str(result.get("message") or "")
+    if ok and not message:
+        message = t("UPD_DONE_PLAIN")
+    if ok:
+        body = t("UPD_DONE", commit=code(commit), subject=subject or code(message))
+    else:
+        body = t("UPD_FAILED", error=body_text(message or t("UPD_NOTHING_DONE")))
     blocks.append(quote(bold(body)))
     steps = [muted(str(item)) for item in result.get("steps") or []]
     if steps:
         blocks.append(f"<p>{bold(t('UPD_STEPS_DONE'))}</p>")
         blocks.append(bullet_list(steps))
-    if ok and result.get("message") == "already up to date":
+    if ok and message == "already up to date":
         blocks.append(quote(muted(t("UPD_ALREADY", commit=code(commit)))))
     if result.get("rollback"):
         blocks.append(quote(muted(t("UPD_ROLLBACK", commit=code(str(result.get("source") or ""))))))

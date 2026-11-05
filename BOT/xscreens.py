@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import i18n, inline, subs
-from .scan import ML_DSA65_CHAIN_MIN, ScanResult, canonical_kind, security_fit, security_fits
+from .scan import ML_DSA65_CHAIN_MIN, ScanResult, canonical_kind, kind_has_mldsa, security_fit, security_fits
 from .ui import (
     bold,
     bullet_list,
@@ -577,7 +577,7 @@ def scan_mismatch_screen(view: XrayView, result: ScanResult, inbound: XrayInboun
             (t("XR_SEC_TITLE"), t("UI_VALUE")),
         )
     )
-    if current == "reality-mldsa" and not result.ml_dsa_ready:
+    if kind_has_mldsa(current) and not result.ml_dsa_ready:
         blocks.append(quote(muted(t("XR_SCAN_MISMATCH_CHAIN", length=code(result.cert_chain_bytes), min=code(ML_DSA65_CHAIN_MIN)))))
     blocks.append(quote(muted(group_line(t, result))))
     blocks.append(f"<p>{bold(t('XR_SCAN_MISMATCH_FITS'))}</p>")

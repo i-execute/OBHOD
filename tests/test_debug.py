@@ -187,16 +187,26 @@ def test_the_keep_button_changes_nothing(tmp_path: Path) -> None:
     assert i18n.t("SCR_KEEP") in last(bot)
 
 
-def test_the_emoji_route_is_gone_and_the_config_rules(tmp_path: Path) -> None:
+def test_the_emoji_switch_is_live_and_survives_a_restart(tmp_path: Path) -> None:
     bot, debug, _control = panel_for(tmp_path)
-    before = ui.icons_on()
-    run(debug.route(1, 0, "dbg:emoji"))
-    assert bot.state.notify is not None
-    assert ui.icons_on() == before
-    assert not any("<tg-button" in html and "data=\"dbg:emoji\"" in html for html in [last(bot)]), last(bot)
-    bot.cfg.emoji_default = True
-    assert bot.apply_emoji() is True
     ui.use_icons(False)
+    bot.state.emoji = False
+    assert bot.toggle_emoji() is True
+    assert ui.icons_on() is True
+    assert bot.state.emoji is True
+    assert bot.toggle_emoji() is False
+    assert ui.icons_on() is False
+    assert bot.state.emoji is False
+
+
+def test_the_emoji_button_is_on_the_home_screen(tmp_path: Path) -> None:
+    from BOT import screens
+    from BOT.store import State
+
+    ui.use_icons(False)
+    html = screens.home(screens.View(state=State())).to_html()
+    assert 'data="nav:emoji"' in html
+    assert i18n.t("NAV_EMOJI_OFF") in html
 
 
 def test_the_info_screen_shows_the_cores(tmp_path: Path) -> None:

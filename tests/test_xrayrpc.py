@@ -562,6 +562,7 @@ def test_local_shell_refuses_without_root(monkeypatch: pytest.MonkeyPatch) -> No
     from BOT.shell import LocalShell
 
     monkeypatch.setattr("BOT.shell.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("BOT.shell.shutil.which", lambda name: None)
     shell = LocalShell()
     with pytest.raises(ShellError) as info:
         asyncio.run(shell.run_argv(["true"]))

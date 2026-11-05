@@ -1,14 +1,14 @@
 {
   "files": {
-    "BOT/app.py": "2757ca3a378d76cd17f8262ccce8547c55799e567c5b1cea135772fb165ac70a",
+    "BOT/app.py": "1ec32aabc9d96c6e07087dc408c092f268286e21134acd1afd67a69b18fefa65",
     "BOT/audit.py": "10df919dc8bb9d0affdc513dfa4ad0c78870d43619cca60cddb44269cbc71676",
     "BOT/guard.py": "b3a554d3fdbd0980f53ff4a75f1b6722f39269414a5f9d14ae76783274820cc6",
     "BOT/inline.py": "d076281dd3da472eb1d72cc7304287968fcdf5b61a5f33cafb6aec4d0cb30d14",
     "BOT/ratelimit.py": "42caff3e46368ba39fff9f7fce015bdb094904e6b8ef4ad9bf95a3eb2b1d9328",
     "BOT/releases.py": "40a2889d052d706f3538183bc67ba0ef87888009cb4ec4b4e642b8bdeec5541e",
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
-    "BOT/shell.py": "1f87254423b2d8a3566281c8c88f8bcdead57f358ec273b3cb8f8c4b788bf844",
-    "BOT/update.py": "e7c2917480fc5c4cf8ee52542e849160f7f3519cc3ac4a8df523c5871f576d2f",
+    "BOT/shell.py": "9fab9536eee40a0d0f367082130f73da5d5ced3333462c96108afab9dbe37626",
+    "BOT/update.py": "44323cc9855a8f45878bff1c89c0038bdd21d5d9b3fc19d783b0a3aeba0b9f20",
     "Storage/remote/fail2ban_agent.py": "e9852f965e217a639a61aa372e54f973ba993da9baefdcc9b5d23b393d002be0",
     "Storage/remote/freeturn_agent.py": "ee7c27c4d38d4f5ba4327b8e89853d35a1b00a4a7c068db91e8335872ca5328a",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",

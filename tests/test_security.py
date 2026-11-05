@@ -19,7 +19,7 @@ import pytest
 from BOT import inline, models, panel, shell
 from BOT.models import ModelError, valid_port
 from BOT.store import Store
-from BOT.shell import LocalShell, ShellError, agent_argv
+from BOT.shell import LocalShell, ShellError, ShellOutput, agent_argv
 from tests.fakes import make_bot
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -247,9 +247,42 @@ def test_no_ssh_transport_module_exists() -> None:
 
 def test_shell_refuses_to_run_as_a_plain_user(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("BOT.shell.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("BOT.shell.shutil.which", lambda name: None)
     with pytest.raises(ShellError) as info:
         asyncio.run(LocalShell().run_argv(["true"]))
     assert "root" in info.value.message
+
+
+def test_shell_refuses_a_plain_user_without_passwordless_sudo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("BOT.shell.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("BOT.shell.shutil.which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setenv("OBHOD_SUDO", "1")
+
+    async def denied(self, argv, stdin=None, limit=30.0, cwd="", stdin_file=""):
+        return ShellOutput(text="sudo: a password is required", code=1)
+
+    monkeypatch.setattr("BOT.shell.LocalShell._spawn", denied)
+    with pytest.raises(ShellError) as info:
+        asyncio.run(LocalShell().run_argv(["true"]))
+    assert "sudo" in info.value.message
+    assert "root" in info.value.message
+
+
+def test_shell_escalates_through_sudo_for_a_plain_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("BOT.shell.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("BOT.shell.shutil.which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setenv("OBHOD_SUDO", "1")
+    seen: list[list[str]] = []
+
+    async def ok(self, argv, stdin=None, limit=30.0, cwd="", stdin_file=""):
+        seen.append(list(argv))
+        return ShellOutput(text="done", code=0)
+
+    monkeypatch.setattr("BOT.shell.LocalShell._spawn", ok)
+    out = asyncio.run(LocalShell().run_argv(["/usr/bin/id", "-u"]))
+    assert out.text == "done"
+    assert seen and seen[-1][:3] == ["sudo", "-n", "--"]
+    assert "/usr/bin/id" in seen[-1]
 
 
 def test_shell_never_uses_an_interpreter_from_path(monkeypatch: pytest.MonkeyPatch) -> None:

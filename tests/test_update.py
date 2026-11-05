@@ -10,6 +10,7 @@ import pytest
 from BOT import releases, screens
 from BOT.shell import ShellOutput
 from BOT.store import State
+from BOT import update
 from BOT.update import TAG_RE, UpdateError, Updater
 from BOT.xray import XrayState
 
@@ -410,17 +411,62 @@ def test_a_release_tag_without_the_v_prefix_is_used(tmp_path: Path, monkeypatch:
     assert [item for item in shell.calls if "reset" in item and "4444ddd" in item[-1]]
 
 
-def test_reinstall_runs_get_sh_and_reports_tail(tmp_path: Path) -> None:
+def test_reinstall_runs_get_sh_and_reports_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod-install.sh install")
     shell = FakeShell({"systemd-run": (0, "cloning\ndone in 1s\nservice restarted")})
     updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
     text = asyncio.run(updater.reinstall())
     assert any("systemd-run" in " ".join(item) for item in shell.calls)
-    assert "service restarted" in text
+    assert "background" in text
+    assert "--property=Type=oneshot" in " ".join(shell.argv_of("systemd-run")[0])
 
 
-def test_reinstall_failure_raises_with_tail(tmp_path: Path) -> None:
-    shell = FakeShell({"systemd-run": (2, "curl: (28) timeout")})
+def test_reinstall_failure_raises_with_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod-install.sh install")
+    monkeypatch.setattr(update.shutil, "which", lambda name: None)
+    shell = FakeShell({"get.sh": (2, "curl: (28) timeout")})
+
     updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
     with pytest.raises(UpdateError) as exc:
         asyncio.run(updater.reinstall())
     assert "timeout" in exc.value.message
+
+
+def test_reinstall_prefers_the_detached_unit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod-install.sh install")
+    monkeypatch.setattr(update.shutil, "which", lambda name: "/usr/bin/" + name if name in {"systemd-run", "systemctl"} else None)
+    shell = FakeShell({"systemd-run": (0, "")})
+    updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
+    text = asyncio.run(updater.reinstall())
+    assert "background" in text
+    launched = shell.argv_of("systemd-run")
+    assert launched and "--unit=obhod-reinstall" in launched[0]
+    assert not [item for item in shell.calls if "bash" == item[0] and any("get.sh" in part for part in item)]
+
+
+def test_reinstall_rejects_a_foreign_get_script(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(url: str, timeout: float = 0) -> str:
+        raise UpdateError("the get.sh download did not finish, check that github is reachable")
+
+    monkeypatch.setattr(update, "fetch_get_body", boom)
+    monkeypatch.setattr(Updater, "get_script", lambda self: tmp_path / "missing-get.sh")
+    shell = FakeShell({})
+    updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
+    with pytest.raises(UpdateError) as exc:
+        asyncio.run(updater.reinstall())
+    assert "get.sh" in exc.value.message
+    assert not [item for item in shell.calls if "curl" in " ".join(item)]
+
+
+def test_a_foreign_host_is_not_a_get_script_address() -> None:
+    assert update.allowed_get("https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh")
+    assert not update.allowed_get("http://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh")
+    assert not update.allowed_get("https://raw.githubusercontent.com.evil.test/get.sh")
+    assert not update.allowed_get("file:///etc/passwd")
+
+
+def test_the_installer_failure_becomes_a_plain_hint() -> None:
+    text = "tar: ./BOT/ratelimit.py: Cannot open: Function not implemented\ntar: Exiting with failure status"
+    hint = update.installer_failure("en: Function not implemented\n" + text)
+    assert "run get.sh from a normal root shell" in hint
+    assert "Errno" not in hint

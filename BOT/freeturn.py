@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -658,7 +659,8 @@ class FtControl:
 
     async def call(self, argv: list[str], timeout: float | None = None, version: str = "") -> FtResponse:
         try:
-            out: ShellOutput = await self.shell.run_argv(agent_argv(self.plan_argv(argv, version), agent_code()), timeout=timeout or self.timeout)
+            planned = await asyncio.to_thread(self.plan_argv, argv, version)
+            out: ShellOutput = await self.shell.run_argv(agent_argv(planned, agent_code()), timeout=timeout or self.timeout)
         except ShellError as exc:
             raise FtError(exc.message, "transport") from None
         return parse_response(out.text)

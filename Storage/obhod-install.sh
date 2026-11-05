@@ -416,6 +416,16 @@ write_env() {
     *[!0-9]*) die "admin id must be a number" ;;
   esac
   ensure_private_dir "$CONF_DIR"
+  local keep="" line
+  if [ -f "$ENV_FILE" ]; then
+    while IFS= read -r line; do
+      case "$line" in
+        BOT_TOKEN=*|API_ID=*|API_HASH=*|ADMIN_ID=*|OBHOD_STATE_DIR=*|OBHOD_LOG_LEVEL=*|OBHOD_EMOJI=*|OBHOD_SUB_PORT=*|OBHOD_API_PORT=*|"") ;;
+        '#'*) ;;
+        *) keep="$keep$line"$'\n' ;;
+      esac
+    done < "$ENV_FILE"
+  fi
   umask 077
   cat > "$ENV_FILE" <<EOF
 BOT_TOKEN=$token
@@ -428,6 +438,9 @@ OBHOD_EMOJI=0
 OBHOD_SUB_PORT=${SUB_PORT:-2096}
 OBHOD_API_PORT=${API_PORT:-62789}
 EOF
+  if [ -n "$keep" ]; then
+    printf '%s' "$keep" >> "$ENV_FILE"
+  fi
   chmod 600 "$ENV_FILE"
 }
 
@@ -522,6 +535,9 @@ install_payload() {
   chmod -R go-w "$PREFIX/Storage/remote"
   chmod -R go-w "$PREFIX/BOT"
   find "$PREFIX/BOT" -name '__pycache__' -type d -prune -exec rm -rf {} +
+  if [ -f "$PAYLOAD_DIR/get.sh" ] && [ -n "$SERVICE" ]; then
+    install -m 700 "$PAYLOAD_DIR/get.sh" /usr/local/bin/obhod-get 2>/dev/null || true
+  fi
 }
 
 INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple/}"

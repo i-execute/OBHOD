@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from . import ftscreens, fwguard, i18n, traffic, xscreens
@@ -266,7 +267,7 @@ class FtPanel:
         cidrs = ""
         if action == "vk":
             try:
-                found, reason = fwguard.vk_cidrs()
+                found, reason = await asyncio.to_thread(fwguard.vk_cidrs)
             except fwguard.GuardError as exc:
                 await self.render(chat_id, msg_id, ftscreens.fw_screen(self.view(error=t("FT_FW_NO_RANGES", reason=exc.message))))
                 return

@@ -266,13 +266,31 @@ def busy(view: DbgView, text: str) -> Any:
     return screen(t("LOADING_TITLE"), t("BUSY_SUBTITLE"), blocks, [row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home"))], icon="loading")
 
 
+def stub_screen(view: DbgView, name: str, reason: str, host: str, retry: str = "") -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    blocks.append(quote(bold(t("DBG_STUB_TITLE"))))
+    blocks.append(f"<p>{t('DBG_STUB_BODY', name=code(name[:40]), reason=code(reason[:120]))}</p>")
+    if host:
+        blocks.append(quote(muted(t("DBG_STUB_HINT", host=code(host[:64])))))
+    buttons = []
+    if retry:
+        buttons.append(row(button(t("DBG_STUB_RETRY"), retry, icon="refresh"), button(t("UI_HOME"), "nav:home", icon="home")))
+    else:
+        buttons.append(row(button(t("UI_HOME"), "nav:home", icon="home")))
+    buttons.append(row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug")))
+    return screen(t("DBG_STUB_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="warn")
+
+
 def crash_screen(view: DbgView, route: str, trace: str) -> Any:
+
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(bold(view.error or t("DBG_ERR_TITLE"))))
     blocks.append(f"<p>{muted(t('DBG_ERR_TRACE'))}</p>")
-    blocks.append(f"<p>{code(route[:48])}</p>")
+    blocks.append(table([("bug", t("DBG_TITLE"), code(route[:48]))], (t("UI_PARAM"), t("UI_VALUE"))))
     blocks.append(pre((trace or t("UI_NONE"))[-600:]))
+    blocks.append(quote(muted(t("DBG_CRASH_HINT"))))
     buttons = [
         row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
     ]

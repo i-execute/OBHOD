@@ -14,7 +14,7 @@ from .xray import SUB_PORT, XrayState
 
 DEFAULT_TAIL = 200
 TRAFFIC_NAME = 64
-SCHEMA = 7
+SCHEMA = 8
 
 CORES = cores.keys()
 
@@ -36,6 +36,7 @@ class State:
     xray: XrayState = field(default_factory=XrayState)
     freeturn: FtState = field(default_factory=FtState)
     core: str = "xray"
+    emoji: bool = False
     notify: dict[str, Any] = field(default_factory=dict)
     ddos: dict[str, Any] = field(default_factory=dict)
 
@@ -52,6 +53,7 @@ class State:
             "xray": self.xray.to_dict(),
             "freeturn": self.freeturn.to_dict(),
             "core": self.core if self.core in CORES else "xray",
+            "emoji": bool(self.emoji),
             "notify": notify.Settings.from_dict(self.notify).to_dict(),
             "ddos": antiddos.Policy.from_dict(self.ddos).to_dict(),
         }
@@ -71,6 +73,7 @@ class State:
             xray=XrayState.from_dict(data.get("xray")),
             freeturn=FtState.from_dict(data.get("freeturn")),
             core=str(data.get("core", "xray") or "xray"),
+            emoji=bool(data.get("emoji", False)),
             notify=notify.Settings.from_dict(data.get("notify")).to_dict(),
             ddos=antiddos.Policy.from_dict(data.get("ddos")).to_dict(),
         )

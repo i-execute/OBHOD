@@ -43,9 +43,15 @@ RENDER_CACHE = 64
 DENY_LIMIT = 1
 DENY_WINDOW = 60.0
 NAVIGATE_LIMIT = 40
+NAV_QUIET = 60.0
 HOME_QUIET = 3.0
 RATE_QUIET = 10.0
 UPDATE_QUIET = 10.0
+TOAST_TIMEOUT = 6.0
+ACTION_TIMEOUT = 240.0
+JOB_CACHE = 64
+CLICK_QUIET = 2.0
+ACTION_LOCK_QUIET = 5.0
 
 NAV_PREFIXES = ("nav:", "lang:", "set:")
 NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:info", "core:show", "ft:home", "xr:home", "xr:scan", "xr:subs", "xr:core")
@@ -116,6 +122,7 @@ class Bot:
         self.busy_until = 0.0
         self.render_seen: dict[tuple[int, int], tuple[str, float]] = {}
         self.quiet_marks: dict[str, float] = {}
+        self.jobs: dict[Any, Any] = {}
         self.started_at = time.monotonic()
         self.limiter = Limiter()
         self.audit = Audit(sink=SecurityLog())
@@ -196,11 +203,20 @@ class Bot:
 
     @property
     def emoji_enabled(self) -> bool:
+        if getattr(self.state, "emoji", None):
+            return True
         return bool(getattr(self.cfg, "emoji_default", False))
 
     def apply_emoji(self) -> bool:
         ui.use_icons(self.emoji_enabled)
         return self.emoji_enabled
+
+    def toggle_emoji(self) -> bool:
+        self.state.emoji = not self.emoji_enabled
+        self.save()
+        ui.use_icons(self.state.emoji)
+        self.audit.note(self.admin_id, "emoji", "on" if self.state.emoji else "off")
+        return bool(self.state.emoji)
 
     def claim_open(self) -> bool:
         if self.admin_id:
@@ -388,13 +404,28 @@ class Bot:
 
     async def verify_update(self) -> None:
         try:
-            self.update_notice = await self.updater.verify()
+            found = await self.updater.verify()
         except (UpdateError, ShellError) as exc:
             log.warning("the update check failed: %s", getattr(exc, "message", exc))
-            self.update_notice = {}
+            found = {}
         except Exception as exc:
             log.debug("the update check was skipped: %s", exc)
-            self.update_notice = {}
+            found = {}
+        self.update_notice = found
+        if found:
+            await self.report_update(found)
+
+    async def report_update(self, notice: dict[str, object]) -> None:
+        owner = int(getattr(self, "admin_id", 0) or 0)
+        if not owner:
+            return
+        text = self.update_notice_text()
+        if not text:
+            return
+        try:
+            await self.app.send_msg(owner, text, via="mt", parse_mode="html")
+        except Exception as exc:
+            log.debug("the update notice did not reach the owner: %s", exc)
 
     def update_notice_text(self) -> str:
         data = self.update_notice
@@ -435,11 +466,27 @@ class Bot:
         if not msg_id or self.quiet("send:%d" % key[0], RENDER_QUIET):
             await self.send(chat_id, rich)
 
-    async def toast(self, evt: object, text: str, alert: bool = False) -> None:
+    def answered(self, evt: object) -> bool:
+        return bool(getattr(evt, "_obhod_answered", False))
+
+    async def toast(self, evt: object, text: str = "", alert: bool = False) -> None:
+        if self.answered(evt):
+            return
         try:
-            await evt.answer(text or self.tr()("TOAST_DONE"), alert=alert)
+            setattr(evt, "_obhod_answered", True)
+        except (AttributeError, TypeError):
+            pass
+        try:
+            await asyncio.wait_for(evt.answer(text or self.tr()("TOAST_DONE"), alert=alert), TOAST_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.debug("the toast answer timed out")
         except Exception as exc:
             log.debug("answer failed: %s", exc)
+
+    async def answer_click(self, evt: object) -> None:
+        if not self.quiet("click", CLICK_QUIET):
+            return
+        await self.toast(evt, "")
 
     def private_chat(self, evt: object) -> bool:
         who = int(getattr(evt, "from_id", 0) or 0)
@@ -502,6 +549,9 @@ class Bot:
         return values
 
     async def on_inline(self, evt: object) -> None:
+        await self.track(self.handle_inline(evt), "inline")
+
+    async def handle_inline(self, evt: object) -> None:
         query = str(getattr(evt, "query", "") or "")
         src = str(getattr(evt, "src", "mt") or "mt")
         who = int(getattr(evt, "from_id", 0) or 0)
@@ -563,6 +613,9 @@ class Bot:
         return False
 
     async def on_message(self, evt: object) -> None:
+        await self.track(self.handle_message(evt), "msg")
+
+    async def handle_message(self, evt: object) -> None:
         if not await self.guard_admin(evt):
             return
         who = int(getattr(evt, "from_id", 0) or 0)
@@ -693,7 +746,7 @@ class Bot:
         if not await self.guard_admin(evt):
             return
         if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "callback", self.callback_limit, 60.0):
-            if self.quiet("rate:%d" % int(getattr(evt, "from_id", 0) or 0), RATE_QUIET):
+            if self.quiet("rate:%d" % int(getattr(evt, "from_id", 0) or 0), NAV_QUIET):
                 await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
             return
         data = str(getattr(evt, "data", "") or "")
@@ -706,7 +759,7 @@ class Bot:
             return
         if is_navigation(data) or data.startswith(("nav:", "lang:")):
             if not self.allowed(who, "nav", NAVIGATE_LIMIT, 60.0):
-                if self.quiet("nav", BUSY_QUIET):
+                if self.quiet("rate:%d" % who, NAV_QUIET):
                     await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
                 return
         if is_expensive(data):
@@ -718,6 +771,10 @@ class Bot:
                 if self.quiet("rate:%d" % int(getattr(evt, "from_id", 0) or 0), RATE_QUIET):
                     await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
                 return
+        if self.busy and not is_expensive(data) and not is_navigation(data):
+            if self.quiet("busy", BUSY_QUIET):
+                await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
+            return
         busy = False
         if is_expensive(data):
             busy = self.busy_begin()
@@ -730,22 +787,80 @@ class Bot:
                 await self.render(chat_id, msg_id, screens.busy_screen(self.tr()("LOADING_BODY"), self.language, [self.tr()("LOADING_STEP")]))
             except Exception as exc:
                 log.debug("the loading screen failed: %s", exc)
+        await self.answer_click(evt)
+        job = self.handle_callback(chat_id, msg_id, data)
+        await self.track(job, data)
+        if busy:
+            await self.busy_wait()
+
+    async def busy_wait(self) -> None:
+        await self.idle()
+        self.busy_end()
+
+    async def idle(self, limit: float = ACTION_TIMEOUT) -> None:
+        deadline = time.monotonic() + limit
+        while self.jobs and time.monotonic() < deadline:
+            await asyncio.gather(*list(self.jobs), return_exceptions=True)
+
+    async def track(self, job: Any, label: str) -> None:
+        task = asyncio.create_task(job) if asyncio.iscoroutine(job) else job
+        self.jobs[task] = label
+        task.add_done_callback(self.job_done)
+        if len(self.jobs) > JOB_CACHE:
+            extra = len(self.jobs) - JOB_CACHE
+            for item in sorted(self.jobs, key=lambda task_item: self.jobs[task_item])[:extra]:
+                self.jobs.pop(item, None)
+
+    def job_done(self, task: Any) -> None:
+        self.jobs.pop(task, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            log.warning("a background job failed: %s", error)
+
+    async def handle_callback(self, chat_id: int, msg_id: int, data: str) -> None:
+        lock = self.action_lock()
+        if lock.locked() and not self.quiet("action", ACTION_LOCK_QUIET):
+            return
+        async with lock:
+            await self.run_callback(chat_id, msg_id, data)
+
+    def action_lock(self) -> "asyncio.Lock":
+        loop = asyncio.get_running_loop()
+        lock = getattr(self, "_action_lock", None)
+        if lock is None or getattr(lock, "_loop", loop) is not loop:
+            lock = asyncio.Lock()
+            self._action_lock = lock
+        return lock
+
+    async def run_callback(self, chat_id: int, msg_id: int, data: str) -> None:
         try:
-            await self.route(chat_id, msg_id, data)
-            if data.startswith("xr:") and not data.startswith(("xr:home", "xr:in:nav")):
-                try:
-                    await self.subs_sync()
-                except Exception as exc:
-                    log.debug("the subscription refresh was skipped: %s", exc)
+            await asyncio.wait_for(self.route(chat_id, msg_id, data), ACTION_TIMEOUT)
+        except asyncio.TimeoutError:
+            await self.stuck(chat_id, msg_id, data)
+            return
         except (PanelError, ModelError, ConfigError, RpcError, ShellError, FtError) as exc:
             message = getattr(exc, "message", str(exc))
             await self.render(chat_id, msg_id, screens.error_screen(self.view(), self.tr()("ERR_TITLE"), message))
+            return
         except Exception as exc:
             log.exception("callback failed: %s", data)
             await self.render(chat_id, msg_id, screens.error_screen(self.view(), self.tr()("ERR_CRASH_TITLE"), f"{type(exc).__name__}: {exc}"))
-        finally:
-            if busy:
-                self.busy_end()
+            return
+        if data.startswith("xr:") and not data.startswith(("xr:home", "xr:in:nav")):
+            try:
+                await self.subs_sync()
+            except Exception as exc:
+                log.debug("the subscription refresh was skipped: %s", exc)
+
+    async def stuck(self, chat_id: int, msg_id: int, data: str) -> None:
+        self.busy_end()
+        self.audit.note(self.admin_id, data[:32], "timeout")
+        try:
+            await self.render(chat_id, msg_id, screens.stuck_screen(self.view(), data))
+        except Exception as exc:
+            log.warning("the stuck screen did not render: %s", exc)
 
     def slow_action(self, data: str) -> bool:
         text = str(data or "")
@@ -795,8 +910,12 @@ class Bot:
         await self.render(chat_id, msg_id, screens.home(self.view(notice=self.tr()("HOME_NOTICE_UNKNOWN"))))
 
     async def setting_action(self, chat_id: int, msg_id: int, name: str) -> None:
-        notice = self.tr()("TOAST_EMOJI_CONFIG") if name == "emoji" else ""
-        await self.render(chat_id, msg_id, screens.settings(self.view(notice=notice)))
+        if name == "emoji":
+            value = self.toggle_emoji()
+            notice = self.tr()("NAV_EMOJI_ON" if value else "NAV_EMOJI_OFF")
+            await self.render(chat_id, msg_id, screens.settings(self.view(notice=notice)))
+            return
+        await self.render(chat_id, msg_id, screens.settings(self.view()))
 
     async def language_action(self, chat_id: int, msg_id: int, action: str, code_value: str) -> None:
         choice = code_value or action
@@ -829,6 +948,14 @@ class Bot:
             return
         if page == "lang":
             await self.render(chat_id, msg_id, screens.language_screen(self.view()))
+            return
+        if page == "emoji":
+            value = self.toggle_emoji()
+            notice = self.tr()("NAV_EMOJI_ON" if value else "NAV_EMOJI_OFF")
+            await self.render(chat_id, msg_id, screens.settings(self.view(notice=notice)))
+            return
+        if page == "quick":
+            await self.render(chat_id, msg_id, screens.quick_screen(self.view()))
             return
         if page == "xray":
             await self.render(chat_id, msg_id, xscreens.home(self.xray.view()))
@@ -922,12 +1049,17 @@ class Bot:
                 tail = await self.updater.reinstall()
                 self.update_info = {"git": False}
                 self.update_error = ""
-                await self.render(chat_id, msg_id, screens.update_result_screen(self.view(), self.update_info, {"ok": True, "mode": "reinstall", "log": tail.splitlines()[-12:]}))
+                self.update_result = {"ok": True, "mode": "reinstall", "message": tail.splitlines()[-1] if tail.strip() else "", "log": tail.splitlines()[-12:]}
+                self.audit.note(self.admin_id, "upd:reinstall", "ok")
+                await self.render(chat_id, msg_id, screens.update_result_screen(self.view(), self.update_info, self.update_result))
                 return
             result = await self.updater.apply(mode)
         except UpdateError as exc:
             self.audit.note(self.admin_id, "upd:%s" % mode, "failed")
             self.update_error = exc.message
+            if mode == "reinstall":
+                await self.render(chat_id, msg_id, screens.update_result_screen(self.view(), self.update_info, {"ok": False, "mode": mode, "message": exc.message}))
+                return
             await self.render(chat_id, msg_id, screens.update_screen(self.view(error=exc.message), self.update_info))
             return
         except (ShellError, OSError) as exc:
