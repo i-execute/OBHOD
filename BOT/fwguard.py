@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import gzip
 import ipaddress
 import json
 import time
@@ -9,6 +11,7 @@ import urllib.request
 API = "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS%d"
 AGENT = "obhod-fwguard/1"
 TIMEOUT = 12.0
+MAX_BODY = 262144
 OK_TTL = 86400.0
 FAIL_TTL = 300.0
 MIN_PREFIX = 8
@@ -21,6 +24,18 @@ class GuardError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+def decode_body(raw: bytes, headers: object) -> bytes:
+    if not raw or headers is None or not hasattr(headers, "get"):
+        return raw
+    encoding = str(headers.get("Content-Encoding", "") or "").strip().lower()
+    if encoding == "gzip":
+        try:
+            return gzip.decompress(raw)[:MAX_BODY]
+        except OSError:
+            return b""
+    return raw
 
 
 def prefixes_of(body: bytes) -> list[str]:
@@ -58,10 +73,18 @@ def collapse(items: list[str]) -> list[str]:
 
 
 def fetch_asn(asn: int, timeout: float = TIMEOUT) -> tuple[list[str], str]:
-    request = urllib.request.Request(API % asn, headers={"User-Agent": AGENT, "Accept": "application/json"})
+    request = urllib.request.Request(
+        API % asn,
+        headers={
+            "User-Agent": AGENT,
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+        },
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read(262144)
+            raw = response.read(262144)
+            body = decode_body(raw, getattr(response, "headers", None))
     except urllib.error.HTTPError as exc:
         return [], "http_%d" % int(getattr(exc, "code", 0) or 0)
     except (OSError, ValueError):
@@ -78,8 +101,13 @@ def vk_cidrs(timeout: float = TIMEOUT, use_cache: bool = True) -> tuple[list[str
             return hit[1], hit[2]
     collected: list[str] = []
     reason = ""
-    for asn, _holder in ASNS:
-        found, why = fetch_asn(asn, timeout)
+    if len(ASNS) > 1:
+        with ThreadPoolExecutor(max_workers=len(ASNS)) as pool:
+            futures = [pool.submit(fetch_asn, asn, timeout) for asn, _holder in ASNS]
+            results = [future.result() for future in futures]
+    else:
+        results = [fetch_asn(asn, timeout) for asn, _holder in ASNS]
+    for found, why in results:
         collected.extend(found)
         if why and not reason:
             reason = why

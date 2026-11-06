@@ -10,6 +10,7 @@ DRY_RUN=0
 NO_INSTALL=0
 TUI=1
 DEST_FIXED=0
+HAS_INSTALLER_ARGS=0
 ARGS=()
 WORK=""
 
@@ -127,7 +128,7 @@ for item in "$@"; do
     --dry-run) DRY_RUN=1 ;;
     --no-install) NO_INSTALL=1 ;;
     --no-tui|--plain) TUI=0 ;;
-    *) ARGS+=("$item") ;;
+    *) ARGS+=("$item"); HAS_INSTALLER_ARGS=1 ;;
   esac
 done
 
@@ -173,13 +174,22 @@ need_tools() {
 }
 
 download_archive() {
-  local url="https://codeload.github.com/$REPO/tar.gz/${REF:-HEAD}"
-  say "downloading $url"
+  local primary="https://codeload.github.com/$REPO/tar.gz/${REF:-HEAD}"
+  local fallback="https://github.com/$REPO/archive/${REF:-HEAD}.tar.gz"
+  local progress=("-sS")
+  if [ -t 2 ]; then
+    progress=("--progress-bar")
+  fi
+  say "downloading $primary"
   mkdir -p "$WORK/repo"
-  if ! curl -fSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 \
-      --progress-bar "$url" -o "$WORK/repo.tar.gz" </dev/null; then
-    note "the archive could not be downloaded, check the network and the proxy settings"
-    return 1
+  if ! curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 \
+      "${progress[@]}" "$primary" -o "$WORK/repo.tar.gz" </dev/null; then
+    note "primary archive host failed, trying $fallback"
+    if ! curl -fL --retry 2 --retry-delay 2 --connect-timeout 15 --max-time 300 \
+        "${progress[@]}" "$fallback" -o "$WORK/repo.tar.gz" </dev/null; then
+      note "the archive could not be downloaded, check the network and the proxy settings"
+      return 1
+    fi
   fi
   if [ -n "${OBHOD_SHA256:-}" ]; then
     local actual
@@ -193,7 +203,10 @@ download_archive() {
 }
 
 clone_repo() {
-  local args=(clone --depth 1 --single-branch --no-tags)
+  local args=(clone --depth 1 --single-branch --no-tags --filter=blob:none)
+  if [ -d "$DEST/.git" ]; then
+    args+=(--reference-if-able "$DEST" --dissociate)
+  fi
   if [ -n "$REF" ]; then
     args+=(--branch "$REF")
   fi
@@ -201,8 +214,14 @@ clone_repo() {
     args+=(--quiet)
   fi
   say "cloning https://github.com/$REPO.git, the wait is capped at ${CLONE_TIMEOUT}s"
-  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30 \
-    timeout "$CLONE_TIMEOUT" git "${args[@]}" "https://github.com/$REPO.git" "$WORK/repo" >&2 </dev/null
+  if GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true GIT_HTTP_LOW_SPEED_LIMIT=1024 GIT_HTTP_LOW_SPEED_TIME=25 \
+      timeout "$CLONE_TIMEOUT" git "${args[@]}" "https://github.com/$REPO.git" "$WORK/repo" >&2 </dev/null; then
+    return 0
+  fi
+  rm -rf "$WORK/repo"
+  note "retrying git clone over HTTP/1.1"
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true GIT_HTTP_LOW_SPEED_LIMIT=1024 GIT_HTTP_LOW_SPEED_TIME=25 \
+    timeout "$CLONE_TIMEOUT" git -c http.version=HTTP/1.1 "${args[@]}" "https://github.com/$REPO.git" "$WORK/repo" >&2 </dev/null
 }
 
 fetch_source() {
@@ -436,8 +455,8 @@ if [ "$DRY_RUN" = "1" ]; then
       fi
     fi
   fi
-  if [ "$TUI" = "1" ]; then
-    say "screen: python3 $DEST/Storage/obhod_setup.py ${ARGS[*]}"
+  if [ "$TUI" = "1" ] && [ "$HAS_INSTALLER_ARGS" = "0" ] && [ "$CREDS" = "0" ]; then
+    say "screen: python3 $DEST/Storage/obhod_setup.py"
   fi
   say "command: bash $DEST/Storage/obhod-install.sh ${ARGS[*]}"
   exit 0
@@ -461,26 +480,15 @@ if [ "$NO_INSTALL" = "1" ]; then
   exit 0
 fi
 
-if [ "$TUI" = "1" ] && tty_available; then
+if [ "$TUI" = "1" ] && [ "$HAS_INSTALLER_ARGS" = "0" ] && [ "$CREDS" = "0" ] && tty_available; then
   PY_BIN="$(command -v python3 || true)"
   if [ -n "$PY_BIN" ] && [ -f "$DEST/Storage/obhod_setup.py" ]; then
-    TUI_ARGS=("${ARGS[@]}")
-    if [ "$CREDS" = "1" ]; then
-      if [ -z "$ENV_PATH" ]; then
-        pick_runtime_env
-      fi
-      if [ -z "$ENV_PATH" ] || ! write_env_file "$ENV_PATH"; then
-        WORK="${WORK:-$(mktemp -d)}"
-        ENV_PATH="$WORK/obhod.env"
-        write_env_file "$ENV_PATH" || die "the env file could not be written anywhere, pass --env-file to a writable path"
-        note "the system env directory is read-only, the config is passed from $ENV_PATH"
-      fi
-      TUI_ARGS+=("--env-file=$ENV_PATH" "--yes")
-      unset BOT_TOKEN API_ID API_HASH ADMIN_ID OBHOD_TOKEN OBHOD_API_ID OBHOD_API_HASH OBHOD_ADMIN_ID
+    if [ -n "$ENV_PATH" ]; then
+      export OBHOD_ENV_FILE="$ENV_PATH"
     fi
     echo_on
     say "starting the setup screen"
-    exec "$PY_BIN" "$DEST/Storage/obhod_setup.py" "${TUI_ARGS[@]}"
+    exec "$PY_BIN" "$DEST/Storage/obhod_setup.py"
   fi
   if [ -z "$PY_BIN" ]; then
     say "python3 is missing, the plain installer is used instead"

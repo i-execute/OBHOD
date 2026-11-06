@@ -522,17 +522,22 @@ class DebugPanel:
 
     async def scripts_check(self) -> None:
         control = self.bot.freeturn.control
-        cached: list[dict[str, Any]] = []
-        probes: dict[str, dict[str, Any]] = {}
-        try:
-            cached = await control.scripts_list()
-        except FtError:
-            cached = []
-        for item in scripts.targets():
+        items = scripts.targets()
+
+        async def load_cached() -> list[dict[str, Any]]:
             try:
-                probes[item.key] = await control.scripts_probe(item.url(self.tag))
+                return await control.scripts_list()
             except FtError:
-                probes[item.key] = {}
+                return []
+
+        async def run_probe(item: scripts.Target) -> tuple[str, dict[str, Any]]:
+            try:
+                return item.key, await control.scripts_probe(item.url(self.tag))
+            except FtError:
+                return item.key, {}
+
+        cached, *pairs = await asyncio.gather(load_cached(), *(run_probe(item) for item in items))
+        probes = dict(pairs)
         self.report = scripts.merge(scripts.parse_cache(cached), probes, self.tag)
         self.remember("scripts %d" % len(self.report.pending()))
 

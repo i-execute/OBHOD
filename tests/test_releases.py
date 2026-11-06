@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import typing
 import urllib.error
 from email.message import Message
 from pathlib import Path
@@ -144,3 +145,49 @@ def test_a_tag_without_the_v_prefix_is_accepted_for_the_update_page() -> None:
     assert releases.any_tag_of(b'{"tag_name": "main"}') == ""
     assert releases.any_tag_of(b'{"tag_name": "1.0"}') == ""
     assert releases.tag_of(b'{"tag_name": "1.0.0"}') == ""
+
+
+def test_conditional_etag_reuses_body_on_304_and_shares_raw_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gzip as gzip_mod
+
+    seen_if_none_match: list[str] = []
+    calls = 0
+
+    class RichAnswer:
+        def __init__(self, body: bytes, hdrs: dict[str, str]) -> None:
+            self.body = body
+            self.headers = headers(hdrs)
+
+        def __enter__(self) -> "RichAnswer":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self, _limit: int = 0) -> bytes:
+            return self.body
+
+        def geturl(self) -> str:
+            return "https://api.github.com/repos/i-execute/OBHOD/releases/latest"
+
+    def responder(request: "typing.Any", timeout: float = 0) -> RichAnswer:
+        nonlocal calls
+        calls += 1
+        inm = request.get_header("If-none-match") or ""
+        seen_if_none_match.append(inm)
+        if inm == '"etag-1"':
+            raise http_error(304, {"ETag": '"etag-1"'})
+        compressed = gzip_mod.compress(b'{"tag_name": "v2.3.4"}')
+        return RichAnswer(compressed, {"ETag": '"etag-1"', "Content-Encoding": "gzip"})
+
+    monkeypatch.setattr(releases.urllib.request, "urlopen", responder)
+    assert releases.latest_tag("i-execute/OBHOD") == ("v2.3.4", "")
+    assert releases.latest_tag_any("i-execute/OBHOD") == ("v2.3.4", "")
+    assert calls == 1
+    key = "i-execute/OBHOD"
+    releases.CACHE[key] = (0.0, "v2.3.4", "")
+    releases.RAW_CACHE[key] = (0.0, '"etag-1"', b'{"tag_name": "v2.3.4"}', "")
+    assert releases.latest_tag("i-execute/OBHOD") == ("v2.3.4", "")
+    assert calls == 2
+    assert seen_if_none_match[-1] == '"etag-1"'
+

@@ -730,3 +730,68 @@ def test_the_update_writes_its_reason_to_the_log(tmp_path: Path, monkeypatch: py
     text = "\n".join(record.getMessage() for record in caplog.records)
     assert "update commit starts from" in text
     assert "update commit target" in text
+
+
+def test_preview_reuses_fresh_fetch_and_apply_forces_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(releases, "latest_tag_any", lambda repo: release())
+    updater, shell = build(tmp_path / "src", BASE)
+    asyncio.run(updater.check_all())
+    first_fetches = len([c for c in shell.calls if "fetch" in c])
+    assert first_fetches == 1
+    asyncio.run(updater.preview("commit"))
+    assert len([c for c in shell.calls if "fetch" in c]) == 1
+    asyncio.run(updater.apply("commit"))
+    assert len([c for c in shell.calls if "fetch" in c]) == 2
+
+
+def test_shallow_checkout_adds_unshallow_on_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(releases, "latest_tag_any", lambda repo: release())
+    root = tmp_path / "src"
+    updater, shell = build(root, BASE)
+    git_dir = root / ".git"
+    git_dir.mkdir(exist_ok=True)
+    (git_dir / "shallow").write_text("1111aaa\n", encoding="utf-8")
+    asyncio.run(updater.check_commit(force=True))
+    fetches = [c for c in shell.calls if "fetch" in c]
+    assert fetches and "--unshallow" in fetches[0]
+
+
+def test_fetch_get_falls_back_to_mirror_and_blocks_evil_redirect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[str] = []
+
+    def flaky(url: str, timeout: float = 0) -> str:
+        attempts.append(url)
+        if "raw.githubusercontent.com" in url:
+            raise UpdateError("primary down")
+        return "bash /opt/obhod-src/Storage/obhod-install.sh install"
+
+    monkeypatch.setattr(update, "fetch_get_body", flaky)
+    updater = Updater(shell=FakeShell({}), root=tmp_path / "src", state_dir=tmp_path / "state")
+    body = asyncio.run(updater.fetch_get())
+    assert "obhod-install.sh" in body
+    assert len(attempts) == 2
+    again = asyncio.run(updater.fetch_get())
+    assert again == body
+    assert len(attempts) == 2
+
+    class EvilRedirect:
+        headers: dict[str, str] = {}
+
+        def __enter__(self) -> "EvilRedirect":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://evil.example.org/get.sh"
+
+        def read(self, _limit: int = 0) -> bytes:
+            return b"echo pwn"
+
+    monkeypatch.undo()
+    monkeypatch.setattr(update.urllib.request, "urlopen", lambda req, timeout=0: EvilRedirect())
+    with pytest.raises(UpdateError) as caught:
+        update.fetch_get_body(update.GET_URL)
+    assert "redirect" in caught.value.message
+

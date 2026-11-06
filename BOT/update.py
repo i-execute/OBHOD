@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import os
@@ -27,9 +28,14 @@ UNIT = "obhod.service"
 MARKER = "update.json"
 TAG_RE = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+$")
 GET_URL = "https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh"
+GET_FALLBACK_URL = "https://github.com/i-execute/OBHOD/raw/main/get.sh"
+GET_URLS = (GET_URL, GET_FALLBACK_URL)
 GET_HOSTS = ("raw.githubusercontent.com", "github.com", "codeload.github.com", "objects.githubusercontent.com")
 GET_MAX = 262144
 GET_TIMEOUT = 30.0
+GET_CACHE_TTL = 30.0
+FETCH_TTL = 15.0
+GIT_LOW_SPEED = ("-c", "http.lowSpeedLimit=1024", "-c", "http.lowSpeedTime=20")
 REINSTALL_TIMEOUT = 1800.0
 STAGE_ENV = "OBHOD_STAGE_DIR"
 STAGE_DIR = "/var/tmp/obhod-stage"
@@ -348,20 +354,55 @@ def allowed_get(url: str) -> bool:
     return any(host == item or host.endswith("." + item) for item in GET_HOSTS)
 
 
+def decode_get_payload(raw: bytes, headers: object) -> bytes:
+    if not raw or headers is None or not hasattr(headers, "get"):
+        return raw
+    encoding = str(headers.get("Content-Encoding", "") or "").strip().lower()
+    if encoding == "gzip":
+        try:
+            return gzip.decompress(raw)[: GET_MAX + 1]
+        except OSError as exc:
+            raise UpdateError("the get.sh gzip stream is broken: %s" % exc) from None
+    return raw
+
+
 def fetch_get_body(url: str, timeout: float = GET_TIMEOUT) -> str:
     if not allowed_get(url):
         raise UpdateError("the get.sh address %s is not allowed" % url)
-    request = urllib.request.Request(url, headers={"User-Agent": "obhod-get/1", "Accept": "text/plain"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read(GET_MAX + 1)
-    except urllib.error.HTTPError as exc:
-        raise UpdateError("the get.sh download answered http %d" % int(getattr(exc, "code", 0) or 0)) from None
-    except (OSError, ValueError):
-        raise UpdateError("the get.sh download did not finish, check that github is reachable") from None
-    if len(body) > GET_MAX:
-        raise UpdateError("the get.sh body is larger than %d bytes" % GET_MAX)
-    return body.decode("utf-8", "replace")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "obhod-get/1",
+            "Accept": "text/plain",
+            "Accept-Encoding": "gzip",
+        },
+    )
+    last_error = ""
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                geturl = getattr(response, "geturl", None)
+                if callable(geturl):
+                    final_url = str(geturl() or "")
+                    if final_url and not allowed_get(final_url):
+                        raise UpdateError("the get.sh redirect %s is not allowed" % final_url)
+                raw = response.read(GET_MAX + 1)
+                body = decode_get_payload(raw, getattr(response, "headers", None))
+                if len(body) > GET_MAX:
+                    raise UpdateError("the get.sh body is larger than %d bytes" % GET_MAX)
+                return body.decode("utf-8", "replace")
+        except UpdateError:
+            raise
+        except urllib.error.HTTPError as exc:
+            code = int(getattr(exc, "code", 0) or 0)
+            last_error = "the get.sh download answered http %d" % code
+            if code < 500 and code != 429:
+                raise UpdateError(last_error) from None
+        except (OSError, ValueError):
+            last_error = "the get.sh download did not finish, check that github is reachable"
+        if attempt == 0:
+            time.sleep(0.25)
+    raise UpdateError(last_error or "the get.sh download did not finish, check that github is reachable")
 
 
 SANDBOX_REASONS = {
@@ -418,6 +459,8 @@ class Updater:
         default_root = os.environ.get("OBHOD_DIR", "") or str(Path(__file__).resolve().parent.parent)
         self._root = Path(root) if root else Path(default_root)
         self._state_dir = Path(state_dir) if state_dir else None
+        self._fetched_at = 0.0
+        self._get_cache: tuple[float, str] = (0.0, "")
 
     @property
     def root(self) -> Path:
@@ -460,13 +503,20 @@ class Updater:
         if inside != "true":
             raise UpdateError("the source directory %s is not a git checkout" % self.root)
         info.git = True
-        info.branch = await self._git_text("branch", "--show-current") or self.branch
-        info.commit = await self._git_text("rev-parse", "--short", "HEAD")
-        info.subject = await self._git_text("log", "-1", "--pretty=%s")
-        info.tag = await self._git_text("describe", "--tags", "--abbrev=0")
-        status = await self._git_text("status", "--porcelain")
+        branch, commit, subject, tag, status, unit_state = await asyncio.gather(
+            self._git_text("branch", "--show-current"),
+            self._git_text("rev-parse", "--short", "HEAD"),
+            self._git_text("log", "-1", "--pretty=%s"),
+            self._git_text("describe", "--tags", "--abbrev=0"),
+            self._git_text("status", "--porcelain"),
+            self._unit_state(),
+        )
+        info.branch = branch or self.branch
+        info.commit = commit
+        info.subject = subject
+        info.tag = tag
         info.dirty = len([line for line in status.splitlines() if line.strip()])
-        info.unit_state = await self._unit_state()
+        info.unit_state = unit_state
         return info
 
     async def _release(self) -> tuple[str, str]:
@@ -475,16 +525,30 @@ class Updater:
             return tag, ""
         return "", reason or "no_tag"
 
-    async def check_commit(self) -> UpdateInfo:
+    async def _fetch_remote(self, force: bool = False) -> Any:
+        now = time.monotonic()
+        if not force and self._fetched_at > 0 and (now - self._fetched_at) < FETCH_TTL:
+            return None
+        extra: tuple[str, ...] = ("--unshallow",) if (self.root / ".git" / "shallow").is_file() else ()
+        fetched = await self._git(*GIT_LOW_SPEED, "fetch", "--prune", "--tags", *extra, REMOTE)
+        if int(fetched.code or 0) == 0:
+            self._fetched_at = time.monotonic()
+        return fetched
+
+    async def check_commit(self, force: bool = False) -> UpdateInfo:
         info = await self.read()
-        fetched = await self._git("fetch", "--prune", "--tags", REMOTE)
-        if int(fetched.code or 0) != 0:
+        fetched = await self._fetch_remote(force=force)
+        if fetched is not None and int(fetched.code or 0) != 0:
             raise UpdateError("the fetch failed: %s" % clean_output(fetched.text))
         ref = "%s/%s" % (REMOTE, info.branch or self.branch)
-        info.remote = await self._git_text("rev-parse", "--short", ref)
-        info.remote_subject = await self._git_text("log", "-1", "--pretty=%s", ref)
-        behind = await self._git_text("rev-list", "--count", "HEAD..%s" % ref)
-        ahead = await self._git_text("rev-list", "--count", "%s..HEAD" % ref)
+        remote, remote_subject, behind, ahead = await asyncio.gather(
+            self._git_text("rev-parse", "--short", ref),
+            self._git_text("log", "-1", "--pretty=%s", ref),
+            self._git_text("rev-list", "--count", "HEAD..%s" % ref),
+            self._git_text("rev-list", "--count", "%s..HEAD" % ref),
+        )
+        info.remote = remote
+        info.remote_subject = remote_subject
         info.behind = int(behind or 0)
         info.ahead = int(ahead or 0)
         return info
@@ -494,9 +558,12 @@ class Updater:
         info.release, info.release_error = await self._release()
         return info
 
-    async def check_all(self) -> UpdateInfo:
-        info = await self.check_commit()
-        info.release, info.release_error = await self._release()
+    async def check_all(self, force: bool = False) -> UpdateInfo:
+        info, (release_tag, release_err) = await asyncio.gather(
+            self.check_commit(force=force),
+            self._release(),
+        )
+        info.release, info.release_error = release_tag, release_err
         return info
 
     def get_script(self) -> Path:
@@ -509,14 +576,20 @@ class Updater:
         return Path(os.environ.get(STAGE_ENV) or STAGE_DIR)
 
     async def fetch_get(self) -> str:
+        now = time.monotonic()
+        if self._get_cache[1] and self._get_cache[0] > now:
+            return self._get_cache[1]
         cached = self.get_script()
         failure = ""
-        try:
-            body = await asyncio.to_thread(fetch_get_body, GET_URL, GET_TIMEOUT)
-        except UpdateError as exc:
-            body, failure = "", exc.message
-        if body and "obhod-install.sh" in body:
-            return body
+        for candidate in GET_URLS:
+            try:
+                body = await asyncio.to_thread(fetch_get_body, candidate, GET_TIMEOUT)
+            except UpdateError as exc:
+                body, failure = "", exc.message
+                continue
+            if body and "obhod-install.sh" in body:
+                self._get_cache = (time.monotonic() + GET_CACHE_TTL, body)
+                return body
         if cached.is_file():
             text = cached.read_text(encoding="utf-8", errors="replace")
             if "obhod-install.sh" in text:
@@ -562,17 +635,26 @@ class Updater:
             return False, "the install directory is on a read-only mount %s" % flags.get("path")
         return True, ""
 
+    def _write_staged_script(self, body: str) -> Path:
+        stage = self.stage_dir()
+        stage.mkdir(parents=True, exist_ok=True)
+        os.chmod(stage, 0o700)
+        script = stage / "get.sh"
+        tmp = stage / "get.sh.tmp"
+        handle = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o700)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(body)
+        os.chmod(tmp, 0o700)
+        os.replace(tmp, script)
+        return script
+
     async def probe_reinstall(self) -> tuple[bool, str]:
         writable, reason = await self.preflight()
         if not writable:
             return False, reason
         body = await self.fetch_get()
-        script = self.stage_dir() / "get.sh"
         try:
-            self.stage_dir().mkdir(parents=True, exist_ok=True)
-            os.chmod(self.stage_dir(), 0o700)
-            script.write_text(body, encoding="utf-8")
-            os.chmod(script, 0o700)
+            script = self._write_staged_script(body)
         except OSError as exc:
             return False, "the staged script could not be written (%s)" % (exc.strerror or exc)
         out = await self._run(["bash", "-n", str(script)], UNIT_TIMEOUT)
@@ -645,14 +727,10 @@ class Updater:
                 "readonly",
             )
         body = await self.fetch_get()
-        script = self.stage_dir() / "get.sh"
         try:
-            self.stage_dir().mkdir(parents=True, exist_ok=True)
-            os.chmod(self.stage_dir(), 0o700)
-            script.write_text(body, encoding="utf-8")
-            os.chmod(script, 0o700)
+            script = self._write_staged_script(body)
         except OSError as exc:
-            raise UpdateError("the reinstall script could not be written to %s: %s" % (script, exc)) from None
+            raise UpdateError("the reinstall script could not be written to %s: %s" % (self.stage_dir() / "get.sh", exc)) from None
         env_file = self.env_file()
         args = ["bash", str(script), "install", "--yes"]
         if env_file.is_file():
@@ -679,13 +757,15 @@ class Updater:
 
     async def preview(self, mode: str) -> dict[str, Any]:
         info = await self.read()
-        fetched = await self._git("fetch", "--prune", "--tags", REMOTE)
-        if int(fetched.code or 0) != 0:
+        fetched = await self._fetch_remote(force=False)
+        if fetched is not None and int(fetched.code or 0) != 0:
             raise UpdateError("the fetch failed: %s" % clean_output(fetched.text))
         info.release, info.release_error = await self._release()
         target, subject = await self._resolve(mode, info)
-        count = await self._git_text("rev-list", "--count", "%s..%s" % (info.commit, target))
-        changed = await self._git_text("diff", "--name-status", "%s..%s" % (info.commit, target))
+        count, changed = await asyncio.gather(
+            self._git_text("rev-list", "--count", "%s..%s" % (info.commit, target)),
+            self._git_text("diff", "--name-status", "%s..%s" % (info.commit, target)),
+        )
         files = []
         for line in changed.splitlines()[:PREVIEW_FILES]:
             parts = line.split("\t")
@@ -776,7 +856,7 @@ class Updater:
         before = await self.read()
         result.source = before.commit
         log.info("update %s starts from %s at %s", mode, before.commit[:12], self.root)
-        fetched = await self._git("fetch", "--prune", "--tags", REMOTE)
+        fetched = await self._fetch_remote(force=True)
         result.steps.append("fetch from %s" % REMOTE)
         log.info("update fetch from %s: code=%s %s", REMOTE, fetched.code, clean_output(fetched.text)[:200])
         if int(fetched.code or 0) != 0:

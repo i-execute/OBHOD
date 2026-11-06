@@ -727,3 +727,30 @@ def test_the_agent_never_runs_a_shell_for_wg(tmp_path: Path) -> None:
     assert '["wg", "show"' in source
     assert "WG_MAX_PEERS" in source
     assert "WG_KEY_RE" in source
+
+
+def test_fetch_asn_accepts_gzipped_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gzip as gzip_mod
+    from email.message import Message
+
+    hdrs = Message()
+    hdrs["Content-Encoding"] = "gzip"
+    payload = gzip_mod.compress(b'{"data": {"prefixes": [{"prefix": "87.240.128.0/18"}]}}')
+
+    class GzipReply:
+        headers = hdrs
+
+        def __enter__(self) -> "GzipReply":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self, _limit: int = 0) -> bytes:
+            return payload
+
+    monkeypatch.setattr(fwguard.urllib.request, "urlopen", lambda req, timeout=0: GzipReply())
+    found, reason = fwguard.fetch_asn(47541)
+    assert reason == ""
+    assert found == ["87.240.128.0/18"]
+
