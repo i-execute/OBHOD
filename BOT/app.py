@@ -25,7 +25,6 @@ from .seclog import SecurityLog
 from .ratelimit import CALLBACK_LIMIT, CLAIM_LIMIT, EXPENSIVE_LIMIT, INLINE_LIMIT, MESSAGE_LIMIT, Limiter
 from .shell import LocalShell, ShellError
 from .store import State, Store
-from .ui import code
 from .update import UpdateError, Updater
 from .xrayrpc import XrayControl, XrayError as RpcError
 from .xray import API_PORT, SUB_PORT
@@ -424,7 +423,7 @@ class Bot:
         if not owner or self.app is None:
             return
         saved = dict(self.update_notice)
-        text = self.update_notice_text()
+        text = self.update_notice_html()
         if not text:
             return
         try:
@@ -432,6 +431,20 @@ class Bot:
         except Exception as exc:
             self.update_notice = saved
             log.debug("the update notice did not reach the owner: %s", exc)
+
+    def update_notice_html(self) -> str:
+        from .ui import esc, ref_link
+
+        data = self.update_notice
+        if not data:
+            return ""
+        self.update_notice = {}
+        t = self.tr()
+        commit = str(data.get("commit") or data.get("to") or "")[:12]
+        linked = ref_link(commit)
+        if data.get("healthy"):
+            return t("UPD_NOTICE_VERIFIED", commit=linked, state=esc(str(data.get("state") or "active")))
+        return t("UPD_NOTICE_BROKEN", commit=linked)
 
     def update_notice_text(self) -> str:
         data = self.update_notice
@@ -1023,12 +1036,17 @@ class Bot:
                 preview = await self.updater.preview(action)
             except UpdateError as exc:
                 self.update_error = exc.message
+            repo = str(self.update_info.get("repo") or "i-execute/OBHOD")
             branch = str(self.update_info.get("branch") or "")
             if action == "commit":
+                from .ui import esc, ref_link
+
                 commit = str(self.update_info.get("remote") or t("UI_NOT_SET"))
-                body = t("UPD_CONFIRM_COMMIT", branch=branch, commit=code(commit))
+                body = t("UPD_CONFIRM_COMMIT", branch=esc(branch), commit=ref_link(commit, repo))
                 target = "upd:commit:go"
             else:
+                from .ui import ref_link
+
                 tag = str(self.update_info.get("release") or "")
                 if not tag:
                     reason = str(self.update_info.get("release_error") or t("UI_NONE"))
@@ -1038,7 +1056,7 @@ class Bot:
                         screens.update_screen(self.view(error=t("UPD_NO_RELEASE", reason=reason)), self.update_info),
                     )
                     return
-                body = t("UPD_CONFIRM_RELEASE", tag=code(tag))
+                body = t("UPD_CONFIRM_RELEASE", tag=ref_link(tag, repo))
                 target = "upd:release:go"
             await self.render(
                 chat_id,

@@ -12,6 +12,10 @@ from . import i18n, icons
 MAX_BUTTONS = 18
 COPY_TEXT_LIMIT = 256
 MAX_CALLBACK = 64
+DEFAULT_REPO = "i-execute/OBHOD"
+SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.]*$")
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 SEP = " · "
 _ICONS = False
@@ -45,12 +49,42 @@ def bold(value: object) -> str:
     return f"<b>{esc(value)}</b>"
 
 
+def bold_html(body: str) -> str:
+    return f"<b>{body}</b>"
+
+
 def muted(value: object) -> str:
     return f'<span style="color: #8a8a8a">{esc(value)}</span>'
 
 
+def muted_html(body: str) -> str:
+    return f'<span style="color: #8a8a8a">{body}</span>'
+
+
 def chip(value: object) -> str:
     return f"<mark>{esc(value)}</mark>"
+
+
+def chip_html(body: str) -> str:
+    return f"<mark>{body}</mark>"
+
+
+def link(label: object, url: str) -> str:
+    return f'<a href="{esc(url)}">{esc(label)}</a>'
+
+
+def ref_link(ref: object, repo: object = DEFAULT_REPO) -> str:
+    token = str(ref or "").strip()
+    if not token:
+        return ""
+    slug = str(repo or DEFAULT_REPO).strip()
+    if not REPO_RE.match(slug):
+        slug = DEFAULT_REPO
+    if SHA_RE.match(token):
+        return link(token[:12], f"https://github.com/{slug}/commit/{token}")
+    if TAG_RE.match(token):
+        return link(token, f"https://github.com/{slug}/releases/tag/{token}")
+    return esc(token)
 
 
 @dataclass
@@ -236,12 +270,12 @@ def screen(
 
 def status_line(connected: bool, running: bool, installed: bool, lang: str = i18n.DEFAULT_LANGUAGE) -> str:
     if not connected:
-        return chip(ico("fail", "") + i18n.t("STATUS_NOT_CONNECTED", lang))
+        return chip_html(ico("fail", "") + esc(i18n.t("STATUS_NOT_CONNECTED", lang)))
     if not installed:
-        return chip(ico("warn", "") + i18n.t("STATUS_NOT_INSTALLED", lang))
+        return chip_html(ico("warn", "") + esc(i18n.t("STATUS_NOT_INSTALLED", lang)))
     if running:
-        return chip(ico("ok", "") + i18n.t("STATUS_RUNNING", lang))
-    return chip(ico("stop", "") + i18n.t("STATUS_STOPPED", lang))
+        return chip_html(ico("ok", "") + esc(i18n.t("STATUS_RUNNING", lang)))
+    return chip_html(ico("stop", "") + esc(i18n.t("STATUS_STOPPED", lang)))
 
 
 def count_buttons(html: str) -> int:

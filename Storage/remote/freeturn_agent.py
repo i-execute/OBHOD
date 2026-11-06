@@ -542,6 +542,29 @@ def sanitize(payload):
 
 
 def run_tool(argv, timeout=GUARD_TIMEOUT):
+    if argv and sandboxed_host():
+        systemd_cmd = [
+            "systemd-run",
+            "--pipe",
+            "--wait",
+            "--quiet",
+            "--collect",
+            "-p",
+            "WorkingDirectory=/",
+            "-E",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "-E",
+            "HOME=/root",
+            "-E",
+            "LANG=C.UTF-8",
+            "-E",
+            "LC_ALL=C.UTF-8",
+        ] + list(argv)
+        try:
+            escaped = subprocess.run(systemd_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            return int(escaped.returncode or 0), (escaped.stdout or b"").decode("utf-8", "replace").strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
     try:
         done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -1266,11 +1289,33 @@ def main(argv):
             tail = (text or "").strip().splitlines()[-3:]
             raise AgentError("internal", "the install script returned no answer: %s" % " | ".join(item[:160] for item in tail), stage)
         body = sanitize(payload)
+        if command == "apply" and body["result"] == "ok" and os.geteuid() == 0:
+            ensure_apply_port_open(flags, body)
         emit(body["result"], body["data"], body.get("code", ""), body.get("msg", ""), body.get("stage", stage), body["logs"])
         return 0 if body["result"] == "ok" else 1
     except AgentError as exc:
         emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
         return 1
+
+
+def ensure_apply_port_open(flags, body):
+    raw_port = str(flags.get("listen-port", "") or (body.get("data") or {}).get("config", {}).get("listen_port", "") or "").strip()
+    if not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
+        return
+    port = int(raw_port)
+    mode = str(flags.get("mode", "") or (body.get("data") or {}).get("config", {}).get("mode", "udp") or "udp").strip().lower()
+    proto = "tcp" if mode == "tcp" else "udp"
+    backend = guard_backend()
+    if not backend:
+        return
+    found_mode, _rules = guard_status(backend, port, [proto])
+    if found_mode in {"open", "vk"}:
+        return
+    if backend == "ufw":
+        run_tool(["ufw", "allow", "%d/%s" % (port, proto)])
+    elif backend == "firewalld":
+        run_tool(["firewall-cmd", "--add-port=%d/%s" % (port, proto)])
+        run_tool(["firewall-cmd", "--permanent", "--add-port=%d/%s" % (port, proto)])
 
 
 if __name__ == "__main__":

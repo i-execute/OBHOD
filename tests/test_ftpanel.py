@@ -244,7 +244,13 @@ def test_client_link_is_completed_for_the_transport(tmp_path: Path) -> None:
 
     data = decode_link(finished)
     assert data["mode"] == "tcp"
-    assert data["transport"] == "udp"
+    assert data["transport"] == "tcp"
+    panel.remember_link("owner", finished)
+    panel.link = finished
+    panel.cycle("transport")
+    assert panel.draft.transport == "udp"
+    assert decode_link(panel.state.links["owner"])["transport"] == "udp"
+    assert decode_link(panel.link)["transport"] == "udp"
     assert panel._finish_link("garbage") == ""
 
 
@@ -321,4 +327,14 @@ def test_home_exposes_restart_stop_and_uninstall_when_installed_and_normalizes_u
     run(panel.route(1, 0, "ft:check"))
     assert panel.draft.version == "latest"
     assert panel.draft.check() is panel.draft
+
+
+def test_fw_confirm_screen_has_no_double_escaped_html(tmp_path: Path) -> None:
+    bot, panel, _control = panel_for(tmp_path)
+    panel.state.config.listen_port = 56000
+    run(panel.route(1, 0, "ft:fw:vk"))
+    html = str(bot.rendered[-1])
+    assert "&lt;code" not in html
+    assert "56000" in html
+
 

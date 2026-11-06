@@ -197,6 +197,10 @@ def test_interactive_wizard_dry_run_never_touches_disk(tmp_path: Path, monkeypat
     env_file = tmp_path / "obhod.env"
     keys = iter(
         [
+            "down",
+            "down",
+            "down",
+            "down",
             "enter",
             "space",
             "down",
@@ -240,6 +244,25 @@ def test_interactive_wizard_dry_run_never_touches_disk(tmp_path: Path, monkeypat
     assert not env_file.exists()
     assert "dry run" in out
     assert setup.g.tl in out
+
+
+def test_full_wipe_nuke_requires_explicit_confirmation_and_supports_preview(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    cancel_keys = iter(["end", "enter", "enter"])
+    monkeypatch.setattr(setup, "read_key", lambda stream: next(cancel_keys))
+    monkeypatch.setattr(setup, "has_tty", lambda: True)
+    monkeypatch.setattr(setup, "tty_stream", lambda: _FakeStream())
+    monkeypatch.setattr(setup, "fd_is_tty", lambda fd: True)
+    monkeypatch.setattr(setup, "COLOR", True)
+    assert setup.main([]) == 130
+    capsys.readouterr()
+
+    preview_keys = iter(["end", "enter", "down", "down", "space", "enter"])
+    monkeypatch.setattr(setup, "read_key", lambda stream: next(preview_keys))
+    assert setup.main([]) == 0
+    setup.COLOR = False
+    out = capsys.readouterr().out
+    assert "nuke" in out
+    assert "dry run" in out
 
 
 def test_a_missing_sudo_does_not_crash_the_checks(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

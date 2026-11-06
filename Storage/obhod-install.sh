@@ -18,7 +18,7 @@ PURGE_ALL=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    install|uninstall|status|restart|stop|start|logs|update|reinstall) CMD="$1" ;;
+    install|uninstall|nuke|status|restart|stop|start|logs|update|reinstall|help) CMD="$1" ;;
     --dev) DEV=1 ;;
     --yes|-y) ASSUME_YES=1 ;;
     --prefix=*) PREFIX="${1#*=}" ;;
@@ -210,10 +210,12 @@ summary_box() {
   kv "service" "$service_state"
   kv "xray" "$(core_xray_summary)"
   kv "freeturn" "$(core_freeturn_summary)"
+  kv "command" "$CLI_BIN"
   printf '\n'
   if [ "$DEV" = "1" ]; then
     kv "run it" "OBHOD_ENV=$ENV_FILE $PREFIX/venv/bin/python -m BOT"
   else
+    kv "manage" "obhod"
     kv "logs" "journalctl -u obhod -f"
     kv "open" "/start or /help in the bot from the admin account"
   fi
@@ -236,11 +238,13 @@ plural_files() {
   fi
 }
 
+CLI_BIN="/usr/local/bin/obhod"
 if [ "$DEV" = "1" ]; then
   PREFIX="${HOME}/.obhod/app"
   CONF_DIR="${HOME}/.obhod/etc"
   ENV_FILE="$CONF_DIR/obhod.env"
   STATE_DIR="${HOME}/.obhod/state"
+  CLI_BIN="${HOME}/.obhod/bin/obhod"
   SERVICE=""
 fi
 
@@ -626,6 +630,32 @@ install_payload() {
   if [ -f "$PAYLOAD_DIR/get.sh" ] && [ -n "$SERVICE" ]; then
     install -m 700 "$PAYLOAD_DIR/get.sh" /usr/local/bin/obhod-get 2>/dev/null || true
   fi
+  install_cli
+}
+
+install_cli() {
+  [ -n "${CLI_BIN:-}" ] || return 0
+  local cli_dir py_cmd
+  cli_dir="$(dirname "$CLI_BIN")"
+  mkdir -p "$cli_dir" 2>/dev/null || return 0
+  py_cmd="$(command -v "$PYTHON_BIN" 2>/dev/null || command -v python3 2>/dev/null || printf 'python3')"
+  {
+    printf '\043!/usr/bin/env bash\n'
+    cat <<EOF
+set -euo pipefail
+export OBHOD_PREFIX="\${OBHOD_PREFIX:-$PREFIX}"
+export OBHOD_ENV_FILE="\${OBHOD_ENV_FILE:-$ENV_FILE}"
+export OBHOD_STATE_DIR="\${OBHOD_STATE_DIR:-$STATE_DIR}"
+for candidate in "\$OBHOD_PREFIX/Storage/obhod_setup.py" "/opt/obhod-src/Storage/obhod_setup.py"; do
+  if [ -f "\$candidate" ]; then
+    exec "$py_cmd" "\$candidate" "\$@"
+  fi
+done
+printf 'error: OBHOD TUI not found at %s/Storage/obhod_setup.py\n' "\$OBHOD_PREFIX" >&2
+exit 1
+EOF
+  } > "$CLI_BIN"
+  chmod 755 "$CLI_BIN" 2>/dev/null || true
 }
 
 INDEX_URL="${PIP_INDEX_URL:-https://pypi.org/simple/}"
@@ -739,6 +769,30 @@ heal_system() {
       chmod 700 /opt/free-turn-proxy/auth 2>/dev/null || true
       if [ -f /opt/free-turn-proxy/auth/clients.json ]; then
         chmod 600 /opt/free-turn-proxy/auth/clients.json 2>/dev/null || true
+      fi
+    fi
+    if [ -f /opt/free-turn-proxy/install.conf ]; then
+      local ft_port ft_mode ft_proto
+      ft_port="$(awk -F= '$1=="LISTEN_PORT" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
+      ft_mode="$(awk -F= '$1=="MODE" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
+      ft_proto="udp"
+      [ "$ft_mode" = "tcp" ] && ft_proto="tcp"
+      case "$ft_port" in
+        ''|*[!0-9]*) ft_port="" ;;
+      esac
+      if [ -n "$ft_port" ] && [ "$ft_port" -ge 1 ] && [ "$ft_port" -le 65535 ]; then
+        if ! (command -v iptables >/dev/null 2>&1 && iptables -S OBHOD-FT >/dev/null 2>&1); then
+          if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+            if ! ufw status 2>/dev/null | grep -qE "^${ft_port}(/${ft_proto})?[[:space:]]"; then
+              ufw allow "${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in ufw" || true
+            fi
+          elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null || true)" = "running" ]; then
+            if ! firewall-cmd --query-port="${ft_port}/${ft_proto}" >/dev/null 2>&1; then
+              firewall-cmd --add-port="${ft_port}/${ft_proto}" >/dev/null 2>&1 || true
+              firewall-cmd --permanent --add-port="${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in firewalld" || true
+            fi
+          fi
+        fi
       fi
     fi
   fi
@@ -974,8 +1028,138 @@ cmd_uninstall() {
     systemctl daemon-reload || true
   fi
   rm -rf "$PREFIX"
+  if [ "$DEV" = "1" ]; then
+    rm -f "$CLI_BIN" 2>/dev/null || true
+  elif [ ! -f /opt/obhod-src/Storage/obhod_setup.py ]; then
+    rm -f /usr/local/bin/obhod 2>/dev/null || true
+  fi
   say "removed $PREFIX"
   say "kept $ENV_FILE and $STATE_DIR, delete them manually to forget credentials"
+}
+
+cmd_nuke() {
+  if [ "$DEV" = "0" ]; then
+    require_root
+  fi
+  ui_init
+  local stopped
+  stopped="$(kill_leftovers)"
+  if [ -n "$stopped" ]; then
+    say "$stopped"
+  fi
+  if [ "$DEV" = "1" ]; then
+    rm -rf "$PREFIX" "$STATE_DIR"
+    rm -f "$ENV_FILE" "$CLI_BIN"
+    rmdir "$(dirname "$ENV_FILE")" 2>/dev/null || true
+    rmdir "$(dirname "$CLI_BIN")" 2>/dev/null || true
+    rmdir "${HOME}/.obhod" 2>/dev/null || true
+    say "wiped everything in dev mode ($PREFIX, $ENV_FILE, $STATE_DIR, $CLI_BIN)"
+    return 0
+  fi
+  local ft_port=""
+  if [ -f /opt/free-turn-proxy/install.conf ]; then
+    ft_port="$(awk -F= '$1=="LISTEN_PORT" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
+    case "$ft_port" in
+      ''|*[!0-9]*) ft_port="" ;;
+    esac
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    local unit
+    for unit in obhod.service obhod-self-update.service obhod-self-update-timer.timer obhod-honeypot.service xray.service free-turn-proxy.service wg-quick@ft-wg0.service; do
+      systemctl stop "$unit" >/dev/null 2>&1 || true
+      systemctl disable "$unit" >/dev/null 2>&1 || true
+    done
+  fi
+  if [ -f /opt/free-turn-proxy/install.sh ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 60 bash /opt/free-turn-proxy/install.sh --uninstall --yes </dev/null >/dev/null 2>&1 || true
+    else
+      bash /opt/free-turn-proxy/install.sh --uninstall --yes </dev/null >/dev/null 2>&1 || true
+    fi
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    docker rm -f free-turn-proxy >/dev/null 2>&1 || true
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    ip link del ft-wg0 >/dev/null 2>&1 || true
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    if [ -n "$ft_port" ]; then
+      local pr
+      for pr in udp tcp; do
+        while iptables -C INPUT -p "$pr" --dport "$ft_port" -j OBHOD-FT 2>/dev/null; do
+          iptables -D INPUT -p "$pr" --dport "$ft_port" -j OBHOD-FT 2>/dev/null || break
+        done
+        while iptables -C INPUT -p "$pr" --dport "$ft_port" -j ACCEPT 2>/dev/null; do
+          iptables -D INPUT -p "$pr" --dport "$ft_port" -j ACCEPT 2>/dev/null || break
+        done
+      done
+    fi
+    if iptables -S OBHOD-FT >/dev/null 2>&1; then
+      iptables -F OBHOD-FT >/dev/null 2>&1 || true
+      iptables -X OBHOD-FT >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ -n "$ft_port" ]; then
+    if command -v ufw >/dev/null 2>&1; then
+      ufw --force delete allow "${ft_port}/udp" >/dev/null 2>&1 || true
+      ufw --force delete allow "${ft_port}/tcp" >/dev/null 2>&1 || true
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null || true)" = "running" ]; then
+      firewall-cmd --remove-port="${ft_port}/udp" >/dev/null 2>&1 || true
+      firewall-cmd --permanent --remove-port="${ft_port}/udp" >/dev/null 2>&1 || true
+      firewall-cmd --remove-port="${ft_port}/tcp" >/dev/null 2>&1 || true
+      firewall-cmd --permanent --remove-port="${ft_port}/tcp" >/dev/null 2>&1 || true
+    fi
+  fi
+  rm -f "$SERVICE" \
+    /etc/systemd/system/obhod.service \
+    /etc/systemd/system/obhod-self-update.service \
+    /etc/systemd/system/obhod-self-update-timer.timer \
+    /etc/systemd/system/obhod-honeypot.service \
+    /etc/systemd/system/free-turn-proxy.service \
+    /etc/systemd/system/xray.service \
+    /etc/systemd/system/xray@.service 2>/dev/null || true
+  rm -rf /etc/systemd/system/obhod.service.d \
+    /etc/systemd/system/free-turn-proxy.service.d \
+    /etc/systemd/system/xray.service.d \
+    /etc/systemd/system/xray@.service.d 2>/dev/null || true
+  rm -f /etc/fail2ban/jail.d/obhod*.local \
+    /etc/fail2ban/filter.d/obhod*.conf \
+    /etc/fail2ban/action.d/obhod*.conf \
+    /etc/ssh/sshd_config.d/99-obhod.conf 2>/dev/null || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl reload fail2ban >/dev/null 2>&1 || true
+    systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
+  fi
+  rm -f /usr/local/bin/obhod \
+    /usr/local/bin/obhod-get \
+    /usr/local/bin/free-turn-proxy \
+    /usr/local/bin/freeturn \
+    /usr/local/bin/xray \
+    /etc/wireguard/ft-wg0.conf \
+    /etc/sysctl.d/99-freeturn.conf \
+    /etc/sysctl.d/99-free-turn-proxy.conf \
+    "$ENV_FILE" 2>/dev/null || true
+  rm -rf "$PREFIX" \
+    /opt/obhod-src \
+    /usr/local/share/obhod-src \
+    /var/lib/obhod-src \
+    /var/tmp/obhod-stage \
+    /opt/free-turn-proxy \
+    /usr/local/etc/xray \
+    /usr/local/share/xray \
+    /var/lib/xray-manager \
+    /var/log/xray \
+    "$STATE_DIR" \
+    "${LOG_DIR:-/var/log/obhod}" \
+    /etc/obhod \
+    /root/.goygram 2>/dev/null || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl reset-failed >/dev/null 2>&1 || true
+  fi
+  say "wiped OBHOD, Xray-core, FreeTurn, configs, state, logs and units"
 }
 
 kill_leftovers() {
@@ -1076,6 +1260,7 @@ commands:
   update      copy the payload again and reinstall dependencies
   reinstall   delete the payload, the unit and the running processes, then install again
   uninstall   remove the payload and the unit
+  nuke        completely wipe OBHOD, Xray-core, FreeTurn, configs, state and units
   status      show unit state and file locations
   start       start the unit
   stop        stop the unit
@@ -1123,6 +1308,7 @@ if [ "${OBHOD_LIB:-0}" != "1" ]; then
     install) cmd_install ;;
     update) cmd_update ;;
     uninstall) cmd_uninstall ;;
+    nuke) cmd_nuke ;;
     reinstall) cmd_reinstall ;;
     status) cmd_status ;;
     start) cmd_service start ;;

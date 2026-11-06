@@ -7,20 +7,23 @@ from . import cores, i18n, xscreens
 from .guard import BanState, SshState
 from .store import State
 from .ui import (
-
+    DEFAULT_REPO,
     bold,
+    bold_html,
     bullet_list,
     button,
     code,
+    esc,
     input_row,
     fitted,
     details,
-
     heading,
     inline_button,
     muted,
+    muted_html,
     pre,
     quote,
+    ref_link,
     row,
     screen,
     table,
@@ -412,7 +415,7 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
         if flags.get("path"):
             blocks.append(quote(muted(t("UPD_RO_MOUNT", path=str(flags.get("path")), fstype=str(flags.get("fstype") or t("UI_NONE")), options=str(flags.get("options") or "")))))
         if protected.get("inside") == "yes":
-            blocks.append(quote(muted(t("UPD_PROTECTED", unit=code("obhod.service")))))
+            blocks.append(quote(muted_html(t("UPD_PROTECTED", unit=bold("obhod.service")))))
         if facts.get("can_update"):
             blocks.append(quote(muted(t("UPD_RETRY_HINT"))))
         else:
@@ -424,19 +427,26 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
             row(button(t("UI_HOME"), "nav:home", icon="home")),
         ]
         return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="update")
+    repo = str(info.get("repo") or DEFAULT_REPO)
     branch = str(info.get("branch") or "")
     behind = int(info.get("behind", 0) or 0)
-    behind_text = t("UPD_BEHIND", count=code(behind), branch=branch) if behind else t("UPD_UP_TO_DATE", branch=branch)
+    behind_text = t("UPD_BEHIND", count=code(behind), branch=esc(branch)) if behind else esc(t("UPD_UP_TO_DATE", branch=branch))
     release = str(info.get("release") or "")
     release_text = release or t("UPD_NO_RELEASE", reason=str(info.get("release_error") or t("UI_NONE")))
+    local_commit = str(info.get("commit") or "")
+    local_subj = str(info.get("subject") or "")
+    commit_cell = (ref_link(local_commit, repo) + (" " + esc(local_subj) if local_subj else "")) if local_commit else code(t("UI_NOT_SET"))
+    local_tag = str(info.get("tag") or "")
+    tag_cell = ref_link(local_tag, repo) if local_tag else code(t("UI_NOT_SET"))
+    release_cell = ref_link(release, repo) if release else code(release_text)
     pairs = [
         ("info", t("UPD_LABEL_SOURCE"), code(info.get("root") or t("UI_NOT_SET"))),
         ("info", t("UPD_LABEL_BRANCH"), code(branch or t("UI_NOT_SET"))),
-        ("info", t("UPD_LABEL_COMMIT"), code("%s %s" % (info.get("commit") or t("UI_NOT_SET"), info.get("subject") or ""))),
-        ("tag", t("UPD_LABEL_TAG"), code(info.get("tag") or t("UI_NOT_SET"))),
+        ("info", t("UPD_LABEL_COMMIT"), commit_cell),
+        ("tag", t("UPD_LABEL_TAG"), tag_cell),
         ("info", t("UPD_LABEL_CHANGES"), code(info.get("dirty", 0))),
         ("info", t("UPD_LABEL_BEHIND"), behind_text),
-        ("info", t("UPD_LABEL_RELEASE"), code(release_text)),
+        ("info", t("UPD_LABEL_RELEASE"), release_cell),
         ("info", t("UPD_LABEL_SERVICE"), code(info.get("unit_state") or t("UI_NONE"))),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
@@ -450,7 +460,7 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
 def update_confirm_screen(view: View, info: dict[str, Any], preview: dict[str, Any], body: str, action: str) -> Any:
     t = view.tr()
     blocks = banner(view, t)
-    blocks.append(quote(bold(body)))
+    blocks.append(quote(bold_html(body) if "<a " in body else bold(body)))
     commits = int(preview.get("commits", 0) or 0)
     if commits:
         blocks.append(f"<p>{t('UPD_PREVIEW_COUNT', count=code(commits), files=code(preview.get('total', 0)))}</p>")
@@ -469,6 +479,7 @@ def update_confirm_screen(view: View, info: dict[str, Any], preview: dict[str, A
 def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any]) -> Any:
     t = view.tr()
     blocks = banner(view, t)
+    repo = str(info.get("repo") or DEFAULT_REPO)
     ok = bool(result.get("ok"))
     commit = str(result.get("target") or "")
     subject = str(result.get("subject") or "")
@@ -476,11 +487,11 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
     if ok and not message:
         message = t("UPD_DONE_PLAIN")
     if ok:
-        body = t("UPD_DONE", commit=code(commit), subject=subject or code(message))
-        blocks.append(quote(bold(body)))
+        body = t("UPD_DONE", commit=ref_link(commit, repo), subject=esc(subject or message))
+        blocks.append(quote(bold_html(body)))
     else:
-        prefix = str(t("UPD_FAILED", error="")).rstrip(": ").strip()
-        blocks.append(quote(f"<b>{prefix}</b> {body_text(message or t('UPD_NOTHING_DONE'))}"))
+        prefix = esc(str(t("UPD_FAILED", error="")).rstrip(": ").strip())
+        blocks.append(quote(bold_html(f"{prefix} {esc(message or t('UPD_NOTHING_DONE'))}")))
     failure = dict(result.get("failure") or {})
     if not ok and failure.get("copy_ok"):
         blocks.append(quote(bold(t("UPD_COPY_DONE"))))
@@ -489,9 +500,9 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
         blocks.append(f"<p>{bold(t('UPD_STEPS_DONE'))}</p>")
         blocks.append(bullet_list(steps))
     if ok and message == "already up to date":
-        blocks.append(quote(muted(t("UPD_ALREADY", commit=code(commit)))))
+        blocks.append(quote(muted_html(t("UPD_ALREADY", commit=ref_link(commit, repo)))))
     if result.get("rollback"):
-        blocks.append(quote(muted(t("UPD_ROLLBACK", commit=code(str(result.get("source") or ""))))))
+        blocks.append(quote(muted_html(t("UPD_ROLLBACK", commit=ref_link(str(result.get("source") or ""), repo)))))
     if ok and result.get("restarted"):
         blocks.append(quote(muted(t("UPD_RESTART"))))
     if result.get("log"):

@@ -833,7 +833,8 @@ class Menu:
             label = paint(item.label, *label_style)
             suffix = ""
             if item.tag:
-                suffix += "  " + pill(item.tag, theme.badge_ok if chosen else theme.chip)
+                tag_style = theme.badge_bad if item.tag == "danger" else (theme.badge_ok if chosen else theme.chip)
+                suffix += "  " + pill(item.tag, tag_style)
             if focused and not chosen:
                 suffix += "  " + paint("[Space]", theme.accent)
             row_body = pointer + " " + radio + "  " + label + suffix
@@ -1304,6 +1305,7 @@ class Setup:
     def __init__(self) -> None:
         self.action = "install"
         self.service_cmd = "restart"
+        self.quick = True
         self.prefix = os.environ.get("OBHOD_PREFIX", DEFAULT_PREFIX)
         self.state_dir = os.environ.get("OBHOD_STATE_DIR", DEFAULT_STATE)
         self.env_file = os.environ.get("OBHOD_ENV_FILE", "") or os.environ.get("OBHOD_ENV", "") or DEFAULT_ENV
@@ -1312,16 +1314,13 @@ class Setup:
         self.python_choices = pythons
         self.dev = False
         self.skip_deps = False
-        self.keep_creds = False
+        self.keep_creds = True
         self.purge_all = False
         self.dry_run = False
         self.credentials = {"BOT_TOKEN": "", "API_ID": "", "API_HASH": "", "ADMIN_ID": ""}
         self.notes: list[str] = []
         self.started = time.time()
         self.limit = width()
-        existing = self.read_env_file()
-        if all(existing.get(k) for k in ("BOT_TOKEN", "API_ID", "API_HASH", "ADMIN_ID")):
-            self.keep_creds = True
 
     def apply_dev_defaults(self, enabled: bool) -> None:
         home = str(Path.home())
@@ -1418,26 +1417,54 @@ class Setup:
             return True, "installed (%s%s, auto-healed)" % (state or "stopped", tun)
         return True, "not installed yet (install in bot)"
 
+    def probe_obhod(self) -> tuple[bool, str]:
+        if self.dev:
+            if Path(self.prefix, "BOT").is_dir():
+                return True, "installed (dev)"
+            return True, "not installed"
+        state = ""
+        if shutil.which("systemctl"):
+            try:
+                res = subprocess.run(
+                    ["systemctl", "is-active", "obhod.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                state = (res.stdout or "").strip()
+            except (OSError, subprocess.SubprocessError):
+                state = ""
+        if state == "active":
+            return True, "active"
+        if Path(self.prefix, "BOT").is_dir() or Path(self.env_file).is_file():
+            return True, "installed (%s)" % (state or "stopped")
+        return True, "not installed"
+
     def cores_badge_line(self) -> str:
+        _ok_o, o_note = self.probe_obhod()
         _ok_x, x_note = self.probe_xray()
         _ok_f, f_note = self.probe_freeturn()
+        o_style = theme.badge_ok if o_note.startswith("active") else (theme.badge_warn if o_note.startswith("installed") else theme.chip)
         x_style = theme.badge_ok if x_note.startswith("active") else (theme.badge_warn if x_note.startswith("installed") else theme.chip)
         f_style = theme.badge_ok if f_note.startswith("active") else (theme.badge_warn if f_note.startswith("installed") else theme.chip)
+        o_short = "active" if o_note.startswith("active") else ("installed" if o_note.startswith("installed") else "new")
         x_short = "active" if x_note.startswith("active") else ("installed" if x_note.startswith("installed") else "in-bot")
         f_short = "active" if f_note.startswith("active") else ("installed" if f_note.startswith("installed") else "in-bot")
         return (
-            pill("Xray-core: " + x_short, x_style)
+            pill("OBHOD: " + o_short, o_style)
+            + "  "
+            + pill("Xray-core: " + x_short, x_style)
             + "  "
             + pill("FreeTurn: " + f_short, f_style)
         )
 
     def banner(self) -> None:
         self.limit = width()
-        head = paint(g.dot_on, theme.accent) + " " + paint("OBHOD", theme.title) + paint(" " + g.half + " Setup & Self-Heal", theme.subtitle)
+        head = paint(g.dot_on, theme.accent) + " " + paint("OBHOD", theme.title) + paint(" " + g.half + " Control Center", theme.subtitle)
         rows = [
             paint("Telegram control panel for Xray-core & FreeTurn", theme.bright),
             self.cores_badge_line(),
-            paint("Interactive SSH setup wizard  " + g.half + "  arrows to move, space to select, enter to confirm", theme.muted),
+            paint("Command: obhod  " + g.half + "  arrows to move, space to select, enter to confirm", theme.muted),
         ]
         panel(head, rows, self.limit, theme.frame, self.host_label())
 
@@ -1482,27 +1509,34 @@ class Setup:
 
     def ask_action(self) -> bool:
         installed = Path(self.prefix, "BOT").is_dir() or Path(self.env_file).is_file()
-        tag_install = "upgrade" if installed else "recommended"
+        tag_install = "self-heal" if installed else "recommended"
         menu = Menu(
-            paint("1", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Select Action", theme.title),
+            paint("1", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Control Center", theme.title),
             [
-                RadioOption("install", "Install / Upgrade & Self-Heal", "Install OBHOD, repair permissions/units, and preserve Xray-core & FreeTurn state", tag_install),
-                RadioOption("update", "Update payload & repair", "Refresh BOT, remote agents, and Python venv while healing Xray-core & FreeTurn units"),
-                RadioOption("reinstall", "Clean reinstall", "Stop leftover processes, rebuild OBHOD prefix, and keep Xray-core & FreeTurn configs"),
-                RadioOption("status", "Service & cores health", "Inspect obhod.service, Xray-core, FreeTurn (ft-wg0), config file, and Python venv"),
-                RadioOption("service", "Manage running service", "Restart, start, stop, or view recent journal logs of obhod.service"),
-                RadioOption("uninstall", "Uninstall OBHOD", "Stop and remove obhod.service and delete the application prefix"),
+                RadioOption("install", "Quick Install / Self-Heal", "One-step install or repair of OBHOD while preserving Xray-core & FreeTurn", tag_install),
+                RadioOption("update", "Quick Update & Repair", "Refresh BOT, remote agents, and Python venv while healing Xray-core & FreeTurn", "fast" if installed else ""),
+                RadioOption("status", "Health & Status", "Immediately inspect obhod.service, Xray-core, FreeTurn (ft-wg0), config, and venv"),
+                RadioOption("service", "Service Control", "Restart, start, stop, or read recent journal logs of obhod.service"),
+                RadioOption("custom", "Custom / Advanced Setup", "Configure dry-run preview, ~/.obhod dev mode, custom paths, credentials, or clean rebuild"),
+                RadioOption("uninstall", "Uninstall OBHOD Only", "Remove obhod.service and /opt/obhod while keeping Xray-core & FreeTurn intact"),
+                RadioOption("nuke", "Full Wipe (Delete Everything)", "Completely remove OBHOD, Xray-core, FreeTurn, configs, keys, state, logs, units, and obhod CLI", "danger"),
             ],
-            subtitle="Use Up/Down arrows to move, Space to mark your choice, and Enter to continue.",
-            step_note=paint("step 1", theme.muted),
+            subtitle="Use Up/Down arrows to move, Space to mark your choice, and Enter to run.",
+            step_note=paint("main menu", theme.muted),
         )
         choice = menu.ask(0)
         if choice < 0:
             return False
-        self.action = menu.items[choice].key
+        picked = menu.items[choice].key
+        if picked == "custom":
+            self.action = "install"
+            self.quick = False
+            return True
+        self.action = picked
+        self.quick = True
         if self.action == "service":
             sub = Menu(
-                paint("1b", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Service Command", theme.title),
+                paint("2", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Service Control", theme.title),
                 [
                     RadioOption("restart", "Restart service", "Restart obhod.service immediately via systemctl"),
                     RadioOption("start", "Start service", "Start obhod.service if currently stopped"),
@@ -1518,8 +1552,54 @@ class Setup:
             self.service_cmd = sub.items[sub_idx].key
         return True
 
+    def ask_uninstall_mode(self) -> bool:
+        sub = Menu(
+            paint("2", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Uninstall OBHOD Panel", theme.title),
+            [
+                RadioOption("keep", "Remove OBHOD panel only (keep state & keys)", "Delete obhod.service and /opt/obhod; keep obhod.env, state, Xray-core & FreeTurn", "safe"),
+                RadioOption("purge", "Remove OBHOD panel + delete credentials & state", "Also delete obhod.env and /var/lib/obhod (Xray-core & FreeTurn binaries remain)"),
+                RadioOption("cancel", "Cancel", "Exit without changing anything"),
+            ],
+            subtitle="Select how OBHOD should be uninstalled.",
+            step_note=paint("uninstall", theme.muted),
+        )
+        idx = sub.ask(0)
+        if idx < 0 or sub.items[idx].key == "cancel":
+            return False
+        self.purge_all = sub.items[idx].key == "purge"
+        return True
+
+    def confirm_nuke(self) -> bool:
+        self.limit = width()
+        targets = [
+            mark(BAD) + " " + paint("OBHOD panel: obhod.service, /opt/obhod, /opt/obhod-src, /etc/obhod, /var/lib/obhod, /var/log/obhod, /usr/local/bin/obhod", theme.text),
+            mark(BAD) + " " + paint("Xray-core: xray.service, /usr/local/bin/xray, /usr/local/etc/xray, /usr/local/share/xray, /var/log/xray", theme.text),
+            mark(BAD) + " " + paint("FreeTurn: free-turn-proxy, docker container, ft-wg0 tunnel, /opt/free-turn-proxy, sysctl & firewall rules", theme.text),
+            mark(BAD) + " " + paint("Security drop-ins: obhod-honeypot, fail2ban obhod jails, 99-obhod.conf sshd drop-in, /root/.goygram", theme.text),
+        ]
+        panel("full system wipe targets", targets, self.limit, theme.bad, pill("DESTRUCTIVE", theme.badge_bad))
+        if not has_tty():
+            return False
+        sub = Menu(
+            paint("!", theme.bad, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Confirm Full Wipe", theme.title),
+            [
+                RadioOption("cancel", "Cancel - keep everything untouched", "Abort immediately without deleting any services, keys, or files", "safe default"),
+                RadioOption("wipe", "Yes - wipe OBHOD, Xray-core & FreeTurn completely", "Stop all units and permanently delete every binary, config, key, log, and directory above", "destructive"),
+                RadioOption("preview", "Preview wipe command only (dry run)", "Show the exact command that would execute without deleting anything", "dry run"),
+            ],
+            subtitle="Press Down + Space + Enter to confirm permanent deletion of everything.",
+            step_note=paint("danger", theme.bad),
+        )
+        idx = sub.ask(0)
+        if idx < 0 or sub.items[idx].key == "cancel":
+            return False
+        if sub.items[idx].key == "preview":
+            self.dry_run = True
+        self.purge_all = True
+        return True
+
     def ask_options(self) -> bool:
-        if self.action in ("status", "service"):
+        if self.quick or self.action in ("status", "service", "uninstall", "nuke"):
             return True
         options: list[CheckOption] = [
             CheckOption(
@@ -1536,42 +1616,40 @@ class Setup:
                 self.dev,
                 "no-root",
             ),
+            CheckOption(
+                "skip_deps",
+                "Skip Python dependencies",
+                "Copy application files without creating or updating the virtual environment",
+                self.skip_deps,
+                "offline",
+            ),
+            CheckOption(
+                "reinstall",
+                "Clean rebuild (reinstall)",
+                "Stop leftover processes and recreate the OBHOD prefix from scratch before installing",
+                self.action == "reinstall",
+                "clean",
+            ),
+            CheckOption(
+                "keep_creds",
+                "Reuse saved credentials automatically",
+                "Keep existing BOT_TOKEN, API_ID, API_HASH, and ADMIN_ID when already valid on disk",
+                self.keep_creds,
+                "fast",
+            ),
+            CheckOption(
+                "purge_all",
+                "Purge credentials & state directory",
+                "Also wipe obhod.env and the state directory during clean rebuild",
+                self.purge_all,
+                "destructive",
+            ),
         ]
-        if self.action in ("install", "update", "reinstall"):
-            options.append(
-                CheckOption(
-                    "skip_deps",
-                    "Skip Python dependencies",
-                    "Copy application files without creating or updating the virtual environment",
-                    self.skip_deps,
-                    "offline",
-                )
-            )
-        if self.action in ("install", "reinstall"):
-            options.append(
-                CheckOption(
-                    "keep_creds",
-                    "Reuse saved credentials automatically",
-                    "Keep existing BOT_TOKEN, API_ID, API_HASH, and ADMIN_ID when already valid on disk",
-                    self.keep_creds,
-                    "fast",
-                )
-            )
-        if self.action in ("reinstall", "uninstall"):
-            options.append(
-                CheckOption(
-                    "purge_all",
-                    "Purge credentials & state directory",
-                    "Also delete obhod.env and the state directory (wipes saved keys and client records)",
-                    self.purge_all,
-                    "destructive",
-                )
-            )
         check = CheckMenu(
             paint("2", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Setup Options", theme.title),
             options,
             subtitle="Move with Up/Down arrows, press Space to toggle options on or off, and Enter to confirm.",
-            step_note=paint("step 2", theme.muted),
+            step_note=paint("options", theme.muted),
         )
         picked = check.ask()
         if picked is None:
@@ -1584,12 +1662,16 @@ class Setup:
         self.skip_deps = bool(picked.get("skip_deps", False))
         self.keep_creds = bool(picked.get("keep_creds", False))
         self.purge_all = bool(picked.get("purge_all", False))
+        if picked.get("reinstall", False) or self.purge_all:
+            self.action = "reinstall"
+        else:
+            self.action = "install"
         if self.purge_all:
             self.keep_creds = False
         return True
 
     def ask_paths(self) -> bool:
-        if self.action == "service":
+        if self.quick or self.action in ("status", "service", "uninstall", "nuke"):
             return True
         fields = [
             Field("PREFIX", "app prefix", False, self.prefix, "Application payload directory (default /opt/obhod)"),
@@ -1862,11 +1944,12 @@ class Setup:
         if not has_tty():
             return "go"
         go_label = "Finish preview (no disk changes)" if self.dry_run else ("Run %s now" % cmd_label)
+        back_label = "Customize options, paths or credentials" if self.quick else "Adjust options or paths"
         menu = Menu(
             paint("6", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Confirm Execution", theme.title),
             [
                 RadioOption("go", go_label, "Proceed with the plan shown above", "ready"),
-                RadioOption("back", "Adjust options or paths", "Go back to Step 2 and modify options, paths, or credentials"),
+                RadioOption("back", back_label, "Open advanced options, paths, and credentials editor"),
                 RadioOption("stop", "Cancel and exit", "Quit immediately without running the installer"),
             ],
             subtitle="Press Enter to confirm, or select another option with Arrows + Space.",
@@ -1874,6 +1957,7 @@ class Setup:
         )
         choice = menu.ask(0)
         if choice == 1:
+            self.quick = False
             return "back"
         if choice != 0:
             return "stop"
@@ -1985,6 +2069,47 @@ class Setup:
         if not self.ask_action():
             self.finish(130)
             return 130
+        if self.action in ("status", "service"):
+            if self.action == "service" and not self.run_checks():
+                self.finish(2)
+                return 2
+            code = self.run_installer()
+            self.finish(code)
+            return code
+        if self.action == "uninstall":
+            if not self.ask_uninstall_mode():
+                self.finish(130)
+                return 130
+            if not self.run_checks():
+                self.finish(2)
+                return 2
+            code = self.run_installer()
+            self.finish(code)
+            return code
+        if self.action == "nuke":
+            if not self.confirm_nuke():
+                self.finish(130)
+                return 130
+            if not self.run_checks():
+                self.finish(2)
+                return 2
+            if self.dry_run:
+                cmd_preview = " ".join(shlex.quote(part) for part in self.installer_argv())
+                section(
+                    7,
+                    "Preview Command",
+                    [
+                        fact("would run", cmd_preview),
+                        paint("dry run active: nothing on disk was deleted", theme.muted),
+                    ],
+                    theme.accent,
+                    "dry run",
+                )
+                self.finish(0)
+                return 0
+            code = self.run_installer()
+            self.finish(code)
+            return code
         while True:
             if not self.ask_options():
                 self.finish(130)
@@ -2035,14 +2160,19 @@ class Setup:
                 "preview finished",
                 [
                     paint(g.check + " dry run completed with zero changes on disk", theme.accent, theme.bold),
-                    paint("launch the setup wizard again and leave Preview unchecked to apply", theme.muted),
+                    paint("run obhod again and leave Preview unchecked to apply", theme.muted),
                 ],
                 self.limit,
                 theme.accent,
             )
             return
         if code == 0:
-            if self.action == "uninstall":
+            if self.action == "nuke":
+                rows = [
+                    paint(g.check + " Full wipe complete: OBHOD, Xray-core & FreeTurn removed", theme.good, theme.bold),
+                    paint("all units, binaries, configs, state directories, logs, and /usr/local/bin/obhod were deleted", theme.muted),
+                ]
+            elif self.action == "uninstall":
                 rows = [
                     paint(g.check + " OBHOD has been removed", theme.good, theme.bold),
                     paint("state and credentials were " + ("deleted" if self.purge_all else "preserved on disk"), theme.muted),
@@ -2053,7 +2183,7 @@ class Setup:
                 rows = [
                     paint(g.check + " OBHOD is installed, verified, and ready", theme.good, theme.bold),
                     paint("open Telegram and send /start to manage Xray-core & FreeTurn", theme.muted),
-                    paint("live logs: journalctl -u obhod -f" if not self.dev else ("manual run: OBHOD_ENV=%s %s/venv/bin/python -m BOT" % (self.env_file, self.prefix)), theme.muted),
+                    paint("manage in SSH anytime: obhod   |   live logs: journalctl -u obhod -f" if not self.dev else ("manual run: OBHOD_ENV=%s %s/venv/bin/python -m BOT" % (self.env_file, self.prefix)), theme.muted),
                 ]
             panel("done in %.1fs" % elapsed, rows, self.limit, theme.good)
             return
@@ -2065,7 +2195,7 @@ class Setup:
             rows.append("")
             rows.extend(paint(clip(item, self.limit - 6), theme.muted) for item in self.notes[-5:])
         rows.append("")
-        rows.append(paint("address the issue above and run python3 Storage/obhod_setup.py again", theme.muted))
+        rows.append(paint("address the issue above and run obhod (or python3 Storage/obhod_setup.py) again", theme.muted))
         panel("stopped", rows, self.limit, theme.bad)
 
 
@@ -2075,7 +2205,7 @@ def reject_flags(argv: list[str]) -> int:
         mark(BAD) + " " + paint("command-line flags are not supported: " + bad, theme.bad, theme.bold),
         "",
         paint("All setup options, paths, modes, and credentials are configured directly inside the TUI.", theme.text),
-        paint("Run without any arguments:  python3 Storage/obhod_setup.py", theme.accent),
+        paint("Run without arguments:  obhod   (or python3 Storage/obhod_setup.py)", theme.accent),
         "",
         keycap(g.up + g.down, "move") + "  " + keycap("Space", "select") + "  " + keycap("Enter", "confirm"),
     ]

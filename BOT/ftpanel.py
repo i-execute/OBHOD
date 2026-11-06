@@ -8,6 +8,7 @@ from .freeturn import (
     BACKENDS,
     METHODS,
     PINNED_SCRIPT_SHA256,
+    TRANSPORTS,
     VERSION_CHOICES,
     is_port,
     MODES,
@@ -20,13 +21,13 @@ from .freeturn import (
     FtState,
     complete_link,
     normalize_conf,
+    rewrite_link_transport,
     valid_cidr,
     valid_hex64,
     valid_host,
     valid_name,
 )
 from .models import ModelError
-from .ui import code
 
 
 class FtPanel:
@@ -212,6 +213,17 @@ class FtPanel:
             if self.draft.mode == "tcp" and self.draft.backend == "new":
                 self.draft.backend = "external"
             return
+        if field == "transport":
+            self.draft.transport = _next(TRANSPORTS, self.draft.transport)
+            self.state.config.transport = self.draft.transport
+            if self.state.links:
+                self.state.links = {
+                    name: rewrite_link_transport(val, self.draft.transport)
+                    for name, val in self.state.links.items()
+                }
+            if self.link:
+                self.link = rewrite_link_transport(self.link, self.draft.transport)
+            return
         if field == "obf_profile":
             self.draft.obf_profile = _next(OBF_PROFILES, self.draft.obf_profile)
             return
@@ -258,7 +270,7 @@ class FtPanel:
                 ftscreens.confirm_screen(
                     self.view(),
                     t("FT_FW_CONFIRM_TITLE"),
-                    t("FT_FW_CONFIRM_BODY", mode=t("FT_FW_MODE_%s" % action.upper()), port=code(port)),
+                    t("FT_FW_CONFIRM_BODY", mode=t("FT_FW_MODE_%s" % action.upper()), port=str(port)),
                     "ft:fw:%s:yes" % action,
                     "ft:fw",
                 ),
@@ -302,8 +314,14 @@ class FtPanel:
             self.note("probe", "failed", exc.code)
             await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
             return
+        saved_links = dict(self.state.links)
+        saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "tcp"
         self.state = state
+        self.state.config.transport = saved_transport
+        if saved_links and not self.state.links:
+            self.state.links = saved_links
         draft = FtConfig.from_dict(state.config.to_dict())
+        draft.transport = saved_transport
         ver = str(draft.version or "").strip()
         if ver and ver.lower() not in {"latest", "local", "auto", "default"}:
             tag = ver if ver.startswith("v") else "v" + ver
@@ -333,7 +351,15 @@ class FtPanel:
                 msg = self.describe(exc) + "  -  " + t("FT_HINT_METHOD")
             await self.render(chat_id, msg_id, ftscreens.plan_screen(self.view(error=msg)))
             return
+        saved_links = dict(self.state.links)
+        saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "tcp"
         self.state = state
+        self.state.config.transport = saved_transport
+        if saved_links and not self.state.links:
+            self.state.links = {
+                name: rewrite_link_transport(val, saved_transport)
+                for name, val in saved_links.items()
+            }
         self.save()
         self.note("apply", "ok", "port=%d" % int(self.draft.listen_port))
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_NOTICE_APPLIED"))))

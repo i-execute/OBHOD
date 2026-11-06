@@ -587,6 +587,7 @@ def test_without_a_runtime_the_unit_keeps_the_venv_path() -> None:
 def test_cmd_update_copies_full_storage_heals_corrupt_state_and_reports_both_cores(tmp_path: Path) -> None:
     payload, env, env_conf = dev_payload(tmp_path)
     (payload / "Storage" / "emoji-pack.json").write_text('{"pack":"test","icons":{}}', encoding="utf-8")
+    shutil.copy2(ROOT / "Storage" / "obhod_setup.py", payload / "Storage" / "obhod_setup.py")
     env_conf.parent.mkdir(parents=True, exist_ok=True)
     env_conf.write_text("BOT_TOKEN=123456:ABC\nAPI_ID=42\nAPI_HASH=%s\nADMIN_ID=1000\nOBHOD_SUB_PORT=2096\nOBHOD_API_PORT=62789\n" % HASH, encoding="utf-8")
     state_dir = Path(env["HOME"]) / ".obhod" / "state"
@@ -606,4 +607,16 @@ def test_cmd_update_copies_full_storage_heals_corrupt_state_and_reports_both_cor
     assert status_res.returncode == 0
     assert "xray-core:" in status_res.stdout
     assert "freeturn:" in status_res.stdout
+    cli_bin = Path(env["HOME"]) / ".obhod" / "bin" / "obhod"
+    assert cli_bin.is_file()
+    cli_flag_res = subprocess.run([str(cli_bin), "--bad-flag"], capture_output=True, text=True, env=env, timeout=30)
+    assert cli_flag_res.returncode == 2
+    assert "command-line flags are not supported" in cli_flag_res.stdout
+    nuke_res = dev_run(payload, ["nuke", "--dev"], env)
+    assert nuke_res.returncode == 0, nuke_res.stderr
+    assert "wiped everything in dev mode" in nuke_res.stdout
+    assert not prefix.exists()
+    assert not env_conf.exists()
+    assert not state_dir.exists()
+    assert not cli_bin.exists()
 

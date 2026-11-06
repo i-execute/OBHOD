@@ -41,7 +41,7 @@ def scan_screen(v: Any) -> Any:
     if ans and getattr(ans,"error",None): blocks.append(quote(bold(ans.error)))
     if ans and not getattr(ans,"error",None):
         blocks.append(table([("ok", t("TOOLS_HOSTS"), code(ans.hosts)), ("users", t("TOOLS_ALIVE"), code(ans.alive)), ("scan", t("TOOLS_OPEN"), code(len(ans.open_ports))), ("clock", t("TOOLS_SPENT"), code("%.2fs"%ans.spent))], (t("TOOLS_RESULT"),"")))
-        if getattr(ans,"open_ports",None): blocks.append(table([("plug", t("TOOLS_OPEN"), item) for item in ans.open_ports[:40]], (t("TOOLS_OPEN"),"")))
+        if getattr(ans,"open_ports",None): blocks.append(table([("plug", t("TOOLS_OPEN"), code(item)) for item in ans.open_ports[:40]], (t("TOOLS_OPEN"),"")))
     buttons=[row(button(t("TOOLS_RUN"), "tools:scan:go", icon="scan"), button(t("UI_BACK"), "tools:home", icon="back"))]
     return screen(t("TOOLS_SCAN"), t("TOOLS_SCAN_SUB"), blocks, buttons, icon="radar")
 
@@ -80,6 +80,6 @@ def fortress_screen(v: Any) -> Any:
     t=_t(v)
     blocks=banner(v,t)
     blocks.append(f"<p>{muted(t('TOOLS_FORTRESS_TEXT'))}</p>")
-    blocks.append(table([("ok", t("TOOLS_RKN"), t("TOOLS_FORTRESS_RKN")), ("ok", t("TOOLS_SERVER"), t("TOOLS_FORTRESS_SRV")), ("ok", t("TOOLS_IMPORTS"), "<100ms, 0 heavy")], (t("TOOLS_CHECK"), "")))
+    blocks.append(table([("ok", t("TOOLS_RKN"), code(t("TOOLS_FORTRESS_RKN"))), ("ok", t("TOOLS_SERVER"), code(t("TOOLS_FORTRESS_SRV"))), ("ok", t("TOOLS_IMPORTS"), code("<100ms, 0 heavy"))], (t("TOOLS_CHECK"), "")))
     buttons=[row(button(t("TOOLS_PENTEST"), "tools:pentest", icon="scan"), button(t("UI_BACK"), "tools:home", icon="back"))]
     return screen(t("TOOLS_FORTRESS"), t("TOOLS_FORTRESS_SUB"), blocks, buttons, icon="shield")

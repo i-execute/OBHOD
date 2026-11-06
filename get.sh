@@ -296,6 +296,37 @@ install_helper() {
   return 0
 }
 
+install_cli_wrapper() {
+  [ "$NO_INSTALL" = "0" ] || return 0
+  local target="/usr/local/bin/obhod"
+  [ -f "$DEST/Storage/obhod_setup.py" ] || return 0
+  local tmp="${WORK:-/tmp}/obhod-cli-$$"
+  mkdir -p "$(dirname "$tmp")" 2>/dev/null || return 0
+  {
+    printf '\043!/usr/bin/env bash\n'
+    cat <<EOF
+set -euo pipefail
+export OBHOD_PREFIX="\${OBHOD_PREFIX:-/opt/obhod}"
+export OBHOD_ENV_FILE="\${OBHOD_ENV_FILE:-/etc/obhod/obhod.env}"
+export OBHOD_STATE_DIR="\${OBHOD_STATE_DIR:-/var/lib/obhod}"
+for candidate in "\$OBHOD_PREFIX/Storage/obhod_setup.py" "$DEST/Storage/obhod_setup.py" "/opt/obhod-src/Storage/obhod_setup.py"; do
+  if [ -f "\$candidate" ]; then
+    exec python3 "\$candidate" "\$@"
+  fi
+done
+printf 'error: OBHOD TUI not found\n' >&2
+exit 1
+EOF
+  } > "$tmp"
+  if helper_is_writable "$target"; then
+    install -m 755 "$tmp" "$target" 2>/dev/null || true
+  else
+    sudo -n install -m 755 "$tmp" "$target" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
 heal_dest() {
   local missing=0
   mkdir -p "$DEST" || return 1
@@ -484,6 +515,8 @@ fi
 if [ "$TUI" = "1" ] && [ "$HAS_INSTALLER_ARGS" = "0" ] && [ "$CREDS" = "0" ] && tty_available; then
   PY_BIN="$(command -v python3 || true)"
   if [ -n "$PY_BIN" ] && [ -f "$DEST/Storage/obhod_setup.py" ]; then
+    install_helper
+    install_cli_wrapper
     if [ -n "$ENV_PATH" ]; then
       export OBHOD_ENV_FILE="$ENV_PATH"
     fi
@@ -532,6 +565,7 @@ fi
 
 echo_on
 install_helper
-say "done, check the service with systemctl status obhod"
+install_cli_wrapper
+say "done, check the service with systemctl status obhod (or run: obhod)"
 say "to update later run this script again with the same keys"
 say "sources on the server: $DEST"

@@ -53,6 +53,7 @@ ASSET_BY_ARCH = {
 METHODS = ("systemd", "docker")
 BACKENDS = ("new", "external")
 MODES = ("udp", "tcp")
+TRANSPORTS = ("tcp", "udp")
 OBF_PROFILES = ("rtpopus3", "rtpopus2", "rtpopus", "none")
 DNS_MODES = ("auto", "plain", "doh")
 TARGETS = ("all", "freeturn", "wg")
@@ -397,6 +398,7 @@ class FtConfig:
     wg_port: int = DEFAULT_WG_PORT
     wg_net: str = DEFAULT_WG_NET
     mode: str = "udp"
+    transport: str = "tcp"
     obf_profile: str = "rtpopus3"
     version: str = "latest"
 
@@ -407,6 +409,8 @@ class FtConfig:
             raise FtError("the backend must be new or external", "bad_arg")
         if self.mode not in MODES:
             raise FtError("the mode must be udp or tcp", "bad_arg")
+        if self.transport not in TRANSPORTS:
+            raise FtError("the turn transport must be tcp or udp", "bad_arg")
         if self.obf_profile not in OBF_PROFILES:
             raise FtError("the obfuscation profile is unknown", "bad_arg")
         if not is_port(self.listen_port):
@@ -451,6 +455,7 @@ class FtConfig:
             "wg_port": int(self.wg_port),
             "wg_net": self.wg_net,
             "mode": self.mode,
+            "transport": self.transport,
             "obf_profile": self.obf_profile,
             "version": self.version,
         }
@@ -469,6 +474,7 @@ class FtConfig:
         method = str(data.get("method", "systemd") or "systemd")
         backend = str(data.get("backend", "new") or "new")
         mode = str(data.get("mode", "udp") or "udp")
+        transport = str(data.get("transport", "tcp") or "tcp").strip().lower()
         obf = str(data.get("obf_profile", "rtpopus3") or "rtpopus3")
         return cls(
             method=method if method in METHODS else "systemd",
@@ -479,6 +485,7 @@ class FtConfig:
             wg_port=int(data.get("wg_port", DEFAULT_WG_PORT) or DEFAULT_WG_PORT),
             wg_net=str(data.get("wg_net", DEFAULT_WG_NET) or DEFAULT_WG_NET),
             mode=mode if mode in MODES else "udp",
+            transport=transport if transport in TRANSPORTS else "tcp",
             obf_profile=obf if obf in OBF_PROFILES else "rtpopus3",
             version=str(data.get("version", "latest") or "latest")[:24],
         )
@@ -593,6 +600,7 @@ class FtState:
             "version": self.version,
             "config": self.config.to_dict(),
             "key_present": bool(self.key_present),
+            "transport_schema": 2,
             "links": {str(key)[:NAME_MAX]: str(value)[:LINK_MAX] for key, value in list(self.links.items())[:LINKS_MAX]},
         }
 
@@ -608,7 +616,19 @@ class FtState:
     def from_dict(cls, raw: dict[str, Any] | None) -> "FtState":
         data = raw or {}
         config = FtConfig.from_dict(data.get("config"))
+        schema = int(data.get("transport_schema", 0) or 0)
+        if schema < 2:
+            config.transport = "tcp"
         key = str((data.get("config") or {}).get("obf_key", "") or "")
+        links: dict[str, str] = {}
+        if isinstance(data.get("links"), dict):
+            for name, value in list((data.get("links") or {}).items())[:LINKS_MAX]:
+                text = str(value)[:LINK_MAX]
+                if not text.startswith("freeturn://"):
+                    continue
+                if schema < 2:
+                    text = rewrite_link_transport(text, config.transport)
+                links[str(name)[:NAME_MAX]] = text
         return cls(
             installed=bool(data.get("installed", False)),
             running=bool(data.get("running", False)),
@@ -619,13 +639,7 @@ class FtState:
             config=config,
             key_present=valid_hex64(key) or bool(data.get("key_present", False)),
             configured=bool((data.get("config") or {}) and data.get("config")),
-            links={
-                str(name)[:NAME_MAX]: str(value)[:LINK_MAX]
-                for name, value in list((data.get("links") or {}).items())[:LINKS_MAX]
-                if str(value).startswith("freeturn://")
-            }
-            if isinstance(data.get("links"), dict)
-            else {},
+            links=links,
         )
 
 
@@ -914,9 +928,10 @@ def encode_link(fields: dict[str, Any]) -> str:
     return LINK_PREFIX + b64url(payload)
 
 
-def complete_link(link: str, config: FtConfig, transport: str = "udp") -> str:
+def complete_link(link: str, config: FtConfig, transport: str = "") -> str:
     data = decode_link(link)
-    data.setdefault("transport", transport if transport in ("tcp", "udp") else "udp")
+    chosen = transport if transport in TRANSPORTS else (config.transport if getattr(config, "transport", "") in TRANSPORTS else "tcp")
+    data.setdefault("transport", chosen)
     data.setdefault("obf", config.obf_profile if config.obf_profile != "none" else "")
     if config.mode == "tcp":
         data.setdefault("mode", "tcp")
@@ -927,6 +942,17 @@ def complete_link(link: str, config: FtConfig, transport: str = "udp") -> str:
     data.setdefault("dns", "auto")
     cleaned = {name: value for name, value in data.items() if value not in ("", None)}
     return encode_link(cleaned)
+
+
+def rewrite_link_transport(link: str, transport: str = "tcp") -> str:
+    chosen = transport if transport in TRANSPORTS else "tcp"
+    try:
+        data = decode_link(link)
+        data["transport"] = chosen
+        cleaned = {name: value for name, value in data.items() if value not in ("", None)}
+        return encode_link(cleaned)
+    except FtError:
+        return link
 
 
 def normalize_conf(text: str) -> str:

@@ -76,7 +76,10 @@ def test_markup_is_balanced(name: str, html: str) -> None:
 
 @pytest.mark.parametrize("name,html", render_all(), ids=[item[0] for item in render_all()])
 def test_no_raw_markup_leaks(name: str, html: str) -> None:
-    assert "&amp;lt;" not in html
+    for leaked in ("&amp;lt;", "&lt;code", "&lt;/code", "&lt;b&gt;", "&lt;/b&gt;", "&lt;a ", "&lt;/a&gt;", "&lt;span", "&lt;mark", "&lt;tg-"):
+        assert leaked not in html, (name, leaked)
+    for block in re.findall(r"<blockquote>(.*?)</blockquote>", html, re.S):
+        assert "<code>" not in block, name
     assert "<script" not in html
     assert "\\n" not in html
 
@@ -115,6 +118,70 @@ def test_markup_with_icons_is_balanced(name: str, html: str) -> None:
     assert checker.errors == [], name
     assert checker.stack == [], name
     assert "tg-emoji" in html, name
+    assert "&lt;tg-emoji" not in html, name
+
+
+def test_extended_screens_and_commit_links_have_valid_html() -> None:
+    from BOT import dscreens, ftscreens, screens, tools, ui, xscreens
+    from BOT.freeturn import FtClient, FtConfig, FtShare, FtState
+    from BOT.scan import ScanResult
+    from BOT.store import State
+    from BOT.xray import XrayState, new_inbound
+
+    ui.use_icons(True)
+    try:
+        for flag in (False, True):
+            assert "&lt;tg-emoji" not in ui.status_line(flag, flag, flag, "ru")
+    finally:
+        ui.use_icons(False)
+
+    v = screens.View(state=State(), lang="ru")
+    upd_res = screens.update_result_screen(
+        v,
+        {"git": True, "repo": "i-execute/OBHOD", "commit": "769f155"},
+        {"ok": True, "target": "769f155", "subject": "fix <tag> & update", "message": "already up to date", "rollback": True, "source": "5e78240", "steps": ["fetch from origin"]},
+    ).build()
+    upd_ro = screens.update_screen(
+        v,
+        {"git": False, "root": "/opt/obhod", "system": {"protected": {"inside": "yes"}, "dest": "/opt/obhod-src", "dest_write": False}},
+    ).build()
+    ft_view = ftscreens.FtView(
+        state=FtState(installed=True, running=True, config=FtConfig()),
+        draft=FtConfig(backend="external", connect="127.0.0.1:51820"),
+        clients=[FtClient(name="owner", owner=True)],
+        share=FtShare(host="89.125.48.221", port=56000, mode="udp", obf_profile="rtpopus3", key_present=True),
+        totals={"online": 1, "clients": 1, "rx": 1024, "tx": 2048},
+        lang="ru",
+    )
+    xr_state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.mldsa65_seed = "s" * 32
+    inbound.mldsa65_verify = "v" * 32
+    xr_state.add(inbound)
+    scan_res = ScanResult(target="a.example:443", host="a.example", port=443, tls13=True, h2=True, x25519=True, pq_hybrid=False, cert_valid=True, days_left=30, cert_chain_bytes=1800, ml_dsa_ready=False)
+    samples = [
+        ("upd_res", upd_res),
+        ("upd_ro", upd_ro),
+        ("ft_plan", ftscreens.plan_screen(ft_view).build()),
+        ("ft_clients", ftscreens.clients_screen(ft_view).build()),
+        ("dbg_stub", dscreens.stub_screen(dscreens.DbgView(lang="ru"), "probe", "timeout", "example.com", "dbg:home").build()),
+        ("tools_fortress", tools.fortress_screen(dscreens.DbgView(lang="ru")).build()),
+        ("xr_mismatch", xscreens.scan_mismatch_screen(xscreens.XrayView(state=xr_state, lang="ru"), scan_res, inbound, 0).build()),
+        ("xr_check", xscreens.target_check_screen(xscreens.XrayView(state=xr_state, lang="ru"), inbound, scan_res).build()),
+    ]
+    assert 'href="https://github.com/i-execute/OBHOD/commit/769f155"' in upd_res
+    assert 'href="https://github.com/i-execute/OBHOD/commit/5e78240"' in upd_res
+    for name, html in samples:
+        checker = Checker()
+        checker.feed(html)
+        checker.close()
+        assert checker.errors == [], (name, checker.errors)
+        assert checker.stack == [], (name, checker.stack)
+        for leaked in ("&amp;lt;", "&lt;code", "&lt;b&gt;", "&lt;a ", "&lt;span", "&lt;tg-"):
+            assert leaked not in html, (name, leaked)
+        for block in re.findall(r"<blockquote>(.*?)</blockquote>", html, re.S):
+            assert "<code>" not in block, name
 
 
 @pytest.mark.parametrize("name,html", render_all(), ids=[item[0] for item in render_all()])

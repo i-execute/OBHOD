@@ -176,12 +176,13 @@ def plan_screen(view: FtView) -> Any:
         ("world", t("FT_FIELD_WG_PORT"), code(plan.wg_port)),
         ("info", t("FT_FIELD_WG_NET"), code(plan.wg_net)),
         ("settings", t("FT_FIELD_MODE"), code(plan.mode)),
+        ("link", t("FT_FIELD_TRANSPORT"), code(plan.transport)),
         ("info", t("FT_FIELD_OBF"), code(plan.obf_profile)),
         ("tag", t("FT_FIELD_VERSION"), code(plan.version)),
         ("world", t("FT_FIELD_HOST"), code(plan.host or t("FT_STATE_UNKNOWN"))),
     ]
     if plan.backend == "external" and plan.connect:
-        pairs.append((t("FT_FIELD_CONNECT"), code(plan.connect)))
+        pairs.append(("link", t("FT_FIELD_CONNECT"), code(plan.connect)))
     blocks.append(table(pairs, (t("FT_CONFIG_TITLE"), t("UI_VALUE"))))
     blocks.append(
         bullet_list(
@@ -189,6 +190,7 @@ def plan_screen(view: FtView) -> Any:
                 t("FT_HINT_METHOD"),
                 t("FT_HINT_BACKEND"),
                 t("FT_HINT_MODE"),
+                t("FT_HINT_TRANSPORT"),
                 t("FT_HINT_OBF"),
                 t("FT_HINT_VERSION"),
             ]
@@ -197,8 +199,8 @@ def plan_screen(view: FtView) -> Any:
     blocks.append(f"<p>{muted(t('FT_APPLY_NOTE'))}</p>")
     buttons = [
         row(button(t("FT_FIELD_METHOD"), "ft:cyc:method", icon="tools"), button(t("FT_FIELD_BACKEND"), "ft:cyc:backend", icon="module")),
-        row(button(t("FT_FIELD_MODE"), "ft:cyc:mode", icon="settings"), button(t("FT_FIELD_OBF"), "ft:cyc:obf_profile", icon="lock")),
-        row(button(t("FT_FIELD_VERSION"), "ft:cyc:version", icon="tag"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
+        row(button(t("FT_FIELD_MODE"), "ft:cyc:mode", icon="settings"), button(t("FT_FIELD_TRANSPORT"), "ft:cyc:transport", icon="link")),
+        row(button(t("FT_FIELD_OBF"), "ft:cyc:obf_profile", icon="lock"), button(t("FT_FIELD_VERSION"), "ft:cyc:version", icon="tag"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
         input_row(t("FT_PORT_INPUT"), "ft_port", "-", view.lang),
         input_row(t("FT_WG_PORT_INPUT"), "ft_wg_port", "-", view.lang),
         input_row(t("FT_WG_NET_INPUT"), "ft_wg_net", "-", view.lang),
@@ -258,7 +260,7 @@ def clients_screen(view: FtView) -> Any:
                         ("chart", t("FT_TRAFFIC_RX"), code(traffic.human(total.get("rx", 0)))),
                         ("chart", t("FT_TRAFFIC_TX"), code(traffic.human(total.get("tx", 0)))),
                     ],
-                    ("chart", t("FT_TRAFFIC_SHORT"), t("UI_VALUE")),
+                    (t("FT_TRAFFIC_SHORT"), t("UI_VALUE")),
                 )
             )
     else:
@@ -274,7 +276,7 @@ def clients_screen(view: FtView) -> Any:
                     ("lock", t("FT_SHARE_OBF"), code(view.share.obf_profile or "-")),
                     ("key", t("FT_SHARE_KEY"), code(t("FT_SHARE_KEY_HIDDEN") if view.share.key_present else t("FT_STATE_KEY_MISSING"))),
                 ],
-                ("link", t("FT_SHARE_TITLE"), t("UI_VALUE")),
+                (t("FT_SHARE_TITLE"), t("UI_VALUE")),
             )
         )
     buttons = [input_row(t("FT_BTN_CLIENT_ADD"), "ft_client", "-", view.lang)]

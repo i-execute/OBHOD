@@ -12,6 +12,7 @@ from .ui import (
     heading,
     input_row,
     muted,
+    muted_html,
     pre,
     quote,
     row,
@@ -272,7 +273,7 @@ def stub_screen(view: DbgView, name: str, reason: str, host: str, retry: str = "
     blocks.append(quote(bold(t("DBG_STUB_TITLE"))))
     blocks.append(f"<p>{t('DBG_STUB_BODY', name=code(name[:40]), reason=code(reason[:120]))}</p>")
     if host:
-        blocks.append(quote(muted(t("DBG_STUB_HINT", host=code(host[:64])))))
+        blocks.append(quote(muted_html(t("DBG_STUB_HINT", host=bold(host[:64])))))
     buttons = []
     if retry:
         buttons.append(row(button(t("DBG_STUB_RETRY"), retry, icon="refresh"), button(t("UI_HOME"), "nav:home", icon="home")))

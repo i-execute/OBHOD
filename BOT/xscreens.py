@@ -7,6 +7,7 @@ from . import i18n, inline, subs
 from .scan import ML_DSA65_CHAIN_MIN, ScanResult, canonical_kind, kind_has_mldsa, security_fit, security_fits
 from .ui import (
     bold,
+    bold_html,
     bullet_list,
     button,
     code,
@@ -17,6 +18,7 @@ from .ui import (
     long_block,
     inline_button,
     muted,
+    muted_html,
     pre,
     quote,
     row,
@@ -500,7 +502,7 @@ def scan_screen(view: XrayView, results: list[ScanResult] | None = None) -> Any:
                 )
             )
             if not ok:
-                blocks.append(quote(muted(t("XR_SCAN_MISMATCH_BODY", target=code(focus.target), security=code(security_label(kind, view.lang))))))
+                blocks.append(quote(muted_html(t("XR_SCAN_MISMATCH_BODY", target=bold(focus.target), security=bold(security_label(kind, view.lang))))))
                 blocks.append(quote(muted(t("XR_SCAN_MISMATCH_SUBTITLE"))))
                 blocks.append(row(button(t("XR_SCAN_SWITCH_OPEN"), f"xr:scan:fit:{rows.index(focus)}", icon="warn")))
     else:
@@ -566,7 +568,7 @@ def scan_mismatch_screen(view: XrayView, result: ScanResult, inbound: XrayInboun
     blocks = banner(view, t)
     current = inbound.security_kind()
     ok, note = security_fit(result, current)
-    blocks.append(quote("<b>%s</b>" % t("XR_SCAN_MISMATCH_BODY", target=code(result.target), security=code(security_label(current, view.lang)))))
+    blocks.append(quote(bold(t("XR_SCAN_MISMATCH_BODY", target=result.target, security=security_label(current, view.lang)))))
     blocks.append(
         table(
             [
@@ -578,7 +580,7 @@ def scan_mismatch_screen(view: XrayView, result: ScanResult, inbound: XrayInboun
         )
     )
     if kind_has_mldsa(current) and not result.ml_dsa_ready:
-        blocks.append(quote(muted(t("XR_SCAN_MISMATCH_CHAIN", length=code(result.cert_chain_bytes), min=code(ML_DSA65_CHAIN_MIN)))))
+        blocks.append(quote(muted_html(t("XR_SCAN_MISMATCH_CHAIN", length=bold(result.cert_chain_bytes), min=bold(ML_DSA65_CHAIN_MIN)))))
     blocks.append(quote(muted(group_line(t, result))))
     blocks.append(f"<p>{bold(t('XR_SCAN_MISMATCH_FITS'))}</p>")
     blocks.append(fit_table(t, result))
@@ -671,7 +673,7 @@ def target_check_screen(view: XrayView, inbound: XrayInbound, result: ScanResult
     label = security_label(kind, view.lang)
     ok, note = security_fit(result, kind)
     head = t("XR_CHECK_OK", security=code(label)) if ok else t("XR_CHECK_BAD", security=code(label))
-    blocks.append(quote("<b>%s</b>" % head))
+    blocks.append(f"<p>{bold_html(head)}</p>")
     blocks.append(
         table(
             [
