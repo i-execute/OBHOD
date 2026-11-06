@@ -230,7 +230,38 @@ def port_set(policy):
     return "{ " + ", ".join(policy["ports"].split(",")) + " }"
 
 
-def rules_text(policy):
+def freeturn_accept_lines(flags=None):
+    if flags and path_of(flags) != CONF_DIR:
+        return []
+    conf = "/opt/free-turn-proxy/install.conf"
+    if not os.path.isfile(conf):
+        return []
+    port = 0
+    mode = "udp"
+    try:
+        with open(conf, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key == "LISTEN_PORT" and value.isdigit() and 1 <= int(value) <= 65535:
+                    port = int(value)
+                elif key in ("PROXY_MODE", "MODE") and value.lower() in ("udp", "tcp"):
+                    mode = value.lower()
+    except OSError:
+        return []
+    if not port:
+        return []
+    out = ["    udp dport %d accept" % port]
+    if mode == "tcp":
+        out.append("    tcp dport %d accept" % port)
+    return out
+
+
+def rules_text(policy, flags=None):
     lines = [
         "table inet %s {" % TABLE,
     ]
@@ -241,6 +272,11 @@ def rules_text(policy):
             "  chain input {",
             "    type filter hook input priority raw; policy accept;",
             '    iifname "lo" accept',
+        ]
+    )
+    lines.extend(freeturn_accept_lines(flags))
+    lines.extend(
+        [
             "    ct state invalid counter drop",
             "    tcp flags & (fin|syn|rst|ack) == 0x0 counter drop",
             "    tcp flags & (fin|syn|psh|rst|ack|urg) == (fin|syn|psh|urg) counter drop",
@@ -272,7 +308,7 @@ SYSCTL_ROWS = (
     ("net.ipv4.tcp_rfc1337", "1"),
     ("net.ipv4.tcp_mtu_probing", "1"),
     ("net.ipv4.ip_local_port_range", "10240 65000"),
-    ("net.ipv4.conf.all.rp_filter", "1"),
+    ("net.ipv4.conf.all.rp_filter", "2"),
     ("net.ipv4.conf.all.accept_source_route", "0"),
     ("net.ipv4.conf.all.accept_redirects", "0"),
     ("net.ipv4.conf.all.send_redirects", "0"),
@@ -470,7 +506,7 @@ def status(flags):
 def apply_rules(flags, policy):
     tool = binary(flags, "nft", NFT)
     target = rules_path(flags)
-    body = rules_text(policy)
+    body = rules_text(policy, flags)
     if not tool:
         write_atomic(target, body)
         raise DDosError("no_nft", "nft is not installed, the rules were written but not loaded", "apply")
@@ -685,7 +721,7 @@ def sysinfo(flags):
 
 def render(flags):
     policy = policy_from(read_json(conf_path(flags)), flags)
-    return {"rules": rules_text(policy), "sysctl": sysctl_text(), "policy": policy}
+    return {"rules": rules_text(policy, flags), "sysctl": sysctl_text(), "policy": policy}
 
 
 def main(argv):

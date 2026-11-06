@@ -130,7 +130,7 @@ def home(view: View) -> Any:
     buttons.append(row(button(t("TOOLS_TITLE"), "tools:home", icon="tools"), button(t("NAV_UPDATE"), "upd:show", icon="update")))
     buttons.append(row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_HELP"), "nav:help", icon="docs")))
     buttons.append(row(emoji_button(t, view), button(t("UI_REFRESH"), "nav:home", icon="refresh")))
-    return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="home")
+    return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, icon="home")
 
 
 def emoji_button(t: i18n.Translator, view: View) -> Any:
@@ -226,42 +226,29 @@ def settings(view: View) -> Any:
     xray = view.state.xray
     blocks = banner(view, t)
     pairs = [
-        ("tag", t("SET_CORE_VERSION"), code(xray.version)),
-        ("logs", t("SET_LOG_LEVEL"), code(xray.log_level)),
+        ("star", t("SET_EMOJI"), code(t("SET_EMOJI_ON") if view.emoji_on else t("SET_EMOJI_OFF"))),
         ("link", t("SET_SUB_PORT"), code(view.state.sub_port)),
         ("link", t("SET_SUB_ADDRESS"), code(xray.sub_address or t("UI_NOT_SET"))),
-        ("target", t("SET_TARGETS"), code(len(xray.scan_targets))),
         ("link", t("SET_SUB_PATH"), code(xray.sub_path_pattern())),
+        ("tag", t("SET_CORE_VERSION"), code(xray.version)),
     ]
-    pairs.extend(
-        [
-            ("info", t("SET_CANDIDATES"), code(len(xray.candidates()))),
-            ("scan", t("SET_SCAN_SNI"), code(xray.scan_sni or t("UI_NONE"))),
-            ("scan", t("SET_SCAN_XVER"), code(xray.scan_xver)),
-            ("world", t("SET_API_PORT"), code(xray.api_port)),
-            ("logs", t("SET_ACCESS_LOG"), code(xray.access_log)),
-            ("world", t("SET_DNS"), code(xray.dns_csv() or t("UI_NONE"))),
-            ("clock", t("SET_SSH_BANTIME"), code(xray.fail2ban_ssh_bantime)),
-            ("clock", t("SET_SSH_MAXRETRY"), code(str(xray.fail2ban_ssh_maxretry))),
-            ("world", t("SET_IGNOREIP"), code(xray.fail2ban_ignoreip)),
-            ("clock", t("SET_SUB_REFRESH"), code(xray.sub_refresh)),
-            ("star", t("SET_EMOJI"), code(t("SET_EMOJI_ON") if view.emoji_on else t("SET_EMOJI_OFF"))),
-        ]
-    )
     blocks.append(table(pairs, (t("UI_FIELD"), t("UI_VALUE"))))
     target = next((item for item in xray.inbounds if item.security in {"reality", "tls"}), None)
-    blocks.append(
-        table(
-            [
-                ("target", t("SET_CHECK_TARGET"), code(target.dest if target else t("UI_NOT_SET"))),
-                ("shield", t("XR_SEC_CURRENT"), code(xscreens.security_label(target.security_kind(), view.lang) if target else t("UI_NONE"))),
-            ],
-            (t("UI_FIELD"), t("UI_VALUE")),
-        )
-    )
-    blocks.append(quote(muted(t("XR_CHECK_NOTE"))))
-    blocks.append(quote(muted(t("SET_NOTE_SUB_PATH"))))
-    blocks.append(quote(muted(t("HOME_EMOJI_NOTE"))))
+    extra_pairs = [
+        ("logs", t("SET_LOG_LEVEL"), code(xray.log_level)),
+        ("target", t("SET_TARGETS"), code(len(xray.scan_targets))),
+        ("info", t("SET_CANDIDATES"), code(len(xray.candidates()))),
+        ("scan", t("SET_SCAN_SNI"), code(xray.scan_sni or t("UI_NONE"))),
+        ("world", t("SET_API_PORT"), code(xray.api_port)),
+        ("logs", t("SET_ACCESS_LOG"), code(xray.access_log)),
+        ("world", t("SET_DNS"), code(xray.dns_csv() or t("UI_NONE"))),
+        ("clock", t("SET_SSH_BANTIME"), code(xray.fail2ban_ssh_bantime)),
+        ("clock", t("SET_SSH_MAXRETRY"), code(str(xray.fail2ban_ssh_maxretry))),
+        ("world", t("SET_IGNOREIP"), code(xray.fail2ban_ignoreip)),
+        ("target", t("SET_CHECK_TARGET"), code(target.dest if target else t("UI_NOT_SET"))),
+        ("shield", t("XR_SEC_CURRENT"), code(xscreens.security_label(target.security_kind(), view.lang) if target else t("UI_NONE"))),
+    ]
+    blocks.append(details(t("HOME_DETAILS"), table(extra_pairs, (t("UI_FIELD"), t("UI_VALUE")))))
     buttons = [
         row(button(t("SET_VERSION_PINNED", version=xray.pinned()), "xr:core:ver:pin", icon="pin"), button(t("SET_VERSION_LATEST"), "xr:core:ver:latest", icon="update")),
         input_row(t("SET_LOG_LEVEL"), "xr_log_level", "-", view.lang),

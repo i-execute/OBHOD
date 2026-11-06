@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from . import ftscreens, fwguard, i18n, traffic, xscreens
+from . import ftscreens, fwguard, i18n, traffic
 from .freeturn import (
     BACKENDS,
     METHODS,
@@ -21,6 +21,7 @@ from .freeturn import (
     FtState,
     complete_link,
     normalize_conf,
+    random_listen_port,
     rewrite_link_transport,
     valid_cidr,
     valid_hex64,
@@ -88,7 +89,7 @@ class FtPanel:
         await self.bot.send(chat_id, rich)
 
     async def busy(self, chat_id: int, msg_id: int, notice: str) -> None:
-        await self.render(chat_id, msg_id, xscreens.busy_screen(notice, self.tr().language))
+        await self.render(chat_id, msg_id, ftscreens.busy_screen(notice, self.tr().language))
 
     def describe(self, error: FtError) -> str:
         key = "FT_CODE_%s" % str(error.code or "").upper()
@@ -192,6 +193,11 @@ class FtPanel:
         if head == "fw":
             await self.firewall(chat_id, msg_id, arg1, arg2)
             return
+        if head == "rport":
+            self.draft.listen_port = random_listen_port({int(self.draft.listen_port or 0), int(self.draft.wg_port or 0)})
+            self.save()
+            await self.render(chat_id, msg_id, ftscreens.plan_screen(self.view()))
+            return
         if head == "port":
             await self.apply_input(chat_id, "ft_port", arg1, arg2)
             return
@@ -200,8 +206,6 @@ class FtPanel:
     def cycle(self, field: str) -> None:
         if field == "method":
             self.draft.method = _next(METHODS, self.draft.method)
-            if self.draft.method == "docker" and self.draft.backend == "new":
-                self.draft.backend = "external"
             return
         if field == "backend":
             self.draft.backend = _next(BACKENDS, self.draft.backend)
@@ -318,8 +322,6 @@ class FtPanel:
         saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "tcp"
         self.state = state
         self.state.config.transport = saved_transport
-        if saved_links and not self.state.links:
-            self.state.links = saved_links
         draft = FtConfig.from_dict(state.config.to_dict())
         draft.transport = saved_transport
         ver = str(draft.version or "").strip()
@@ -328,6 +330,16 @@ class FtPanel:
             if tag not in PINNED_SCRIPT_SHA256:
                 draft.version = "latest"
         self.draft = draft
+        if self.state.links:
+            self.state.links = {
+                name: self._finish_link(val) or rewrite_link_transport(val, saved_transport)
+                for name, val in self.state.links.items()
+            }
+        elif saved_links:
+            self.state.links = {
+                name: rewrite_link_transport(val, saved_transport)
+                for name, val in saved_links.items()
+            }
         self.save()
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_NOTICE_CHECKED"))))
 
@@ -339,6 +351,7 @@ class FtPanel:
             await self.render(chat_id, msg_id, ftscreens.plan_screen(self.view(error=self.describe(exc))))
             return
         await self.busy(chat_id, msg_id, t("FT_BUSY_APPLY"))
+        key_rotated = bool(self.key_once)
         try:
             state = await self.control.apply(self.draft, obf_key=self.key_once)
             self.key_once = ""
@@ -355,11 +368,20 @@ class FtPanel:
         saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "tcp"
         self.state = state
         self.state.config.transport = saved_transport
-        if saved_links and not self.state.links:
+        self.draft.transport = saved_transport
+        if self.state.links:
+            self.state.links = {
+                name: self._finish_link(val) or rewrite_link_transport(val, saved_transport)
+                for name, val in self.state.links.items()
+            }
+        elif saved_links and not key_rotated:
             self.state.links = {
                 name: rewrite_link_transport(val, saved_transport)
                 for name, val in saved_links.items()
             }
+        if "owner" in self.state.links:
+            self.link = self.state.links["owner"]
+            self.name = "owner"
         self.save()
         self.note("apply", "ok", "port=%d" % int(self.draft.listen_port))
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_NOTICE_APPLIED"))))
@@ -450,7 +472,7 @@ class FtPanel:
         if not valid_name(clean):
             await self.send(chat_id, ftscreens.clients_screen(self.view(error=t("FT_CLIENT_INPUT"))))
             return
-        await self.send(chat_id, xscreens.busy_screen(t("FT_BUSY_ACTION"), self.tr().language))
+        await self.send(chat_id, ftscreens.busy_screen(t("FT_BUSY_ACTION"), self.tr().language))
         try:
             client, link, conf = await self.control.client_add(clean)
         except FtError as exc:

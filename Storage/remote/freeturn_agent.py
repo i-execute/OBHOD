@@ -425,6 +425,7 @@ def command_argv(command, flags, lookup=None):
 
 
 MUTATING_RPC = frozenset({"apply", "uninstall", "restart", "stop", "client-add", "client-remove"})
+INSTALL_ROOT = "/opt/free-turn-proxy"
 
 
 def sandboxed_host():
@@ -432,7 +433,7 @@ def sandboxed_host():
         return False
     if not os.path.isdir("/run/systemd/system") or not shutil.which("systemd-run"):
         return False
-    for probe in ("/proc/sys/net/ipv4", "/usr"):
+    for probe in ("/proc/sys/net/ipv4", "/usr", "/etc"):
         if os.path.exists(probe) and not os.access(probe, os.W_OK):
             return True
     return False
@@ -448,7 +449,7 @@ def run_script(path, argv, timeout):
         "DEBIAN_FRONTEND": "noninteractive",
     }
     command = argv[0] if argv else ""
-    if command in MUTATING_RPC and sandboxed_host():
+    if command and sandboxed_host():
         systemd_cmd = [
             "systemd-run",
             "--pipe",
@@ -578,6 +579,9 @@ def tool_text(argv, timeout=GUARD_TIMEOUT):
 
 
 def wg_command(argv, timeout=WG_CMD_TIMEOUT):
+    if argv and sandboxed_host():
+        code, text = run_tool(argv, timeout)
+        return text.splitlines() if code == 0 else []
     try:
         done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -1093,9 +1097,19 @@ def guard_status(backend, port, protos):
         ours = [line for line in listing.splitlines() if mentions_port(line, port)]
         allowed = [line for line in ours if "ALLOW" in line.upper()]
         rules = len(allowed)
-        if allowed and any("Anywhere" in line for line in allowed):
+        first_world = ""
+        for line in ours:
+            upper = line.upper()
+            if "ANYWHERE" in upper:
+                if "DENY" in upper or "REJECT" in upper:
+                    first_world = "deny"
+                    break
+                if "ALLOW" in upper:
+                    first_world = "allow"
+                    break
+        if first_world == "allow":
             mode = "open"
-        elif allowed:
+        elif allowed and any("ANYWHERE" not in line.upper() for line in allowed):
             mode = "vk"
         else:
             mode = "closed"
@@ -1289,8 +1303,8 @@ def main(argv):
             tail = (text or "").strip().splitlines()[-3:]
             raise AgentError("internal", "the install script returned no answer: %s" % " | ".join(item[:160] for item in tail), stage)
         body = sanitize(payload)
-        if command == "apply" and body["result"] == "ok" and os.geteuid() == 0:
-            ensure_apply_port_open(flags, body)
+        if body["result"] == "ok" and os.geteuid() == 0:
+            heal_runtime(script, command, flags, body)
         emit(body["result"], body["data"], body.get("code", ""), body.get("msg", ""), body.get("stage", stage), body["logs"])
         return 0 if body["result"] == "ok" else 1
     except AgentError as exc:
@@ -1298,24 +1312,190 @@ def main(argv):
         return 1
 
 
+def read_install_conf(root=INSTALL_ROOT):
+    conf = os.path.join(root, "install.conf")
+    out = {}
+    if not os.path.isfile(conf):
+        return out
+    try:
+        with open(conf, "r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                out[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        return {}
+    return out
+
+
+def read_client_links(root=INSTALL_ROOT):
+    base = os.path.join(root, "clients")
+    out = {}
+    if not os.path.isdir(base):
+        return out
+    try:
+        names = sorted(os.listdir(base))[:128]
+    except OSError:
+        return out
+    for name in names:
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$", name):
+            continue
+        link_file = os.path.join(base, name, "%s.link" % name)
+        if not os.path.isfile(link_file) or os.path.islink(link_file):
+            continue
+        try:
+            with open(link_file, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read(4096).strip()
+        except OSError:
+            continue
+        if text.startswith("freeturn://"):
+            out[name] = text
+    return out
+
+
+def port_listening(port, proto="udp"):
+    if not shutil.which("ss") or not 1 <= int(port or 0) <= 65535:
+        return False
+    flag = "-Hltn" if proto == "tcp" else "-Hlun"
+    code, text = run_tool(["ss", flag, "sport = :%d" % int(port)], timeout=10)
+    return code == 0 and bool(text.strip())
+
+
+def nft_open_port(port, protos):
+    if not shutil.which("nft") or not 1 <= int(port or 0) <= 65535:
+        return
+    code, ddos_body = run_tool(["nft", "list", "table", "inet", "obhod_ddos"], timeout=15)
+    if code == 0 and ddos_body:
+        for flood_set in ("conn_flood", "udp_flood", "port_scan"):
+            run_tool(["nft", "flush", "set", "inet", "obhod_ddos", flood_set], timeout=10)
+        for proto in protos:
+            needle = "%s dport %d accept" % (proto, port)
+            if needle not in ddos_body:
+                run_tool(["nft", "insert", "rule", "inet", "obhod_ddos", "input", proto, "dport", str(port), "accept"], timeout=10)
+    code, ruleset = run_tool(["nft", "list", "ruleset"], timeout=15)
+    if code != 0 or not ruleset:
+        return
+    family = ""
+    table_name = ""
+    chain_name = ""
+    in_input = False
+    chain_body = []
+    targets = []
+    for raw in ruleset.splitlines():
+        line = raw.strip()
+        table_match = re.match(r"^table\s+(inet|ip)\s+([A-Za-z0-9_.-]+)\s*\{", line)
+        if table_match:
+            family = table_match.group(1)
+            table_name = table_match.group(2)
+            chain_name = ""
+            in_input = False
+            chain_body = []
+            continue
+        chain_match = re.match(r"^chain\s+([A-Za-z0-9_.-]+)\s*\{", line)
+        if family and table_name and chain_match:
+            chain_name = chain_match.group(1)
+            in_input = False
+            chain_body = []
+            continue
+        if chain_name:
+            chain_body.append(line)
+            if "hook input" in line and "policy drop" in line and table_name != "obhod_ddos":
+                in_input = True
+            if line == "}":
+                if in_input:
+                    joined = "\n".join(chain_body)
+                    targets.append((family, table_name, chain_name, joined))
+                chain_name = ""
+                in_input = False
+                chain_body = []
+    for fam, tbl, chn, joined in targets[:8]:
+        for proto in protos:
+            if ("%s dport %d" % (proto, port)) not in joined:
+                run_tool(["nft", "insert", "rule", fam, tbl, chn, proto, "dport", str(port), "accept"], timeout=10)
+
+
 def ensure_apply_port_open(flags, body):
-    raw_port = str(flags.get("listen-port", "") or (body.get("data") or {}).get("config", {}).get("listen_port", "") or "").strip()
+    installed = read_install_conf()
+    data_cfg = (body.get("data") or {}).get("config") or {}
+    raw_port = str(
+        flags.get("listen_port", "")
+        or flags.get("listen-port", "")
+        or data_cfg.get("listen_port", "")
+        or installed.get("LISTEN_PORT", "")
+        or ""
+    ).strip()
     if not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
         return
     port = int(raw_port)
-    mode = str(flags.get("mode", "") or (body.get("data") or {}).get("config", {}).get("mode", "udp") or "udp").strip().lower()
-    proto = "tcp" if mode == "tcp" else "udp"
+    mode = str(
+        flags.get("mode", "")
+        or data_cfg.get("mode", "")
+        or installed.get("PROXY_MODE", "")
+        or installed.get("MODE", "")
+        or "udp"
+    ).strip().lower()
+    protos = ["udp", "tcp"] if mode == "tcp" else ["udp"]
+    if shutil.which("sysctl"):
+        run_tool(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"], timeout=10)
+        rp = tool_text(["sysctl", "-n", "net.ipv4.conf.all.rp_filter"], timeout=10).strip()
+        if rp == "1":
+            run_tool(["sysctl", "-q", "-w", "net.ipv4.conf.all.rp_filter=2"], timeout=10)
+    nft_open_port(port, protos)
     backend = guard_backend()
     if not backend:
         return
-    found_mode, _rules = guard_status(backend, port, [proto])
-    if found_mode in {"open", "vk"}:
+    found_mode, _rules = guard_status(backend, port, [protos[0]])
+    if found_mode == "vk":
         return
-    if backend == "ufw":
-        run_tool(["ufw", "allow", "%d/%s" % (port, proto)])
-    elif backend == "firewalld":
-        run_tool(["firewall-cmd", "--add-port=%d/%s" % (port, proto)])
-        run_tool(["firewall-cmd", "--permanent", "--add-port=%d/%s" % (port, proto)])
+    if backend == "ufw" and found_mode != "open":
+        ufw_clear(port)
+        for proto in protos:
+            run_tool(["ufw", "allow", "%d/%s" % (port, proto)])
+    elif backend == "firewalld" and found_mode != "open":
+        for proto in protos:
+            run_tool(["firewall-cmd", "--add-port=%d/%s" % (port, proto)])
+            run_tool(["firewall-cmd", "--permanent", "--add-port=%d/%s" % (port, proto)])
+    elif backend == "iptables":
+        for proto in protos:
+            if run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])[0] != 0:
+                run_tool(["iptables", "-I", "INPUT", "1", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
+
+
+def heal_runtime(script, command, flags, body):
+    if command == "uninstall":
+        return
+    installed = read_install_conf()
+    if command in {"apply", "probe", "restart", "client-list", "client-conf"} and (command == "apply" or installed):
+        ensure_apply_port_open(flags, body)
+    if command == "apply":
+        apply_data = dict(body.get("data") or {})
+        probe_text, _code = run_script(script, ["probe"], TIMEOUTS["probe"])
+        probe_payload = last_json(probe_text)
+        if probe_payload and probe_payload.get("result") == "ok" and isinstance(probe_payload.get("data"), dict):
+            merged = dict(probe_payload["data"])
+            for key in ("owner", "obf_key", "needs_restart"):
+                if key in apply_data:
+                    merged[key] = apply_data[key]
+            body["data"] = merged
+    if command in {"apply", "probe"} and isinstance(body.get("data"), dict):
+        cfg = body["data"].get("config") or {}
+        port = int(cfg.get("listen_port", 0) or installed.get("LISTEN_PORT", 0) or 0)
+        mode = str(cfg.get("mode", "") or installed.get("PROXY_MODE", "udp") or "udp").lower()
+        proto = "tcp" if mode == "tcp" else "udp"
+        if command == "apply" and body["data"].get("installed") and port and not port_listening(port, proto):
+            run_script(script, ["restart"], TIMEOUTS["restart"])
+            probe_text, _code = run_script(script, ["probe"], TIMEOUTS["probe"])
+            probe_payload = last_json(probe_text)
+            if probe_payload and probe_payload.get("result") == "ok" and isinstance(probe_payload.get("data"), dict):
+                for key, value in probe_payload["data"].items():
+                    body["data"][key] = value
+        links = read_client_links()
+        if links:
+            body["data"]["links"] = links
+        if port:
+            body["data"]["listening"] = port_listening(port, proto)
 
 
 if __name__ == "__main__":

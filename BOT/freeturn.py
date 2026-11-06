@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import re
+import secrets
 import time
 import urllib.error
 import urllib.parse
@@ -246,6 +247,15 @@ def is_port(value: object) -> bool:
     if not text.isdigit():
         return False
     return 1 <= int(text) <= 65535
+
+
+def random_listen_port(exclude: set[int] | None = None) -> int:
+    blocked = {22, 2222} | {int(item) for item in (exclude or set()) if isinstance(item, int)}
+    for _ in range(64):
+        candidate = 56000 + secrets.randbelow(1000)
+        if candidate not in blocked:
+            return candidate
+    return 56000 + secrets.randbelow(1000)
 
 
 def valid_cidr(value: str) -> bool:
@@ -619,7 +629,9 @@ class FtState:
         schema = int(data.get("transport_schema", 0) or 0)
         if schema < 2:
             config.transport = "tcp"
-        key = str((data.get("config") or {}).get("obf_key", "") or "")
+        cfg_key = str((data.get("config") or {}).get("obf_key", "") or "")
+        top_key = str(data.get("obf_key", "") or "")
+        owner = data.get("owner") if isinstance(data.get("owner"), dict) else {}
         links: dict[str, str] = {}
         if isinstance(data.get("links"), dict):
             for name, value in list((data.get("links") or {}).items())[:LINKS_MAX]:
@@ -629,15 +641,18 @@ class FtState:
                 if schema < 2:
                     text = rewrite_link_transport(text, config.transport)
                 links[str(name)[:NAME_MAX]] = text
+        owner_link = str(owner.get("link", "") or "").strip()[:LINK_MAX]
+        if owner_link.startswith("freeturn://") and OWNER_NAME not in links:
+            links[OWNER_NAME] = complete_link(owner_link, config)
         return cls(
-            installed=bool(data.get("installed", False)),
+            installed=bool(data.get("installed", False) or owner_link),
             running=bool(data.get("running", False)),
             euid=int(data.get("euid", -1) or -1),
             arch=str(data.get("arch", "") or "")[:24],
             method=str(data.get("method", "") or "")[:16],
             version=str(data.get("version", "") or "")[:32],
             config=config,
-            key_present=valid_hex64(key) or bool(data.get("key_present", False)),
+            key_present=valid_hex64(cfg_key) or valid_hex64(top_key) or bool(data.get("key_present", False)),
             configured=bool((data.get("config") or {}) and data.get("config")),
             links=links,
         )
@@ -832,7 +847,19 @@ class FtControl:
             argv.append("--update")
         response = await self.call(argv, timeout=max(self.timeout, 900.0))
         response.raise_for_status()
-        return FtState.from_dict(response.data)
+        raw = dict(response.data or {})
+        if "installed" not in raw:
+            probed = await self.probe()
+            owner = raw.get("owner") if isinstance(raw.get("owner"), dict) else {}
+            owner_link = str(owner.get("link", "") or "").strip()
+            if owner_link.startswith("freeturn://"):
+                probed.remember(OWNER_NAME, complete_link(owner_link, config))
+            if valid_hex64(str(raw.get("obf_key", "") or "")):
+                probed.key_present = True
+            return probed
+        if not raw.get("config"):
+            raw["config"] = config.to_dict()
+        return FtState.from_dict(raw)
 
     async def stop(self) -> FtResponse:
         response = await self.call(["stop"], timeout=180)
@@ -932,12 +959,18 @@ def complete_link(link: str, config: FtConfig, transport: str = "") -> str:
     data = decode_link(link)
     chosen = transport if transport in TRANSPORTS else (config.transport if getattr(config, "transport", "") in TRANSPORTS else "tcp")
     data.setdefault("transport", chosen)
-    data.setdefault("obf", config.obf_profile if config.obf_profile != "none" else "")
+    has_key = valid_hex64(str(data.get("key", "") or ""))
+    if has_key and config.obf_profile != "none":
+        data.setdefault("obf", config.obf_profile)
+    elif not has_key and str(data.get("obf", "") or "") not in {"", "none"}:
+        data.pop("obf", None)
+    data.setdefault("n", 12)
+    data.setdefault("spc", 12)
     if config.mode == "tcp":
         data.setdefault("mode", "tcp")
         data.setdefault("kcp", dict(KCP_DEFAULTS))
-        data.setdefault("n", 12)
-        data.setdefault("spc", 12)
+    if isinstance(data.get("wg"), str) and data["wg"]:
+        data["wg"] = normalize_conf(data["wg"])
     data.setdefault("mcap", False)
     data.setdefault("dns", "auto")
     cleaned = {name: value for name, value in data.items() if value not in ("", None)}
@@ -949,6 +982,10 @@ def rewrite_link_transport(link: str, transport: str = "tcp") -> str:
     try:
         data = decode_link(link)
         data["transport"] = chosen
+        data.setdefault("n", 12)
+        data.setdefault("spc", 12)
+        if isinstance(data.get("wg"), str) and data["wg"]:
+            data["wg"] = normalize_conf(data["wg"])
         cleaned = {name: value for name, value in data.items() if value not in ("", None)}
         return encode_link(cleaned)
     except FtError:

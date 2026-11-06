@@ -325,3 +325,27 @@ def test_the_agent_has_no_writable_state_outside_its_directory(bench) -> None:
     body = AGENT.read_text(encoding="utf-8")
     assert "/tmp/" not in body
     assert "TMPDIR" not in body
+
+
+def test_ddos_rules_exempt_installed_freeturn_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load("obhod_ddos_ft_%d" % id(tmp_path))
+    ft_conf = tmp_path / "install.conf"
+    ft_conf.write_text('LISTEN_PORT="56696"\nPROXY_MODE="udp"\n', encoding="utf-8")
+    real_isfile = module.os.path.isfile
+    real_open = open
+
+    def fake_isfile(path: str) -> bool:
+        if path == "/opt/free-turn-proxy/install.conf":
+            return True
+        return real_isfile(path)
+
+    def fake_open(path: str, *args: object, **kwargs: object):
+        if path == "/opt/free-turn-proxy/install.conf":
+            return real_open(ft_conf, *args, **kwargs)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os.path, "isfile", fake_isfile)
+    monkeypatch.setattr("builtins.open", fake_open, raising=False)
+    rules = module.rules_text(module.policy_from({}, {}), {})
+    assert "udp dport 56696 accept" in rules
+    assert rules.index("udp dport 56696 accept") < rules.index("ct state invalid counter drop")

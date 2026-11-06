@@ -338,3 +338,25 @@ def test_fw_confirm_screen_has_no_double_escaped_html(tmp_path: Path) -> None:
     assert "56000" in html
 
 
+def test_ftpanel_busy_screen_uses_freeturn_title_never_xray(tmp_path: Path) -> None:
+    bot, panel, _control = panel_for(tmp_path)
+    for lang in i18n.LANGUAGES:
+        bot.state.language = lang
+        run(panel.busy(1, 0, i18n.t("FT_BUSY_APPLY", lang)))
+        html = str(bot.rendered[-1])
+        assert "<h2>Xray</h2>" not in html
+        assert "FreeTurn" in html
+
+
+def test_ftpanel_docker_keeps_new_backend_and_rport_rolls_range(tmp_path: Path) -> None:
+    bot, panel, _control = panel_for(tmp_path)
+    panel.draft.method = "systemd"
+    panel.draft.backend = "new"
+    panel.cycle("method")
+    assert panel.draft.method == "docker"
+    assert panel.draft.backend == "new"
+    run(panel.route(1, 0, "ft:rport"))
+    assert 56000 <= panel.draft.listen_port < 57000
+    assert str(panel.draft.listen_port) in last(bot)
+
+

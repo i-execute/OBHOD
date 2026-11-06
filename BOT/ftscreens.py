@@ -10,6 +10,7 @@ from .ui import (
     bullet_list,
     button,
     code,
+    details,
     input_row,
     fitted,
     long_block,
@@ -88,42 +89,42 @@ def back_row(lang: str = i18n.DEFAULT_LANGUAGE) -> str:
 def home(view: FtView) -> Any:
     t = view.tr()
     state = view.state
+    plan = view.plan
     blocks = banner(view, t)
     if not state.arch and not state.installed:
         blocks.append(quote(muted(t("FT_STATE_UNKNOWN"))))
+    endpoint = ("%s:%s" % (plan.host, plan.listen_port)) if plan.host else str(plan.listen_port)
     pairs = [
         ("info", t("FT_STATE_INSTALLED"), code(yes_no(view.lang, state.installed))),
         ("info", t("FT_STATE_RUNNING"), code(yes_no(view.lang, state.running))),
-        ("settings", t("FT_STATE_METHOD"), code(state.method or state.config.method)),
-        ("tag", t("FT_STATE_VERSION"), code(state.version or state.config.version)),
-        ("file", t("FT_STATE_ARCH"), code(state.arch or t("FT_STATE_UNKNOWN"))),
-        ("info", t("FT_STATE_ROOT"), code(t("FT_STATE_ROOT_YES") if state.root else t("FT_STATE_ROOT_NO"))),
+        ("world", t("FT_SHARE_PEER"), code(endpoint)),
+        ("settings", t("FT_STATE_METHOD"), code("%s / %s / %s" % (state.method or plan.method, plan.mode, plan.obf_profile))),
         ("key", t("FT_STATE_KEY"), code(t("FT_STATE_KEY_SERVER") if state.key_present else t("FT_STATE_KEY_MISSING"))),
     ]
-    blocks.append(table(pairs, (t("FT_STATE_TITLE"), t("UI_VALUE"))))
-    plan = state.config
-    blocks.append(
-        f"<p>{t('FT_DRAFT_STATE', method=code(plan.method), backend=code(plan.backend), port=code(plan.listen_port), mode=code(plan.mode), obf=code(plan.obf_profile))}</p>"
-    )
+    if state.version:
+        pairs.append(("tag", t("FT_STATE_VERSION"), code(state.version)))
     if view.clients:
-        blocks.append(f"<p>{t('FT_CLIENTS_TITLE')}: {code(len(view.clients))}</p>")
-    else:
-        blocks.append(quote(muted(t("FT_CLIENTS_EMPTY"))))
-    buttons = [
-        row(button(t("FT_BTN_CHECK"), "ft:check", icon="scan"), button(t("FT_BTN_PLAN"), "ft:plan", icon="tools")),
-        row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")),
-        row(button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"), button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
-    ]
+        pairs.append(("users", t("FT_CLIENTS_TITLE"), code(len(view.clients))))
+    blocks.append(table(pairs, (t("FT_STATE_TITLE"), t("UI_VALUE"))))
     if state.installed:
-        buttons.append(
+        buttons = [
+            row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")),
+            row(button(t("FT_BTN_PLAN"), "ft:plan", icon="settings"), button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
             row(
                 button(t("FT_BTN_RESTART"), "ft:restart", icon="restart"),
                 button(t("FT_BTN_STOP"), "ft:stop", icon="stop"),
-                button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"),
-            )
-        )
-    buttons.append(row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("UI_HOME"), "nav:home", icon="home")))
-    return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"), icon="tunnel")
+                button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"),
+            ),
+            row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"), button(t("UI_HOME"), "nav:home", icon="home")),
+        ]
+    else:
+        buttons = [
+            row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_PLAN"), "ft:plan", icon="settings")),
+            row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
+            row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users"), button(t("FT_BTN_LOGS"), "ft:logs", icon="logs")),
+            row(button(t("UI_HOME"), "nav:home", icon="home")),
+        ]
+    return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, icon="tunnel")
 
 
 def mode_label(t: i18n.Translator, mode: str) -> str:
@@ -173,38 +174,40 @@ def plan_screen(view: FtView) -> Any:
         ("settings", t("FT_FIELD_METHOD"), code(plan.method)),
         ("settings", t("FT_FIELD_BACKEND"), code(plan.backend)),
         ("info", t("FT_FIELD_LISTEN"), code(plan.listen_port)),
-        ("world", t("FT_FIELD_WG_PORT"), code(plan.wg_port)),
-        ("info", t("FT_FIELD_WG_NET"), code(plan.wg_net)),
         ("settings", t("FT_FIELD_MODE"), code(plan.mode)),
         ("link", t("FT_FIELD_TRANSPORT"), code(plan.transport)),
         ("info", t("FT_FIELD_OBF"), code(plan.obf_profile)),
-        ("tag", t("FT_FIELD_VERSION"), code(plan.version)),
-        ("world", t("FT_FIELD_HOST"), code(plan.host or t("FT_STATE_UNKNOWN"))),
+        ("world", t("FT_FIELD_HOST"), code(plan.host or "auto")),
     ]
-    if plan.backend == "external" and plan.connect:
+    if plan.backend == "new":
+        pairs.append(("info", t("FT_FIELD_WG_NET"), code("%s (:%s)" % (plan.wg_net, plan.wg_port))))
+    elif plan.connect:
         pairs.append(("link", t("FT_FIELD_CONNECT"), code(plan.connect)))
     blocks.append(table(pairs, (t("FT_CONFIG_TITLE"), t("UI_VALUE"))))
     blocks.append(
-        bullet_list(
-            [
-                t("FT_HINT_METHOD"),
-                t("FT_HINT_BACKEND"),
-                t("FT_HINT_MODE"),
-                t("FT_HINT_TRANSPORT"),
-                t("FT_HINT_OBF"),
-                t("FT_HINT_VERSION"),
-            ]
+        details(
+            t("FT_HINTS_TITLE"),
+            bullet_list(
+                [
+                    t("FT_HINT_METHOD"),
+                    t("FT_HINT_BACKEND"),
+                    t("FT_HINT_MODE"),
+                    t("FT_HINT_TRANSPORT"),
+                    t("FT_HINT_OBF"),
+                    t("FT_HINT_VERSION"),
+                ]
+            ),
         )
     )
-    blocks.append(f"<p>{muted(t('FT_APPLY_NOTE'))}</p>")
     buttons = [
         row(button(t("FT_FIELD_METHOD"), "ft:cyc:method", icon="tools"), button(t("FT_FIELD_BACKEND"), "ft:cyc:backend", icon="module")),
         row(button(t("FT_FIELD_MODE"), "ft:cyc:mode", icon="settings"), button(t("FT_FIELD_TRANSPORT"), "ft:cyc:transport", icon="link")),
-        row(button(t("FT_FIELD_OBF"), "ft:cyc:obf_profile", icon="lock"), button(t("FT_FIELD_VERSION"), "ft:cyc:version", icon="tag"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
+        row(button(t("FT_FIELD_OBF"), "ft:cyc:obf_profile", icon="lock"), button(t("FT_FIELD_VERSION"), "ft:cyc:version", icon="tag")),
+        row(button(t("FT_BTN_RANDOM_PORT"), "ft:rport", icon="refresh"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
         input_row(t("FT_PORT_INPUT"), "ft_port", "-", view.lang),
+        input_row(t("FT_HOST_INPUT"), "ft_host", "-", view.lang),
         input_row(t("FT_WG_PORT_INPUT"), "ft_wg_port", "-", view.lang),
         input_row(t("FT_WG_NET_INPUT"), "ft_wg_net", "-", view.lang),
-        input_row(t("FT_HOST_INPUT"), "ft_host", "-", view.lang),
         input_row(t("FT_KEY_INPUT"), "ft_key", "-", view.lang),
         back_row(view.lang),
     ]
@@ -427,6 +430,14 @@ def confirm_screen(view: FtView, title: str, body: str, action: str, back: str =
     blocks.append(quote(bold(body)))
     buttons = [row(button(t("UI_CONFIRM"), action, icon="ok"), button(t("UI_CANCEL"), back, icon="back"))]
     return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, icon="warn")
+
+
+def busy_screen(title: str, lang: str = i18n.DEFAULT_LANGUAGE, steps: list[str] | None = None) -> Any:
+    t = i18n.translator(lang)
+    blocks = [quote(muted(title))]
+    if steps:
+        blocks.append(bullet_list([muted(item) for item in steps]))
+    return screen(t("FT_TITLE"), t("BUSY_SUBTITLE"), blocks, [], icon="tunnel")
 
 
 def error_screen(view: FtView, title: str, message: str) -> Any:

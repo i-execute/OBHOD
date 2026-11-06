@@ -772,18 +772,27 @@ heal_system() {
       fi
     fi
     if [ -f /opt/free-turn-proxy/install.conf ]; then
-      local ft_port ft_mode ft_proto
+      local ft_port ft_mode ft_proto ft_method
       ft_port="$(awk -F= '$1=="LISTEN_PORT" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
-      ft_mode="$(awk -F= '$1=="MODE" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
+      ft_mode="$(awk -F= '$1=="PROXY_MODE" || $1=="MODE" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
+      ft_method="$(awk -F= '$1=="INSTALL_METHOD" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
       ft_proto="udp"
       [ "$ft_mode" = "tcp" ] && ft_proto="tcp"
       case "$ft_port" in
         ''|*[!0-9]*) ft_port="" ;;
       esac
       if [ -n "$ft_port" ] && [ "$ft_port" -ge 1 ] && [ "$ft_port" -le 65535 ]; then
+        if command -v nft >/dev/null 2>&1 && nft list table inet obhod_ddos >/dev/null 2>&1; then
+          nft flush set inet obhod_ddos conn_flood >/dev/null 2>&1 || true
+          nft flush set inet obhod_ddos udp_flood >/dev/null 2>&1 || true
+          nft flush set inet obhod_ddos port_scan >/dev/null 2>&1 || true
+          if ! nft list table inet obhod_ddos 2>/dev/null | grep -qF "${ft_proto} dport ${ft_port} accept"; then
+            nft insert rule inet obhod_ddos input "${ft_proto}" dport "${ft_port}" accept >/dev/null 2>&1 && ok_line "exempted FreeTurn ${ft_port}/${ft_proto} in obhod_ddos" || true
+          fi
+        fi
         if ! (command -v iptables >/dev/null 2>&1 && iptables -S OBHOD-FT >/dev/null 2>&1); then
           if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-            if ! ufw status 2>/dev/null | grep -qE "^${ft_port}(/${ft_proto})?[[:space:]]"; then
+            if ! ufw status 2>/dev/null | grep -qE "^${ft_port}(/${ft_proto})?[[:space:]]+ALLOW"; then
               ufw allow "${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in ufw" || true
             fi
           elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null || true)" = "running" ]; then
@@ -791,6 +800,17 @@ heal_system() {
               firewall-cmd --add-port="${ft_port}/${ft_proto}" >/dev/null 2>&1 || true
               firewall-cmd --permanent --add-port="${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in firewalld" || true
             fi
+          elif command -v iptables >/dev/null 2>&1; then
+            if ! iptables -C INPUT -p "${ft_proto}" --dport "${ft_port}" -j ACCEPT >/dev/null 2>&1; then
+              iptables -I INPUT 1 -p "${ft_proto}" --dport "${ft_port}" -j ACCEPT >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in iptables" || true
+            fi
+          fi
+        fi
+      fi
+      if [ "$ft_method" = "docker" ] && command -v docker >/dev/null 2>&1; then
+        if docker container inspect free-turn-proxy >/dev/null 2>&1; then
+          if [ "$(docker inspect -f '{{.State.Running}}' free-turn-proxy 2>/dev/null || true)" != "true" ]; then
+            docker start free-turn-proxy >/dev/null 2>&1 && ok_line "recovered stopped Docker free-turn-proxy" || true
           fi
         fi
       fi

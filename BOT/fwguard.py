@@ -16,7 +16,7 @@ OK_TTL = 86400.0
 FAIL_TTL = 300.0
 MIN_PREFIX = 8
 MAX_PREFIXES = 512
-ASNS = ((47541, "LLC VK"), (47764, "VK-AS LLC VK"))
+ASNS = ((47541, "LLC VK"), (47764, "VK-AS LLC VK"), (28709, "VKONTAKTE-REGIONAL-CDN LLC VK"))
 CACHE: dict[str, tuple[float, list[str], str]] = {}
 
 

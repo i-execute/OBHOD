@@ -265,9 +265,106 @@ def test_complete_link_adds_transport_and_arq_profile() -> None:
     assert filled["transport"] == "tcp"
     assert filled["mode"] == "tcp"
     assert filled["kcp"]["mtu"] == 1200
+    assert filled["n"] == 12
     assert filled["spc"] == 12
     udp_filled = decode_link(complete_link(base, FtConfig(transport="udp")))
     assert udp_filled["transport"] == "udp"
+    assert udp_filled["n"] == 12
+    assert udp_filled["spc"] == 12
+    assert "obf" not in udp_filled
+    keyed = encode_link(
+        {
+            "v": 1,
+            "provider": "vk",
+            "peer": "203.0.113.10:56123",
+            "key": "a" * 64,
+            "cid": "0123456789abcdef0123456789abcdef",
+            "wg": "# note\n[Interface]\nMTU = 1280\nPrivateKey = abc\n",
+        }
+    )
+    keyed_filled = decode_link(complete_link(keyed, FtConfig(obf_profile="rtpopus3")))
+    assert keyed_filled["obf"] == "rtpopus3"
+    assert "MTU" not in keyed_filled["wg"]
+    assert keyed_filled["wg"] == "[Interface]\nPrivateKey = abc"
+
+
+@pytest.mark.asyncio
+async def test_control_apply_raw_response_probes_and_keeps_fresh_owner_link() -> None:
+    fresh_key = "b" * 64
+    owner_uri = encode_link(
+        {
+            "v": 1,
+            "provider": "vk",
+            "peer": "89.125.48.221:56696",
+            "obf": "rtpopus3",
+            "key": fresh_key,
+            "cid": "02597c3861867329181e3f01898c44eb",
+            "name": "owner",
+        }
+    )
+
+    class SequenceShell:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+            self.replies = [
+                ok_envelope({"owner": {"client_id": "02597c3861867329181e3f01898c44eb", "link": owner_uri}, "obf_key": fresh_key, "needs_restart": True}),
+                ok_envelope(
+                    {
+                        "installed": True,
+                        "running": True,
+                        "euid": 0,
+                        "arch": "x86_64",
+                        "method": "docker",
+                        "version": "v4.1.2",
+                        "config": {"method": "docker", "backend": "new", "listen_port": 56696, "mode": "udp", "obf_profile": "rtpopus3", "obf_key": fresh_key},
+                    }
+                ),
+            ]
+
+        async def run_argv(self, argv: list[str], stdin: bytes | None = None, timeout: float | None = None) -> ShellOutput:
+            self.calls.append(list(argv))
+            return ShellOutput(text=self.replies.pop(0), code=0)
+
+    shell = SequenceShell()
+    control = FtControl(shell=shell)
+    state = await control.apply(FtConfig(method="docker", backend="new", listen_port=56696))
+    assert state.installed is True
+    assert state.running is True
+    assert state.key_present is True
+    assert len(shell.calls) == 2
+    decoded = decode_link(state.links["owner"])
+    assert decoded["key"] == fresh_key
+    assert decoded["n"] == 12
+    assert decoded["spc"] == 12
+
+
+def test_agent_ensure_apply_port_open_handles_normalized_flags_and_nft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    agent = load_agent()
+    conf_dir = tmp_path / "ft"
+    conf_dir.mkdir()
+    (conf_dir / "install.conf").write_text('LISTEN_PORT="56000"\nPROXY_MODE="udp"\n', encoding="utf-8")
+    monkeypatch.setattr(agent, "INSTALL_ROOT", str(conf_dir))
+    executed: list[list[str]] = []
+
+    def fake_run_tool(argv: list[str], timeout: int = 30) -> tuple[int, str]:
+        executed.append(list(argv))
+        if argv[:4] == ["nft", "list", "table", "inet"]:
+            return 0, "table inet obhod_ddos {\n chain input {\n }\n}"
+        if argv[:3] == ["nft", "list", "ruleset"]:
+            return 0, "table inet filter {\n chain input {\n type filter hook input priority filter; policy drop;\n }\n}"
+        if argv[:2] == ["ufw", "status"]:
+            return 0, "Status: active\n[ 1] 56000/udp DENY IN Anywhere\n"
+        return 0, ""
+
+    monkeypatch.setattr(agent, "run_tool", fake_run_tool)
+    monkeypatch.setattr(agent, "guard_backend", lambda: "ufw")
+    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/sbin/" + name)
+    agent.ensure_apply_port_open({"listen_port": "56000", "mode": "udp"}, {"data": {}})
+    assert ["nft", "flush", "set", "inet", "obhod_ddos", "conn_flood"] in executed
+    assert ["nft", "insert", "rule", "inet", "obhod_ddos", "input", "udp", "dport", "56000", "accept"] in executed
+    assert ["nft", "insert", "rule", "inet", "filter", "input", "udp", "dport", "56000", "accept"] in executed
+    assert ["ufw", "--force", "delete", "1"] in executed
+    assert ["ufw", "allow", "56000/udp"] in executed
 
 
 def test_ft_state_migrates_legacy_udp_links_to_tcp() -> None:
