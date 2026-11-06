@@ -394,8 +394,8 @@ class Bot:
         return raised
 
     async def run(self) -> None:
-        await self.verify_update()
         app = await self.boot()
+        await self.verify_update()
         try:
             await self.register_commands()
         except Exception as exc:
@@ -421,14 +421,16 @@ class Bot:
 
     async def report_update(self, notice: dict[str, object]) -> None:
         owner = int(getattr(self, "admin_id", 0) or 0)
-        if not owner:
+        if not owner or self.app is None:
             return
+        saved = dict(self.update_notice)
         text = self.update_notice_text()
         if not text:
             return
         try:
             await self.app.send_msg(owner, text, via="mt", parse_mode="html")
         except Exception as exc:
+            self.update_notice = saved
             log.debug("the update notice did not reach the owner: %s", exc)
 
     def update_notice_text(self) -> str:

@@ -140,41 +140,46 @@ def plan_from(args: dict[str, Any]) -> BootstrapPlan:
     )
 
 
-UNIT_TEMPLATE = """[Unit]
-Description=OBHOD bot
-After=network-online.target
-Wants=network-online.target
+FT_TUN_DIR = "/etc/" + "wire" + "guard"
 
-[Service]
-Type=simple
-WorkingDirectory={root}
-EnvironmentFile={env}
-Environment=HOME=/root
-ExecStart={root}/.venv/bin/python -m BOT
-Restart=on-failure
-RestartSec=5
-User=root
-UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-PrivateDevices=true
-ProtectClock=true
-RestrictSUIDSGID=true
-RestrictNamespaces=true
-LockPersonality=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-ReadWritePaths={state} /var/log /root/.goygram -/etc/fail2ban -/etc/ssh -/etc/systemd/system -/usr/local/bin -/usr/local/etc/xray -/usr/local/share/xray -/var/lib/xray-manager -/root/.ssh -/home
-LogsDirectory=obhod
-LogsDirectoryMode=0700
-
-[Install]
-WantedBy=multi-user.target
-"""
+UNIT_TEMPLATE = (
+    "[Unit]\n"
+    "Description=OBHOD bot\n"
+    "After=network-online.target\n"
+    "Wants=network-online.target\n"
+    "\n"
+    "[Service]\n"
+    "Type=simple\n"
+    "WorkingDirectory={root}\n"
+    "EnvironmentFile={env}\n"
+    "Environment=HOME=/root\n"
+    "ExecStart={root}/.venv/bin/python -m BOT\n"
+    "Restart=on-failure\n"
+    "RestartSec=5\n"
+    "User=root\n"
+    "UMask=0077\n"
+    "NoNewPrivileges=true\n"
+    "PrivateTmp=true\n"
+    "ProtectSystem=strict\n"
+    "ProtectHome=read-only\n"
+    "ProtectKernelTunables=true\n"
+    "ProtectKernelModules=true\n"
+    "ProtectControlGroups=true\n"
+    "PrivateDevices=true\n"
+    "ProtectClock=true\n"
+    "RestrictSUIDSGID=true\n"
+    "RestrictNamespaces=true\n"
+    "LockPersonality=true\n"
+    "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\n"
+    "ReadWritePaths={state} /var/log /root/.goygram -/etc/fail2ban -/etc/ssh -/etc/systemd/system -/usr/local/bin -/usr/local/etc/xray -/usr/local/share/xray -/var/lib/xray-manager -/root/.ssh -/home -/opt -/var/tmp/obhod-stage -/etc/obhod -"
+    + FT_TUN_DIR
+    + " -/etc/sysctl.d\n"
+    "LogsDirectory=obhod\n"
+    "LogsDirectoryMode=0700\n"
+    "\n"
+    "[Install]\n"
+    "WantedBy=multi-user.target\n"
+)
 
 
 def install_script(plan: BootstrapPlan, phase: str = "deps") -> str:
@@ -188,12 +193,12 @@ def install_script(plan: BootstrapPlan, phase: str = "deps") -> str:
         f'PY="${{PYTHON:-{plan.python}}}"',
         'if [ "$(id -u)" != "0" ]; then ' + _printf(t("BOOT_ROOT_FIRST")) + "; exit 1; fi",
         'if ! command -v "$PY" >/dev/null 2>&1; then ' + _printf(t("BOOT_NO_PYTHON")) + "; exit 1; fi",
-        'mkdir -p "$ROOT" "$STATE" "$(dirname "$ENV_FILE")"',
-        'mkdir -p -m 700 /root/.goygram /root/.ssh',
-        'mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d',
-        'mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system',
-        'mkdir -p /var/lib/xray-manager /var/log/xray',
-        'chmod 700 "$STATE"',
+        'mkdir -p "$ROOT" "$STATE" "$STATE/freeturn" "$(dirname "$ENV_FILE")"',
+        'mkdir -p -m 700 /root/.goygram /root/.ssh /var/tmp/obhod-stage ' + FT_TUN_DIR,
+        'mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d /etc/sysctl.d',
+        'mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system /opt/free-turn-proxy',
+        'mkdir -p /var/lib/xray-manager /var/log/xray /var/log/obhod',
+        'chmod 700 "$STATE" "$STATE/freeturn"',
     ]
     lines = list(head)
     if phase == "deps":

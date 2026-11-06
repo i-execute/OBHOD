@@ -42,7 +42,7 @@ STAGE_DIR = "/var/tmp/obhod-stage"
 DEST_DIR = "/opt/obhod-src"
 REINSTALL_UNIT = "obhod-reinstall"
 SELF_UNIT = "obhod-self-update"
-KEPT_UNTRACKED = (".venv", ".env")
+KEPT_UNTRACKED = ("venv", ".venv", ".env", "obhod.env")
 COMPILE_TARGETS = ("BOT", "Storage/remote", "tools")
 MODES = ("commit", "release")
 GIT_TIMEOUT = 180.0
@@ -805,9 +805,10 @@ class Updater:
         return int(out.code or 0) == 0, clean_output(out.text)
 
     def _python(self) -> str:
-        venv = self.root / ".venv" / "bin" / "python"
-        if venv.is_file() and os.access(str(venv), os.X_OK):
-            return str(venv)
+        for folder in (".venv", "venv"):
+            venv = self.root / folder / "bin" / "python"
+            if venv.is_file() and os.access(str(venv), os.X_OK):
+                return str(venv)
         return sys.executable or "python3"
 
     async def _install_deps(self) -> tuple[bool, str]:

@@ -582,3 +582,28 @@ def test_without_a_runtime_the_unit_keeps_the_venv_path() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "/nonexistent-prefix/venv/bin/python"
+
+
+def test_cmd_update_copies_full_storage_heals_corrupt_state_and_reports_both_cores(tmp_path: Path) -> None:
+    payload, env, env_conf = dev_payload(tmp_path)
+    (payload / "Storage" / "emoji-pack.json").write_text('{"pack":"test","icons":{}}', encoding="utf-8")
+    env_conf.parent.mkdir(parents=True, exist_ok=True)
+    env_conf.write_text("BOT_TOKEN=123456:ABC\nAPI_ID=42\nAPI_HASH=%s\nADMIN_ID=1000\nOBHOD_SUB_PORT=2096\nOBHOD_API_PORT=62789\n" % HASH, encoding="utf-8")
+    state_dir = Path(env["HOME"]) / ".obhod" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "state.json").write_text("{broken-json", encoding="utf-8")
+    (state_dir / ".state-stale.json").write_text("tmp", encoding="utf-8")
+    res = dev_run(payload, ["update", "--dev", "--skip-deps"], env)
+    assert res.returncode == 0, res.stderr
+    assert "updated" in res.stdout
+    assert "xray-core & freeturn" in res.stdout
+    prefix = Path(env["HOME"]) / ".obhod" / "app"
+    assert (prefix / "Storage" / "emoji-pack.json").is_file()
+    assert not (state_dir / ".state-stale.json").exists()
+    assert not (state_dir / "state.json").exists()
+    assert list(state_dir.glob("state.json.corrupt.*"))
+    status_res = dev_run(payload, ["status", "--dev"], env)
+    assert status_res.returncode == 0
+    assert "xray-core:" in status_res.stdout
+    assert "freeturn:" in status_res.stdout
+

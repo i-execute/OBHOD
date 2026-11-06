@@ -36,7 +36,7 @@ CHECKSUMS_CACHE = {}
 API_CACHE = {}
 DEFAULT_URL = SCRIPT_URL % FALLBACK_VERSION
 DEFAULT_SHA256 = SCRIPT_SHA256[FALLBACK_VERSION]
-CACHE_DIR = "/var/lib/obhod/freeturn"
+CACHE_DIR = os.path.join(os.environ.get("OBHOD_STATE_DIR") or "/var/lib/obhod", "freeturn")
 MAX_SCRIPT_BYTES = 512 * 1024
 MAX_SCRIPTS = 64
 PROBE_TIMEOUT = 30.0
@@ -342,8 +342,21 @@ def download(url, expected):
     return write_cache(got, body)
 
 
+def _verified_tag(flags):
+    explicit = str(flags.get("script_sha256", "") or "").strip().lower()
+    raw = str(flags.get("version", "") or "").strip().lower()
+    if len(explicit) == 64 and all(ch in "0123456789abcdef" for ch in explicit) and raw not in {"", "default", "latest", "auto", "local"}:
+        tag = raw if raw.startswith("v") else "v" + raw
+        if not PIN_RE.match(tag):
+            raise AgentError("bad_arg", "the version must be latest or vX.Y.Z", "init")
+        return tag
+    return ""
+
+
 def script_source(flags, lookup=None, digest_lookup=None):
-    tag, _source = resolve_version(flags.get("version", ""), lookup, digest_lookup)
+    tag = _verified_tag(flags)
+    if not tag:
+        tag, _source = resolve_version(flags.get("version", ""), lookup, digest_lookup)
     url = str(flags.get("script_url", "") or script_url(tag))
     expected = str(flags.get("script_sha256", "") or release_digest(tag)).strip().lower()
     if not expected:
@@ -386,7 +399,9 @@ def command_argv(command, flags, lookup=None):
         "kcp_mtu",
         "kcp_acknodelay",
     )
-    tag, _source = resolve_version(flags.get("version", ""), lookup)
+    tag = _verified_tag(flags)
+    if not tag:
+        tag, _source = resolve_version(flags.get("version", ""), lookup)
     for key in order:
         if key in flags:
             value = str(flags[key])
@@ -409,6 +424,20 @@ def command_argv(command, flags, lookup=None):
     return out
 
 
+MUTATING_RPC = frozenset({"apply", "uninstall", "restart", "stop", "client-add", "client-remove"})
+
+
+def sandboxed_host():
+    if os.geteuid() != 0:
+        return False
+    if not os.path.isdir("/run/systemd/system") or not shutil.which("systemd-run"):
+        return False
+    for probe in ("/proc/sys/net/ipv4", "/usr"):
+        if os.path.exists(probe) and not os.access(probe, os.W_OK):
+            return True
+    return False
+
+
 def run_script(path, argv, timeout):
     env = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -418,6 +447,49 @@ def run_script(path, argv, timeout):
         "TERM": "dumb",
         "DEBIAN_FRONTEND": "noninteractive",
     }
+    command = argv[0] if argv else ""
+    if command in MUTATING_RPC and sandboxed_host():
+        systemd_cmd = [
+            "systemd-run",
+            "--pipe",
+            "--wait",
+            "--quiet",
+            "--collect",
+            "-p",
+            "WorkingDirectory=/",
+            "-E",
+            "PATH=" + env["PATH"],
+            "-E",
+            "HOME=/root",
+            "-E",
+            "LANG=C.UTF-8",
+            "-E",
+            "LC_ALL=C.UTF-8",
+            "-E",
+            "TERM=dumb",
+            "-E",
+            "DEBIAN_FRONTEND=noninteractive",
+            "bash",
+            path,
+        ] + argv
+        try:
+            escaped = subprocess.run(
+                systemd_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                env=env,
+                cwd="/",
+                check=False,
+            )
+            out_text = (escaped.stdout or b"").decode("utf-8", "replace")
+            if last_json(out_text) or int(escaped.returncode or 0) == 0:
+                return out_text, int(escaped.returncode or 0)
+        except subprocess.TimeoutExpired:
+            raise AgentError("start_failed", "the install script did not finish within %d seconds" % timeout, command)
+        except OSError:
+            pass
     try:
         finished = subprocess.run(
             ["bash", path] + argv,

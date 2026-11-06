@@ -248,6 +248,20 @@ def test_a_missing_sudo_does_not_crash_the_checks(monkeypatch: pytest.MonkeyPatc
     ok, note = screen.check_root()
     assert ok is False
     assert "sudo" in note
+
+
+def test_setup_banner_and_preflight_feature_both_xray_and_freeturn(capsys: pytest.CaptureFixture[str]) -> None:
+    setup.COLOR = False
+    screen = setup.Setup()
+    screen.dev = True
+    screen.skip_deps = True
+    screen.banner()
+    assert screen.run_checks() is True
+    out = capsys.readouterr().out
+    assert "Xray-core & FreeTurn" in out
+    assert "xray-core" in out
+    assert "freeturn" in out
+
     capsys.readouterr()
 
 

@@ -1351,11 +1351,92 @@ class Setup:
             host = "server"
         return paint(user + "@" + host, theme.muted)
 
+    def probe_xray(self) -> tuple[bool, str]:
+        if self.dev:
+            return True, "managed in bot (local dev mode)"
+        state = ""
+        if shutil.which("systemctl"):
+            try:
+                res = subprocess.run(
+                    ["systemctl", "is-active", "xray.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                state = (res.stdout or "").strip()
+            except (OSError, subprocess.SubprocessError):
+                state = ""
+        if state == "active":
+            return True, "active (/usr/local/bin/xray)"
+        if os.path.isfile("/usr/local/bin/xray"):
+            return True, "installed (%s, auto-checked on apply)" % (state or "stopped")
+        return True, "not installed yet (install in bot)"
+
+    def probe_freeturn(self) -> tuple[bool, str]:
+        if self.dev:
+            return True, "managed in bot (local dev mode)"
+        state = ""
+        tun = ""
+        if shutil.which("ip"):
+            try:
+                chk = subprocess.run(
+                    ["ip", "link", "show", "ft-wg0"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if chk.returncode == 0:
+                    tun = ", ft-wg0 up"
+            except (OSError, subprocess.SubprocessError):
+                tun = ""
+        if shutil.which("systemctl"):
+            try:
+                res = subprocess.run(
+                    ["systemctl", "is-active", "free-turn-proxy.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                state = (res.stdout or "").strip()
+            except (OSError, subprocess.SubprocessError):
+                state = ""
+        if state == "active":
+            return True, "active (systemd%s)" % tun
+        if shutil.which("docker"):
+            try:
+                dk = subprocess.run(
+                    ["docker", "inspect", "-f", "{{.State.Status}}", "free-turn-proxy"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if (dk.stdout or "").strip() == "running":
+                    return True, "active (docker%s)" % tun
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if os.path.isdir("/opt/free-turn-proxy") or os.path.isfile("/etc/systemd/system/free-turn-proxy.service"):
+            return True, "installed (%s%s, auto-healed)" % (state or "stopped", tun)
+        return True, "not installed yet (install in bot)"
+
+    def cores_badge_line(self) -> str:
+        _ok_x, x_note = self.probe_xray()
+        _ok_f, f_note = self.probe_freeturn()
+        x_style = theme.badge_ok if x_note.startswith("active") else (theme.badge_warn if x_note.startswith("installed") else theme.chip)
+        f_style = theme.badge_ok if f_note.startswith("active") else (theme.badge_warn if f_note.startswith("installed") else theme.chip)
+        x_short = "active" if x_note.startswith("active") else ("installed" if x_note.startswith("installed") else "in-bot")
+        f_short = "active" if f_note.startswith("active") else ("installed" if f_note.startswith("installed") else "in-bot")
+        return (
+            pill("Xray-core: " + x_short, x_style)
+            + "  "
+            + pill("FreeTurn: " + f_short, f_style)
+        )
+
     def banner(self) -> None:
         self.limit = width()
-        head = paint(g.dot_on, theme.accent) + " " + paint("OBHOD", theme.title) + paint(" " + g.half + " Setup & Control", theme.subtitle)
+        head = paint(g.dot_on, theme.accent) + " " + paint("OBHOD", theme.title) + paint(" " + g.half + " Setup & Self-Heal", theme.subtitle)
         rows = [
-            paint("Telegram control panel over Xray-core", theme.bright),
+            paint("Telegram control panel for Xray-core & FreeTurn", theme.bright),
+            self.cores_badge_line(),
             paint("Interactive SSH setup wizard  " + g.half + "  arrows to move, space to select, enter to confirm", theme.muted),
         ]
         panel(head, rows, self.limit, theme.frame, self.host_label())
@@ -1405,10 +1486,10 @@ class Setup:
         menu = Menu(
             paint("1", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Select Action", theme.title),
             [
-                RadioOption("install", "Install / Upgrade", "Install OBHOD, configure obhod.service, and preserve existing Xray/FreeTurn state", tag_install),
-                RadioOption("update", "Update payload only", "Refresh BOT and remote agent scripts and sync Python dependencies"),
-                RadioOption("reinstall", "Clean reinstall", "Stop leftover processes, rebuild application directory, and install fresh"),
-                RadioOption("status", "Service status & health", "Inspect obhod.service systemd state, config file, and Python venv"),
+                RadioOption("install", "Install / Upgrade & Self-Heal", "Install OBHOD, repair permissions/units, and preserve Xray-core & FreeTurn state", tag_install),
+                RadioOption("update", "Update payload & repair", "Refresh BOT, remote agents, and Python venv while healing Xray-core & FreeTurn units"),
+                RadioOption("reinstall", "Clean reinstall", "Stop leftover processes, rebuild OBHOD prefix, and keep Xray-core & FreeTurn configs"),
+                RadioOption("status", "Service & cores health", "Inspect obhod.service, Xray-core, FreeTurn (ft-wg0), config file, and Python venv"),
                 RadioOption("service", "Manage running service", "Restart, start, stop, or view recent journal logs of obhod.service"),
                 RadioOption("uninstall", "Uninstall OBHOD", "Stop and remove obhod.service and delete the application prefix"),
             ],
@@ -1617,6 +1698,8 @@ class Setup:
         if self.action in ("install", "update", "reinstall"):
             checks.append(("python runtime", self.check_python))
             checks.append(("package mirrors", self.check_network))
+            checks.append(("xray-core", self.probe_xray))
+            checks.append(("freeturn", self.probe_freeturn))
         results: list[tuple[str, bool, str]] = []
         for label, probe in checks:
             ok, note = self.live(label, probe)
@@ -1770,6 +1853,8 @@ class Setup:
         if self.action in ("install", "update", "reinstall"):
             rows.append(fact("python", self.python))
             rows.append(fact("deps", "skipped" if self.skip_deps else "venv + requirements"))
+            cores_plan = "wiped (--purge-all)" if self.purge_all else "Xray-core & FreeTurn kept + auto-healed"
+            rows.append(fact("cores", cores_plan))
         if self.action in ("install", "reinstall"):
             rows.append(fact("token", mask_secret("BOT_TOKEN", self.credentials["BOT_TOKEN"])))
             rows.append(fact("admin", self.credentials["ADMIN_ID"] or "missing"))
@@ -1966,8 +2051,8 @@ class Setup:
                 rows = [paint(g.check + " operation finished in %.1fs" % elapsed, theme.good, theme.bold)]
             else:
                 rows = [
-                    paint(g.check + " OBHOD is installed and ready", theme.good, theme.bold),
-                    paint("open Telegram, send /start to your bot, and explore the control panel", theme.muted),
+                    paint(g.check + " OBHOD is installed, verified, and ready", theme.good, theme.bold),
+                    paint("open Telegram and send /start to manage Xray-core & FreeTurn", theme.muted),
                     paint("live logs: journalctl -u obhod -f" if not self.dev else ("manual run: OBHOD_ENV=%s %s/venv/bin/python -m BOT" % (self.env_file, self.prefix)), theme.muted),
                 ]
             panel("done in %.1fs" % elapsed, rows, self.limit, theme.good)

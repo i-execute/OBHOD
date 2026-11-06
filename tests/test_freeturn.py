@@ -884,3 +884,33 @@ def test_a_bytes_answer_is_parsed_too() -> None:
     assert answer.data["running"] is True
     with pytest.raises(FtError):
         freeturn.parse_response(None)
+
+
+def test_agent_accepts_verified_new_release_tag_with_sha256_and_escapes_sandbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = load_agent()
+    digest = "a" * 64
+    flags = {"version": "v4.9.0", "script_sha256": digest, "script_url": "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.9.0/install.sh"}
+    monkeypatch.setattr(module, "download", lambda url, expected: (url, expected))
+    url, expected = module.script_source(flags)
+    assert expected == digest
+    assert "v4.9.0/install.sh" in url
+    argv = module.command_argv("apply", flags)
+    assert "--version=v4.9.0" in argv
+
+    calls: list[list[str]] = []
+
+    class _Done:
+        returncode = 0
+        stdout = b'{"proto": 3, "result": "ok", "data": {"running": true}}\n'
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        calls.append(list(cmd))
+        return _Done()
+
+    monkeypatch.setattr(module, "sandboxed_host", lambda: True)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    out, code = module.run_script(str(tmp_path / "install.sh"), ["apply", "--json"], 30)
+    assert code == 0
+    assert '"running": true' in out
+    assert calls and calls[0][0] == "systemd-run"
+

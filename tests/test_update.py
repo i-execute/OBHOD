@@ -795,3 +795,16 @@ def test_fetch_get_falls_back_to_mirror_and_blocks_evil_redirect(tmp_path: Path,
         update.fetch_get_body(update.GET_URL)
     assert "redirect" in caught.value.message
 
+
+def test_updater_keeps_installer_venv_and_uses_it(tmp_path: Path) -> None:
+    assert "venv" in update.KEPT_UNTRACKED
+    assert ".venv" in update.KEPT_UNTRACKED
+    root = tmp_path / "app"
+    venv_py = root / "venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    venv_py.chmod(0o755)
+    updater = Updater(shell=FakeShell({}), root=root, state_dir=tmp_path / "state")
+    assert updater._python() == str(venv_py)
+
+

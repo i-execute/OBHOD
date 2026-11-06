@@ -113,8 +113,16 @@ def home(view: FtView) -> Any:
         row(button(t("FT_BTN_CHECK"), "ft:check", icon="scan"), button(t("FT_BTN_PLAN"), "ft:plan", icon="tools")),
         row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")),
         row(button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"), button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
-        row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
+    if state.installed:
+        buttons.append(
+            row(
+                button(t("FT_BTN_RESTART"), "ft:restart", icon="restart"),
+                button(t("FT_BTN_STOP"), "ft:stop", icon="stop"),
+                button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"),
+            )
+        )
+    buttons.append(row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("UI_HOME"), "nav:home", icon="home")))
     return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"), icon="tunnel")
 
 

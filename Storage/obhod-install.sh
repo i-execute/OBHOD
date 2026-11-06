@@ -97,13 +97,13 @@ banner() {
   fi
   printf '\n'
   if [ "$COLOR" = "1" ]; then
-    printf '  %s+======================================+%s\n' "$C_HEAD" "$C_RESET"
-    printf '  %s|%s  %sOBHOD%s                          %s|%s\n' "$C_HEAD" "$C_RESET" "$C_BOLD" "$C_HEAD" "$C_RESET" "$C_RESET"
-    printf '  %s|%s  telegram control bot over xray-core %s|%s\n' "$C_HEAD" "$C_DIM" "$C_HEAD" "$C_RESET"
-    printf '  %s+======================================+%s\n' "$C_HEAD" "$C_RESET"
+    printf '  %s+===============================================+%s\n' "$C_HEAD" "$C_RESET"
+    printf '  %s|%s  %sOBHOD%s                                        %s|%s\n' "$C_HEAD" "$C_RESET" "$C_BOLD" "$C_HEAD" "$C_RESET" "$C_RESET"
+    printf '  %s|%s  telegram control bot: xray-core & freeturn   %s|%s\n' "$C_HEAD" "$C_DIM" "$C_HEAD" "$C_RESET"
+    printf '  %s+===============================================+%s\n' "$C_HEAD" "$C_RESET"
   else
     printf '  %s%sOBHOD%s\n' "$C_HEAD" "$C_BOLD" "$C_RESET"
-    printf '  %stelegram control bot over xray-core%s\n' "$C_DIM" "$C_RESET"
+    printf '  %stelegram control bot: xray-core & freeturn%s\n' "$C_DIM" "$C_RESET"
   fi
   printf '  %s/ %s%s\n\n' "$C_ACC" "$mode" "$C_RESET"
 }
@@ -146,6 +146,53 @@ fail_line() {
   printf '      %sxx%s %s\n' "$C_BAD" "$C_RESET" "$*" >&2
 }
 
+core_xray_summary() {
+  if [ "$DEV" = "1" ]; then
+    printf 'managed in bot'
+    return 0
+  fi
+  local st=""
+  if command -v systemctl >/dev/null 2>&1; then
+    st="$(systemctl is-active xray.service 2>/dev/null || true)"
+  fi
+  if [ "$st" = "active" ]; then
+    printf 'active (/usr/local/bin/xray)'
+  elif [ -x /usr/local/bin/xray ]; then
+    printf 'installed (%s)' "${st:-stopped}"
+  else
+    printf 'not installed yet (manage in bot)'
+  fi
+}
+
+core_freeturn_summary() {
+  if [ "$DEV" = "1" ]; then
+    printf 'managed in bot'
+    return 0
+  fi
+  local st="" wg=""
+  if command -v systemctl >/dev/null 2>&1; then
+    st="$(systemctl is-active free-turn-proxy.service 2>/dev/null || true)"
+  fi
+  if command -v ip >/dev/null 2>&1 && ip link show ft-wg0 >/dev/null 2>&1; then
+    wg=", ft-wg0 up"
+  fi
+  if [ "$st" = "active" ]; then
+    printf 'active (systemd%s)' "$wg"
+    return 0
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    if [ "$(docker inspect -f '{{.State.Status}}' free-turn-proxy 2>/dev/null || true)" = "running" ]; then
+      printf 'active (docker%s)' "$wg"
+      return 0
+    fi
+  fi
+  if [ -d /opt/free-turn-proxy ] || [ -f /etc/systemd/system/free-turn-proxy.service ]; then
+    printf 'installed (%s%s)' "${st:-stopped}" "$wg"
+  else
+    printf 'not installed yet (manage in bot)'
+  fi
+}
+
 summary_box() {
   local service_state="no unit in dev mode"
   if [ -n "$SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
@@ -153,7 +200,7 @@ summary_box() {
     [ -n "$service_state" ] || service_state="unknown"
   fi
   if [ "$COLOR" = "1" ]; then
-    printf '\n  %s+= %sdone%s ===========================+%s\n' "$C_OK" "$C_BOLD" "$C_OK" "$C_RESET"
+    printf '\n  %s+= %sdone%s =====================================+%s\n' "$C_OK" "$C_BOLD" "$C_OK" "$C_RESET"
   else
     printf '\n  %s%sdone%s\n\n' "$C_OK" "$C_BOLD" "$C_RESET"
   fi
@@ -161,15 +208,17 @@ summary_box() {
   kv "config" "$ENV_FILE"
   kv "state" "$STATE_DIR"
   kv "service" "$service_state"
+  kv "xray" "$(core_xray_summary)"
+  kv "freeturn" "$(core_freeturn_summary)"
   printf '\n'
   if [ "$DEV" = "1" ]; then
     kv "run it" "OBHOD_ENV=$ENV_FILE $PREFIX/venv/bin/python -m BOT"
   else
     kv "logs" "journalctl -u obhod -f"
-    kv "open" "/help in the bot from the admin account"
+    kv "open" "/start or /help in the bot from the admin account"
   fi
   if [ "$COLOR" = "1" ]; then
-    printf '  %s+======================================+%s\n\n' "$C_OK" "$C_RESET"
+    printf '  %s+===============================================+%s\n\n' "$C_OK" "$C_RESET"
   else
     printf '\n'
   fi
@@ -473,32 +522,56 @@ pick_port() {
   return 1
 }
 
+port_owned_by_us() {
+  local port="$1"
+  if ! command -v ss >/dev/null 2>&1; then
+    return 1
+  fi
+  local info
+  info="$(ss -lntup 2>/dev/null | awk -v want="$port" 'NR > 1 { n = split($5, parts, ":"); if (parts[n] == want) { print $0 } }' || true)"
+  case "$info" in
+    *'"xray"'*|*'"obhod"'*|*"$PREFIX"*) return 0 ;;
+  esac
+  return 1
+}
+
 resolve_ports() {
-  SUB_PORT="${OBHOD_SUB_PORT:-2096}"
-  API_PORT="${OBHOD_API_PORT:-62789}"
+  local saved_sub saved_api
+  saved_sub="$(env_get OBHOD_SUB_PORT)"
+  saved_api="$(env_get OBHOD_API_PORT)"
+  SUB_PORT="${OBHOD_SUB_PORT:-${saved_sub:-2096}}"
+  API_PORT="${OBHOD_API_PORT:-${saved_api:-62789}}"
   PORT_NOTES=""
   if port_listening "$SUB_PORT"; then
-    local free
-    free="$(pick_port "$((SUB_PORT + 1))" || true)"
-    if [ -n "$free" ]; then
-      PORT_NOTES="$PORT_NOTES subscription:$SUB_PORT->$free"
-      warn_line "port $SUB_PORT is already listening, the subscription takes $free, that service is left alone"
-      SUB_PORT="$free"
+    if port_owned_by_us "$SUB_PORT"; then
+      ok_line "port $SUB_PORT already belongs to xray/obhod, keeping it"
     else
-      PORT_NOTES="$PORT_NOTES subscription:$SUB_PORT-busy"
-      warn_line "port $SUB_PORT is already listening and no free neighbour was found, set it later in the bot"
+      local free
+      free="$(pick_port "$((SUB_PORT + 1))" || true)"
+      if [ -n "$free" ]; then
+        PORT_NOTES="$PORT_NOTES subscription:$SUB_PORT->$free"
+        warn_line "port $SUB_PORT is already listening, the subscription takes $free, that service is left alone"
+        SUB_PORT="$free"
+      else
+        PORT_NOTES="$PORT_NOTES subscription:$SUB_PORT-busy"
+        warn_line "port $SUB_PORT is already listening and no free neighbour was found, set it later in the bot"
+      fi
     fi
   fi
   if port_listening "$API_PORT"; then
-    local free
-    free="$(pick_port "$((API_PORT + 1))" || true)"
-    if [ -n "$free" ]; then
-      PORT_NOTES="$PORT_NOTES api:$API_PORT->$free"
-      warn_line "port $API_PORT is already listening, the xray api takes $free, nothing is stopped or killed"
-      API_PORT="$free"
+    if port_owned_by_us "$API_PORT"; then
+      ok_line "port $API_PORT already belongs to xray/obhod, keeping it"
     else
-      PORT_NOTES="$PORT_NOTES api:$API_PORT-busy"
-      warn_line "port $API_PORT is already listening and no free neighbour was found, set it later in the bot"
+      local free
+      free="$(pick_port "$((API_PORT + 1))" || true)"
+      if [ -n "$free" ]; then
+        PORT_NOTES="$PORT_NOTES api:$API_PORT->$free"
+        warn_line "port $API_PORT is already listening, the xray api takes $free, nothing is stopped or killed"
+        API_PORT="$free"
+      else
+        PORT_NOTES="$PORT_NOTES api:$API_PORT-busy"
+        warn_line "port $API_PORT is already listening and no free neighbour was found, set it later in the bot"
+      fi
     fi
   fi
   [ -n "$PORT_NOTES" ] || ok_line "$SUB_PORT and $API_PORT are free"
@@ -519,7 +592,7 @@ check_python() {
 install_payload() {
   mkdir -p "$PREFIX"
   local stale
-  for stale in "$PREFIX/BOT" "$PREFIX/Storage" "$PREFIX/requirements.txt" "$PREFIX/.obhod-src" "$PREFIX/tests" "$PREFIX/tools"; do
+  for stale in "$PREFIX/BOT" "$PREFIX/Storage" "$PREFIX/requirements.txt" "$PREFIX/.obhod-src" "$PREFIX/tests" "$PREFIX/tools" "$PREFIX/get.sh" "$PREFIX/run.sh" "$PREFIX/.gitignore"; do
     if [ -e "$stale" ]; then
       rm -rf "$stale"
     fi
@@ -528,13 +601,28 @@ install_payload() {
   if [ -d "$PAYLOAD_DIR/tools" ]; then cp -a "$PAYLOAD_DIR/tools" "$PREFIX/tools"; fi
   if [ -d "$PAYLOAD_DIR/tests" ]; then cp -a "$PAYLOAD_DIR/tests" "$PREFIX/tests"; fi
   mkdir -p "$PREFIX/Storage/remote"
-  cp -a "$PAYLOAD_DIR/Storage/remote/." "$PREFIX/Storage/remote/"
-  if [ -f "$PAYLOAD_DIR/requirements.txt" ]; then
-    cp -a "$PAYLOAD_DIR/requirements.txt" "$PREFIX/requirements.txt"
+  if [ -d "$PAYLOAD_DIR/Storage" ]; then
+    cp -a "$PAYLOAD_DIR/Storage/." "$PREFIX/Storage/"
+  else
+    cp -a "$PAYLOAD_DIR/Storage/remote/." "$PREFIX/Storage/remote/"
   fi
-  chmod -R go-w "$PREFIX/Storage/remote"
+  for extra in requirements.txt get.sh run.sh .gitignore; do
+    if [ -f "$PAYLOAD_DIR/$extra" ]; then
+      cp -a "$PAYLOAD_DIR/$extra" "$PREFIX/$extra"
+    fi
+  done
+  if [ "$DEV" = "0" ] && [ -d "$PAYLOAD_DIR/.git" ] && [ "$PAYLOAD_DIR" != "$PREFIX" ]; then
+    rm -rf "$PREFIX/.git"
+    if cp -a "$PAYLOAD_DIR/.git" "$PREFIX/.git" 2>/dev/null; then
+      rm -f "$PREFIX/.git/index.lock" 2>/dev/null || true
+      if command -v git >/dev/null 2>&1; then
+        git config --global --add safe.directory "$PREFIX" 2>/dev/null || true
+      fi
+    fi
+  fi
+  chmod -R go-w "$PREFIX/Storage"
   chmod -R go-w "$PREFIX/BOT"
-  find "$PREFIX/BOT" -name '__pycache__' -type d -prune -exec rm -rf {} +
+  find "$PREFIX/BOT" "$PREFIX/Storage" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
   if [ -f "$PAYLOAD_DIR/get.sh" ] && [ -n "$SERVICE" ]; then
     install -m 700 "$PAYLOAD_DIR/get.sh" /usr/local/bin/obhod-get 2>/dev/null || true
   fi
@@ -567,9 +655,11 @@ install_venv() {
     return 0
   fi
   note_line "preparing the virtual environment in $PREFIX/venv"
-  if [ -d "$PREFIX/venv" ] && [ ! -x "$PREFIX/venv/bin/python" ]; then
-    note_line "the virtual environment is broken, recreating it"
-    rm -rf "$PREFIX/venv"
+  if [ -d "$PREFIX/venv" ]; then
+    if [ ! -x "$PREFIX/venv/bin/python" ] || ! "$PREFIX/venv/bin/python" -c "import sys, ssl, sqlite3" >/dev/null 2>&1; then
+      note_line "the virtual environment is broken, recreating it"
+      rm -rf "$PREFIX/venv"
+    fi
   fi
   if [ ! -x "$PREFIX/venv/bin/python" ]; then
     "$PYTHON_BIN" -m venv "$PREFIX/venv"
@@ -584,6 +674,103 @@ install_venv() {
   if ! "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 2 "${quiet[@]}" --upgrade pip wheel; then spinner_fail "pip upgrade failed"; fail_line "pip could not upgrade itself"; note_line "check that $INDEX_URL is reachable from this server, or pass PIP_INDEX_URL with a mirror"; die "the python tooling did not install"; fi; spinner_ok "pip & wheel" "up to date"
   spinner_start "installing dependencies (goygram ~1 MB)..."
   if ! "$PREFIX/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 2 "${quiet[@]}" -r "$PREFIX/requirements.txt"; then spinner_fail "dependencies failed"; fail_line "the dependencies did not install"; note_line "check that $INDEX_URL is reachable from this server, or pass PIP_INDEX_URL with a mirror"; die "the python dependencies did not install"; fi; spinner_ok "dependencies" "installed"
+  if [ -d "$PREFIX/BOT" ]; then
+    "$PREFIX/venv/bin/python" -m compileall -q "$PREFIX/BOT" >/dev/null 2>&1 || true
+  fi
+}
+
+heal_state_files() {
+  [ -d "$STATE_DIR" ] || return 0
+  rm -f "$STATE_DIR"/.state-*.json 2>/dev/null || true
+  mkdir -p -m 700 "$STATE_DIR/freeturn" 2>/dev/null || true
+  chmod 700 "$STATE_DIR/freeturn" 2>/dev/null || true
+  rm -f "$STATE_DIR/freeturn"/.install-*.sh 2>/dev/null || true
+  if [ -f "$STATE_DIR/state.json" ]; then
+    chmod 600 "$STATE_DIR/state.json" 2>/dev/null || true
+    if ! "$PYTHON_BIN" -c 'import json,sys; d=json.load(open(sys.argv[1],"r",encoding="utf-8")); assert isinstance(d,dict)' "$STATE_DIR/state.json" >/dev/null 2>&1; then
+      local backup="$STATE_DIR/state.json.corrupt.$(date +%s)"
+      mv -f "$STATE_DIR/state.json" "$backup" 2>/dev/null || rm -f "$STATE_DIR/state.json"
+      warn_line "corrupt state.json moved aside to $backup so the bot can start cleanly"
+    fi
+  fi
+}
+
+heal_system() {
+  heal_state_files
+  [ "$DEV" = "0" ] || return 0
+  mkdir -p -m 700 /root/.goygram /root/.ssh /var/tmp/obhod-stage
+  chmod 700 /root/.goygram /var/tmp/obhod-stage 2>/dev/null || true
+  find /root/.goygram -maxdepth 1 -type f -exec chmod 600 {} + 2>/dev/null || true
+  if [ ! -d /etc/wireguard ]; then
+    mkdir -p -m 700 /etc/wireguard
+  fi
+  mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d /etc/sysctl.d
+  mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system /opt/free-turn-proxy
+  mkdir -p /var/lib/xray-manager /var/log/xray
+  ensure_private_dir "${LOG_DIR:-/var/log/obhod}"
+
+  local logf
+  for logf in /var/log/xray/access.log /var/log/xray/error.log /var/log/xray/sub.log "${LOG_DIR:-/var/log/obhod}/security.log"; do
+    if [ ! -f "$logf" ]; then
+      : > "$logf" 2>/dev/null || true
+    fi
+  done
+  chmod 600 "${LOG_DIR:-/var/log/obhod}/security.log" 2>/dev/null || true
+
+  if [ -f /usr/local/bin/xray ] && [ ! -x /usr/local/bin/xray ]; then
+    chmod 755 /usr/local/bin/xray 2>/dev/null || true
+    ok_line "repaired executable bit on /usr/local/bin/xray"
+  fi
+  if [ -f /usr/local/etc/xray/config.json ]; then
+    chmod 600 /usr/local/etc/xray/config.json 2>/dev/null || true
+  fi
+
+  if [ -L /usr/local/bin/freeturn ] && [ ! -e /usr/local/bin/freeturn ]; then
+    rm -f /usr/local/bin/freeturn 2>/dev/null || true
+  fi
+  if [ -d /opt/free-turn-proxy ]; then
+    local ft_bin
+    for ft_bin in /opt/free-turn-proxy/free-turn-proxy /opt/free-turn-proxy/server; do
+      if [ -f "$ft_bin" ] && [ ! -x "$ft_bin" ]; then
+        chmod 755 "$ft_bin" 2>/dev/null || true
+      fi
+    done
+    if [ -d /opt/free-turn-proxy/auth ]; then
+      chmod 700 /opt/free-turn-proxy/auth 2>/dev/null || true
+      if [ -f /opt/free-turn-proxy/auth/clients.json ]; then
+        chmod 600 /opt/free-turn-proxy/auth/clients.json 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  if [ -f /etc/wireguard/ft-wg0.conf ] && grep -qF "managed-by: free-turn-proxy" /etc/wireguard/ft-wg0.conf 2>/dev/null; then
+    chmod 600 /etc/wireguard/ft-wg0.conf 2>/dev/null || true
+    if [ ! -f /etc/sysctl.d/99-free-turn-proxy.conf ] || ! grep -q "ip_forward" /etc/sysctl.d/99-free-turn-proxy.conf 2>/dev/null; then
+      printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-free-turn-proxy.conf 2>/dev/null || true
+      chmod 644 /etc/sysctl.d/99-free-turn-proxy.conf 2>/dev/null || true
+    fi
+    if command -v sysctl >/dev/null 2>&1; then
+      sysctl -q -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    fi
+    note_line "repaired FreeTurn ft-wg0 permissions and IPv4 forwarding"
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl reset-failed obhod.service obhod-self-update.service obhod-self-update-timer.timer xray.service free-turn-proxy.service wg-quick@ft-wg0.service >/dev/null 2>&1 || true
+    if systemctl is-enabled --quiet xray.service 2>/dev/null && ! systemctl is-active --quiet xray.service 2>/dev/null; then
+      if [ -x /usr/local/bin/xray ] && [ -f /usr/local/etc/xray/config.json ]; then
+        if /usr/local/bin/xray run -test -config /usr/local/etc/xray/config.json >/dev/null 2>&1; then
+          systemctl start xray.service >/dev/null 2>&1 && ok_line "recovered stopped xray.service" || true
+        fi
+      fi
+    fi
+    if [ -f /etc/wireguard/ft-wg0.conf ] && systemctl is-enabled --quiet wg-quick@ft-wg0.service 2>/dev/null && ! systemctl is-active --quiet wg-quick@ft-wg0.service 2>/dev/null; then
+      systemctl start wg-quick@ft-wg0.service >/dev/null 2>&1 && ok_line "recovered stopped wg-quick@ft-wg0.service" || true
+    fi
+    if systemctl is-enabled --quiet free-turn-proxy.service 2>/dev/null && ! systemctl is-active --quiet free-turn-proxy.service 2>/dev/null; then
+      systemctl start free-turn-proxy.service >/dev/null 2>&1 && ok_line "recovered stopped free-turn-proxy.service" || true
+    fi
+  fi
 }
 
 unit_runtime() {
@@ -619,13 +806,17 @@ write_service() {
     return 0
   fi
   [ -f "$UNIT_SRC" ] || die "unit template not found at $UNIT_SRC"
-  mkdir -p -m 700 /root/.goygram /root/.ssh
-  mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d
-  mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system
+  mkdir -p -m 700 /root/.goygram /root/.ssh /var/tmp/obhod-stage
+  if [ ! -d /etc/wireguard ]; then
+    mkdir -p -m 700 /etc/wireguard
+  fi
+  mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d /etc/sysctl.d
+  mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system /opt/free-turn-proxy
   mkdir -p /var/lib/xray-manager /var/log/xray
   render_unit "$SERVICE"
   chmod 644 "$SERVICE"
   systemctl daemon-reload
+  systemctl reset-failed obhod.service >/dev/null 2>&1 || true
   systemctl enable obhod.service >/dev/null 2>&1 || true
   systemctl restart obhod.service
   ok_line "unit $SERVICE, service restarted"
@@ -742,6 +933,7 @@ cmd_install() {
   else
     ok_line "there is nothing to replace, this is a clean install"
   fi
+  heal_system
 
   step "copying the payload"
   install_payload
@@ -855,6 +1047,8 @@ cmd_status() {
   else
     say "runtime missing: $PREFIX/venv"
   fi
+  say "xray-core: $(core_xray_summary)"
+  say "freeturn: $(core_freeturn_summary)"
 }
 
 cmd_service() {
@@ -905,12 +1099,22 @@ cmd_update() {
   if [ "$DEV" = "0" ]; then
     require_root
   fi
+  ui_init
+  STEP_TOTAL=4
+  banner
+  step "checking the environment and repairing runtime"
   check_python
+  ensure_private_dir "$STATE_DIR"
+  heal_system
+  step "copying the payload"
   install_payload
+  step "preparing the python runtime"
   if [ -f "$PREFIX/requirements.txt" ]; then
     install_venv
   fi
+  step "updating the systemd unit"
   write_service
+  summary_box
   say "updated"
 }
 

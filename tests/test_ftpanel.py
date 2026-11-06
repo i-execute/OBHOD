@@ -300,3 +300,25 @@ def test_unknown_error_code_falls_back_to_the_message(tmp_path: Path) -> None:
     control.probe = weird
     run(panel.route(1, 0, "ft:check"))
     assert "something odd happened" in str(bot.rendered[-1])
+
+
+def test_home_exposes_restart_stop_and_uninstall_when_installed_and_normalizes_unpinned_tag(tmp_path: Path) -> None:
+    bot, panel, control = panel_for(tmp_path)
+    panel.state.installed = True
+    html = str(ftscreens.home(panel.view()))
+    assert "ft:restart" in html
+    assert "ft:stop" in html
+    assert "ft:un" in html
+
+    async def newer_probe() -> Any:
+        from BOT.freeturn import FtState
+
+        state = FtState(installed=True, running=True)
+        state.config.version = "v9.9.9"
+        return state
+
+    control.probe = newer_probe
+    run(panel.route(1, 0, "ft:check"))
+    assert panel.draft.version == "latest"
+    assert panel.draft.check() is panel.draft
+

@@ -7,6 +7,7 @@ from . import ftscreens, fwguard, i18n, traffic, xscreens
 from .freeturn import (
     BACKENDS,
     METHODS,
+    PINNED_SCRIPT_SHA256,
     VERSION_CHOICES,
     is_port,
     MODES,
@@ -302,7 +303,13 @@ class FtPanel:
             await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
             return
         self.state = state
-        self.draft = FtConfig.from_dict(state.config.to_dict())
+        draft = FtConfig.from_dict(state.config.to_dict())
+        ver = str(draft.version or "").strip()
+        if ver and ver.lower() not in {"latest", "local", "auto", "default"}:
+            tag = ver if ver.startswith("v") else "v" + ver
+            if tag not in PINNED_SCRIPT_SHA256:
+                draft.version = "latest"
+        self.draft = draft
         self.save()
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_NOTICE_CHECKED"))))
 

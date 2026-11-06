@@ -205,6 +205,7 @@ download_archive() {
 clone_repo() {
   local args=(clone --depth 1 --single-branch --no-tags --filter=blob:none)
   if [ -d "$DEST/.git" ]; then
+    rm -f "$DEST/.git/index.lock" 2>/dev/null || true
     args+=(--reference-if-able "$DEST" --dissociate)
   fi
   if [ -n "$REF" ]; then
