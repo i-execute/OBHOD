@@ -115,6 +115,7 @@ FT_ERROR_CODES = {
 
 REMOTE_DIR = Path(__file__).resolve().parent.parent
 AGENT_PATH = REMOTE_DIR / "Storage" / "remote" / "freeturn_agent.py"
+SCRIPT_B64_PATH = REMOTE_DIR / "Storage" / "remote" / "freeturn_install.b64"
 
 
 class FtError(Exception):
@@ -126,9 +127,16 @@ class FtError(Exception):
 
 def agent_code() -> str:
     try:
-        return AGENT_PATH.read_text(encoding="utf-8")
+        source = AGENT_PATH.read_text(encoding="utf-8")
     except OSError as exc:
         raise FtError(f"the freeturn script is missing next to the bot: {exc}", "internal") from None
+    try:
+        packed = "".join(SCRIPT_B64_PATH.read_text(encoding="ascii").split())
+    except OSError:
+        packed = ""
+    if packed:
+        source = source.replace('BUNDLED_INSTALL_B64 = ""', 'BUNDLED_INSTALL_B64 = "%s"' % packed, 1)
+    return source
 
 
 def normalize_version(version: str = "") -> str:
@@ -432,6 +440,8 @@ class FtConfig:
                 raise FtError("the wireguard port is out of range", "bad_arg")
             if not valid_cidr(self.wg_net):
                 raise FtError("the wireguard subnet must be a /16 to /29 network address", "bad_arg")
+        elif not valid_hostport(self.connect):
+            raise FtError("the external endpoint must look like host:port", "bad_arg")
         if self.host and not valid_host(self.host):
             raise FtError("the public address is not usable", "bad_arg")
         if self.connect and not valid_hostport(self.connect):
@@ -516,6 +526,10 @@ class FtConfig:
             out.append("--host=%s" % self.host)
         if self.connect:
             out.append("--connect=%s" % self.connect)
+        if self.mode == "tcp":
+            for kcp_key in ("nodelay", "interval", "resend", "nc", "sndwnd", "rcvwnd", "mtu"):
+                out.append("--kcp-%s=%d" % (kcp_key, int(KCP_DEFAULTS[kcp_key])))
+            out.append("--kcp-acknodelay=%s" % ("true" if KCP_DEFAULTS["acknodelay"] else "false"))
         return out
 
 
@@ -642,7 +656,7 @@ class FtState:
                     text = rewrite_link_transport(text, config.transport)
                 links[str(name)[:NAME_MAX]] = text
         owner_link = str(owner.get("link", "") or "").strip()[:LINK_MAX]
-        if owner_link.startswith("freeturn://") and OWNER_NAME not in links:
+        if owner_link.startswith("freeturn://"):
             links[OWNER_NAME] = complete_link(owner_link, config)
         return cls(
             installed=bool(data.get("installed", False) or owner_link),

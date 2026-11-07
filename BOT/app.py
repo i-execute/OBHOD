@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 import time
@@ -392,6 +393,19 @@ class Bot:
         self.notify.drain()
         return raised
 
+    async def freeturn_warmup(self) -> None:
+        try:
+            state = await self.freeturn.control.probe()
+        except Exception as exc:
+            log.debug("freeturn warmup skipped: %s", exc)
+            return
+        self.freeturn.state = state
+        self.freeturn.draft = state.config.from_dict(state.config.to_dict())
+        if "owner" in state.links:
+            self.freeturn.link = state.links["owner"]
+            self.freeturn.name = "owner"
+        self.freeturn.save()
+
     async def run(self) -> None:
         app = await self.boot()
         await self.verify_update()
@@ -403,6 +417,11 @@ class Bot:
             await self.notify_start()
         except Exception as exc:
             log.warning("the notification poller was skipped: %s", exc)
+        if os.geteuid() == 0 and os.path.isfile("/opt/free-turn-proxy/install.conf"):
+            try:
+                await self.track(self.freeturn_warmup(), "ft_warmup")
+            except Exception as exc:
+                log.debug("freeturn warmup not scheduled: %s", exc)
         await app.run()
 
     async def verify_update(self) -> None:
@@ -546,32 +565,85 @@ class Bot:
 
     def input_values(self) -> dict[str, str]:
         state = self.state
+        xr = state.xray
+        ft_cfg = getattr(self.freeturn, "draft", None) or state.freeturn.config
+        dbg = getattr(self, "debug", None)
         values = {
             "ssh_new_port": str(self.sshd.ports[0] if self.sshd and self.sshd.ports else state.ssh.port),
-            "xr_log_level": state.xray.log_level,
-            "xr_scan_targets": ", ".join(state.xray.scan_targets),
+            "ssh_pubkey": "",
+            "xr_remark": "",
+            "xr_port": "443",
+            "xr_sni": "",
+            "xr_dest": "",
+            "xr_short_id": "",
+            "xr_spider_x": "/",
+            "xr_fingerprint": "chrome",
+            "xr_alpn": "",
+            "xr_cert_file": "",
+            "xr_key_file": "",
+            "xr_path": "",
+            "xr_host_header": "",
+            "xr_service": "",
+            "xr_padding": "",
+            "xr_mldsa65_seed": "",
+            "xr_mldsa65_verify": "",
+            "xr_client_email": "",
+            "xr_client_flow": "",
+            "xr_client_limit": "0",
+            "dbg_target": str(getattr(dbg, "scan_target", "") or ""),
+            "dbg_ports": str(getattr(dbg, "scan_ports", "") or ""),
+            "dbg_chk_target": str(getattr(dbg, "chk_target", "") or ""),
+            "dbg_hops": str(getattr(dbg, "chk_hops", 12) or 12),
+            "xr_log_level": xr.log_level,
+            "xr_scan_targets": ", ".join(xr.scan_targets),
             "xr_scan_manual": "",
-            "xr_sub_port": str(state.xray.sub_port),
-            "xr_sub_address": state.xray.sub_address,
-            "xr_bantime": str(state.xray.fail2ban_bantime),
-            "xr_ssh_bantime": state.xray.fail2ban_ssh_bantime,
-            "xr_ssh_maxretry": str(state.xray.fail2ban_ssh_maxretry),
-            "xr_ignoreip": state.xray.fail2ban_ignoreip,
+            "xr_scan_sni": xr.scan_sni,
+            "xr_scan_xver": str(xr.scan_xver),
+            "xr_scan_candidates": ", ".join(xr.candidates()),
+            "xr_sub_port": str(xr.sub_port),
+            "xr_sub_address": xr.sub_address,
+            "xr_sub_support": xr.sub_support_url,
+            "xr_sub_announce": xr.sub_announce,
+            "xr_sub_refresh": str(xr.sub_refresh),
+            "xr_bantime": str(xr.fail2ban_bantime),
+            "xr_ssh_bantime": xr.fail2ban_ssh_bantime,
+            "xr_ssh_maxretry": str(xr.fail2ban_ssh_maxretry),
+            "xr_ignoreip": xr.fail2ban_ignoreip,
             "xr_ban_ip": "",
-            "ft_port": str(state.freeturn.config.listen_port),
-            "ft_wg_port": str(state.freeturn.config.wg_port),
-            "ft_wg_net": state.freeturn.config.wg_net,
-            "ft_host": state.freeturn.config.host or state.xray.sub_address,
+            "xr_dns_servers": xr.dns_csv(),
+            "xr_api_port": str(xr.api_port),
+            "xr_access_log": xr.access_log,
+            "xr_tunnel_host": xr.tunnel_host,
+            "xr_tunnel_key": "",
+            "ft_port": str(ft_cfg.listen_port),
+            "ft_wg_port": str(ft_cfg.wg_port),
+            "ft_wg_net": ft_cfg.wg_net,
+            "ft_host": ft_cfg.host or xr.sub_address,
+            "ft_connect": ft_cfg.connect,
             "ft_key": "",
             "ft_client": "",
         }
-        if state.xray.inbounds:
-            inbound = state.xray.inbounds[0]
+        if xr.inbounds:
+            inbound = xr.inbounds[0]
             values["xr_remark"] = inbound.remark
             values["xr_port"] = str(inbound.port)
             values["xr_sni"] = inbound.sni
             values["xr_dest"] = inbound.dest
+            values["xr_short_id"] = ", ".join(inbound.short_ids)
+            values["xr_spider_x"] = inbound.spider_x
             values["xr_fingerprint"] = inbound.fingerprint
+            values["xr_alpn"] = ", ".join(inbound.alpn)
+            values["xr_cert_file"] = inbound.cert_file
+            values["xr_key_file"] = inbound.key_file
+            values["xr_path"] = inbound.path
+            values["xr_host_header"] = inbound.host_header
+            values["xr_service"] = inbound.service_name
+            values["xr_padding"] = inbound.encryption.padding
+            values["xr_mldsa65_verify"] = inbound.mldsa65_verify
+            if inbound.clients:
+                first_client = inbound.clients[0]
+                values["xr_client_flow"] = first_client.flow
+                values["xr_client_limit"] = str(first_client.limit_ip)
         return values
 
     async def on_inline(self, evt: object) -> None:
@@ -979,7 +1051,7 @@ class Bot:
             await self.render(chat_id, msg_id, screens.home(self.view()))
             return
         if page == "ssh":
-            await self.render(chat_id, msg_id, screens.ssh_settings(self.view()))
+            await self.render(chat_id, msg_id, screens.sshd_screen(self.view()))
             return
         if page == "settings":
             await self.render(chat_id, msg_id, screens.settings(self.view()))
@@ -999,10 +1071,10 @@ class Bot:
         if page == "emoji":
             value = self.toggle_emoji()
             notice = self.tr()("NAV_EMOJI_ON" if value else "NAV_EMOJI_OFF")
-            await self.render(chat_id, msg_id, screens.settings(self.view(notice=notice)))
+            await self.render(chat_id, msg_id, screens.home(self.view(notice=notice)))
             return
         if page == "quick":
-            await self.render(chat_id, msg_id, screens.quick_screen(self.view()))
+            await self.render(chat_id, msg_id, screens.settings(self.view()))
             return
         if page == "xray":
             await self.render(chat_id, msg_id, xscreens.home(self.xray.view()))
@@ -1014,7 +1086,7 @@ class Bot:
             await self.render(chat_id, msg_id, ftscreens.core_screen(self.freeturn.view()))
             return
         if page == "tools":
-            await self.render(chat_id, msg_id, tools.home(self.debug.view()))
+            await self.debug.route(chat_id, msg_id, "dbg:home")
             return
         if page == "update":
             await self.update_action(chat_id, msg_id, "show", "")
@@ -1270,25 +1342,28 @@ class Bot:
         await self.render(chat_id, msg_id, screens.sshd_screen(self.view()))
 
     async def tools_action(self, chat_id: int, msg_id: int, data: str) -> None:
-        parts=data.split(":")
-        action=parts[1] if len(parts)>1 else "home"
-        sub=parts[2] if len(parts)>2 else ""
-        if action=="home": await self.render(chat_id, msg_id, tools.home(self.debug.view())); return
-        if action=="scan":
-            if sub=="go": await self.debug.route(chat_id, msg_id, "dbg:scan:go")
-            else: await self.render(chat_id, msg_id, tools.scan_screen(self.debug.view())); return
-        if action in ("chebur","chk"):
-            if sub=="probe": await self.debug.route(chat_id, msg_id, "dbg:chk:probe")
-            else: await self.render(chat_id, msg_id, tools.chebur_screen(self.debug.view())); return
-        if action=="dpi":
-            if sub=="scan": await self.debug.route(chat_id, msg_id, "dbg:dpi:scan")
-            else: await self.render(chat_id, msg_id, tools.dpi_screen(self.debug.view())); return
-        if action=="ddos":
-            if sub=="probe": await self.debug.route(chat_id, msg_id, "dbg:dd:probe")
-            else: await self.render(chat_id, msg_id, tools.ddos_screen(self.debug.view())); return
-        if action=="fw": await self.render(chat_id, msg_id, tools.fw_screen(self.debug.view())); return
-        if action in ("fortress","pentest"): await self.render(chat_id, msg_id, tools.fortress_screen(self.debug.view())); return
-        await self.render(chat_id, msg_id, tools.home(self.debug.view()))
+        parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else "home"
+        sub = parts[2] if len(parts) > 2 else ""
+        if action == "scan":
+            await self.debug.route(chat_id, msg_id, "dbg:scan:go" if sub == "go" else "dbg:scan")
+            return
+        if action in ("chebur", "chk"):
+            await self.debug.route(chat_id, msg_id, "dbg:chk:probe" if sub == "probe" else "dbg:chk")
+            return
+        if action == "dpi":
+            await self.debug.route(chat_id, msg_id, "dbg:dpi:scan" if sub == "scan" else "dbg:dpi")
+            return
+        if action == "ddos":
+            await self.debug.route(chat_id, msg_id, "dbg:dd:probe" if sub == "probe" else "dbg:dd")
+            return
+        if action == "fw":
+            await self.freeturn.route(chat_id, msg_id, "ft:fw")
+            return
+        if action in ("fortress", "pentest"):
+            await self.render(chat_id, msg_id, tools.fortress_screen(self.debug.view()))
+            return
+        await self.debug.route(chat_id, msg_id, "dbg:home")
 
     async def harden(self, chat_id: int, port: int = 0, password: str = "", root: str = "") -> None:
         actor = self.admin_id

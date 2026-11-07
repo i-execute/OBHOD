@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
 import ipaddress
 import json
@@ -14,6 +16,25 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+SBIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+BUNDLED_INSTALL_B64 = ""
+
+
+def ensure_sbin_path():
+    if os.geteuid() != 0:
+        return
+    parts = [item for item in (os.environ.get("PATH") or "").split(":") if item]
+    changed = False
+    for folder in SBIN_DIRS:
+        if folder not in parts:
+            parts.append(folder)
+            changed = True
+    if changed:
+        os.environ["PATH"] = ":".join(parts)
+
+
+ensure_sbin_path()
 
 PROTO = 3
 SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
@@ -280,10 +301,51 @@ def cache_path(digest):
     return os.path.join(CACHE_DIR, "install-%s.sh" % digest[:16])
 
 
+def bundled_script_bytes():
+    raw = str(BUNDLED_INSTALL_B64 or "").strip()
+    if not raw:
+        candidates = []
+        if "__file__" in globals():
+            candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "freeturn_install.b64"))
+        candidates.append("/opt/obhod/Storage/remote/freeturn_install.b64")
+        for candidate in candidates:
+            if os.path.isfile(candidate) and not os.path.islink(candidate):
+                try:
+                    with open(candidate, "r", encoding="ascii") as handle:
+                        raw = handle.read(MAX_SCRIPT_BYTES).strip()
+                    if raw:
+                        break
+                except OSError:
+                    continue
+    if not raw:
+        return b""
+    try:
+        body = gzip.decompress(base64.b64decode(raw))
+    except (OSError, ValueError):
+        return b""
+    if len(body) > MAX_SCRIPT_BYTES or b"RPC_COMMANDS" not in body:
+        return b""
+    if sha256_of(body) != DEFAULT_SHA256:
+        return b""
+    return body
+
+
+def seed_bundled_cache(digest):
+    if digest != DEFAULT_SHA256:
+        return ""
+    body = bundled_script_bytes()
+    if not body:
+        return ""
+    try:
+        return write_cache(digest, body)
+    except AgentError:
+        return ""
+
+
 def read_cache(digest):
     path = cache_path(digest)
     if not os.path.isfile(path):
-        return ""
+        return seed_bundled_cache(digest)
     try:
         if digest_of_file(path) != digest:
             os.unlink(path)
@@ -325,10 +387,19 @@ def download(url, expected):
                 raise AgentError("bad_arg", "the download ended outside github", "fetch")
             body = response.read(MAX_SCRIPT_BYTES + 1)
     except urllib.error.HTTPError as exc:
+        seeded = seed_bundled_cache(expected)
+        if seeded:
+            return seeded
         raise AgentError("download_failed", "the install script answered %s" % exc.code, "fetch")
     except urllib.error.URLError as exc:
+        seeded = seed_bundled_cache(expected)
+        if seeded:
+            return seeded
         raise AgentError("download_failed", "the install script is not reachable: %s" % exc.reason, "fetch")
     except (OSError, ValueError) as exc:
+        seeded = seed_bundled_cache(expected)
+        if seeded:
+            return seeded
         raise AgentError("download_failed", "the install script download failed: %s" % exc, "fetch")
     if len(body) > MAX_SCRIPT_BYTES:
         raise AgentError("download_failed", "the install script is larger than allowed", "fetch")
@@ -543,9 +614,16 @@ def sanitize(payload):
 
 
 def run_tool(argv, timeout=GUARD_TIMEOUT):
-    if argv and sandboxed_host():
+    ensure_sbin_path()
+    items = [str(item) for item in (argv or [])]
+    if not items:
+        return 1, ""
+    exe = shutil.which(items[0]) or items[0]
+    resolved = [exe] + items[1:]
+    if sandboxed_host():
+        systemd_bin = shutil.which("systemd-run") or "systemd-run"
         systemd_cmd = [
-            "systemd-run",
+            systemd_bin,
             "--pipe",
             "--wait",
             "--quiet",
@@ -560,14 +638,21 @@ def run_tool(argv, timeout=GUARD_TIMEOUT):
             "LANG=C.UTF-8",
             "-E",
             "LC_ALL=C.UTF-8",
-        ] + list(argv)
+            "--",
+        ] + resolved
         try:
             escaped = subprocess.run(systemd_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
-            return int(escaped.returncode or 0), (escaped.stdout or b"").decode("utf-8", "replace").strip()
+            out_text = (escaped.stdout or b"").decode("utf-8", "replace").strip()
+            code = int(escaped.returncode or 0)
+            if code == 0 or not any(
+                marker in out_text
+                for marker in ("Failed to start transient service unit", "Failed to connect to bus", "Failed to find executable")
+            ):
+                return code, out_text
         except (OSError, subprocess.SubprocessError):
             pass
     try:
-        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+        done = subprocess.run(resolved, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError):
         return 1, ""
     return int(done.returncode or 0), (done.stdout or b"").decode("utf-8", "replace").strip()
@@ -1079,6 +1164,18 @@ def iptables_apply(port, mode, cidrs, protos):
     return 0, "vk"
 
 
+def ufw_line_matches_proto(line, port, protos):
+    if not mentions_port(line, port):
+        return False
+    found = re.search(r"(?<![0-9])%d/([A-Za-z0-9]+)" % int(port), str(line or "").lower())
+    if not found:
+        return True
+    proto = found.group(1)
+    if proto == "any":
+        return True
+    return proto in set(protos)
+
+
 def guard_status(backend, port, protos):
     mode = "unknown"
     rules = 0
@@ -1094,7 +1191,7 @@ def guard_status(backend, port, protos):
             mode = "closed"
     elif backend == "ufw":
         listing = tool_text(["ufw", "status", "numbered"])
-        ours = [line for line in listing.splitlines() if mentions_port(line, port)]
+        ours = [line for line in listing.splitlines() if ufw_line_matches_proto(line, port, protos)]
         allowed = [line for line in ours if "ALLOW" in line.upper()]
         rules = len(allowed)
         first_world = ""
@@ -1114,10 +1211,14 @@ def guard_status(backend, port, protos):
         else:
             mode = "closed"
     elif backend == "iptables":
-        if iptables_chain_present():
+        chain_bound = iptables_chain_present() and any(
+            run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])[0] == 0
+            for proto in protos
+        )
+        if chain_bound:
             listing = tool_text(["iptables", "-S", GUARD_CHAIN])
-            mode = "vk"
-            rules = len([line for line in listing.splitlines() if "ACCEPT" in line]) - 1
+            rules = max(len([line for line in listing.splitlines() if "ACCEPT" in line]) - 1, 0)
+            mode = "vk" if rules > 0 else "closed"
         elif any(run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])[0] == 0 for proto in protos):
             mode = "open"
         else:
@@ -1363,9 +1464,50 @@ def port_listening(port, proto="udp"):
     return code == 0 and bool(text.strip())
 
 
+DDOS_NFT_PATH = "/etc/obhod/ddos.nft"
+WG_IFACE_PATH = "/sys/class/net/ft-wg0"
+WG_CONF_PATH = "/etc/wireguard/ft-wg0.conf"
+
+
+def ddos_nft_file_sync(port, protos, nft_path=DDOS_NFT_PATH):
+    if not nft_path or not os.path.isfile(nft_path) or os.path.islink(nft_path):
+        return
+    try:
+        with open(nft_path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(262144)
+    except OSError:
+        return
+    missing = [proto for proto in protos if ("%s dport %d accept" % (proto, port)) not in text]
+    if not missing:
+        return
+    lines = text.splitlines()
+    inserted = False
+    out = []
+    for line in lines:
+        out.append(line)
+        if not inserted and 'iifname "lo" accept' in line:
+            for proto in missing:
+                out.append("    %s dport %d accept" % (proto, port))
+            inserted = True
+    if not inserted:
+        return
+    folder = os.path.dirname(nft_path)
+    try:
+        fd, temp = tempfile.mkstemp(dir=folder, prefix=".ddos-", suffix=".nft")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(out) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp, 0o600)
+        os.replace(temp, nft_path)
+    except OSError:
+        return
+
+
 def nft_open_port(port, protos):
     if not shutil.which("nft") or not 1 <= int(port or 0) <= 65535:
         return
+    ddos_nft_file_sync(port, protos)
     code, ddos_body = run_tool(["nft", "list", "table", "inet", "obhod_ddos"], timeout=15)
     if code == 0 and ddos_body:
         for flood_set in ("conn_flood", "udp_flood", "port_scan"):
@@ -1416,6 +1558,15 @@ def nft_open_port(port, protos):
                 run_tool(["nft", "insert", "rule", fam, tbl, chn, proto, "dport", str(port), "accept"], timeout=10)
 
 
+def ensure_wg_forward():
+    if not os.path.isdir(WG_IFACE_PATH) or not shutil.which("iptables"):
+        return
+    if run_tool(["iptables", "-C", "FORWARD", "-i", "ft-wg0", "-j", "ACCEPT"])[0] != 0:
+        run_tool(["iptables", "-I", "FORWARD", "1", "-i", "ft-wg0", "-j", "ACCEPT"])
+    if run_tool(["iptables", "-C", "FORWARD", "-o", "ft-wg0", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"])[0] != 0:
+        run_tool(["iptables", "-I", "FORWARD", "1", "-o", "ft-wg0", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
+
+
 def ensure_apply_port_open(flags, body):
     installed = read_install_conf()
     data_cfg = (body.get("data") or {}).get("config") or {}
@@ -1442,12 +1593,13 @@ def ensure_apply_port_open(flags, body):
         rp = tool_text(["sysctl", "-n", "net.ipv4.conf.all.rp_filter"], timeout=10).strip()
         if rp == "1":
             run_tool(["sysctl", "-q", "-w", "net.ipv4.conf.all.rp_filter=2"], timeout=10)
+    ensure_wg_forward()
     nft_open_port(port, protos)
     backend = guard_backend()
     if not backend:
         return
-    found_mode, _rules = guard_status(backend, port, [protos[0]])
-    if found_mode == "vk":
+    found_mode, found_rules = guard_status(backend, port, ["udp"])
+    if found_mode == "vk" and found_rules > 0:
         return
     if backend == "ufw" and found_mode != "open":
         ufw_clear(port)
@@ -1459,16 +1611,150 @@ def ensure_apply_port_open(flags, body):
             run_tool(["firewall-cmd", "--permanent", "--add-port=%d/%s" % (port, proto)])
     elif backend == "iptables":
         for proto in protos:
+            while run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])[0] == 0:
+                run_tool(["iptables", "-D", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])
             if run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])[0] != 0:
                 run_tool(["iptables", "-I", "INPUT", "1", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
+
+
+def owner_allowlisted(root=INSTALL_ROOT):
+    meta_path = os.path.join(root, "clients.list")
+    auth_path = os.path.join(root, "auth", "clients.json")
+    if not os.path.isfile(meta_path) or not os.path.isfile(auth_path):
+        return False
+    owner_cid = ""
+    try:
+        with open(meta_path, "r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                parts = raw.strip().split("|")
+                if len(parts) >= 2 and parts[0] == "owner":
+                    owner_cid = parts[1].strip().lower()
+                    break
+        if not owner_cid:
+            return False
+        with open(auth_path, "r", encoding="utf-8", errors="replace") as handle:
+            auth_text = handle.read(262144).lower()
+    except OSError:
+        return False
+    return owner_cid in auth_text
+
+
+def runtime_drift(installed, root=INSTALL_ROOT):
+    raw_port = str(installed.get("LISTEN_PORT", "") or "").strip()
+    if not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
+        return False
+    if not owner_allowlisted(root):
+        return True
+    port = int(raw_port)
+    method = str(installed.get("INSTALL_METHOD", "systemd") or "systemd").strip().lower()
+    backend = str(installed.get("BACKEND", "new") or "new").strip().lower()
+    mode = str(installed.get("PROXY_MODE", "") or installed.get("MODE", "udp") or "udp").strip().lower()
+    wg_port = str(installed.get("WG_PORT", "51820") or "51820").strip()
+    connect = ("127.0.0.1:%s" % wg_port) if backend == "new" else str(installed.get("CONNECT", "") or "").strip()
+    obf_profile = str(installed.get("OBF_PROFILE", "rtpopus3") or "rtpopus3").strip()
+    obf_key = str(installed.get("OBF_KEY", "") or "").strip().lower()
+    if obf_profile != "none" and not (len(obf_key) == 64 and all(ch in "0123456789abcdef" for ch in obf_key)):
+        return True
+    listen_tok = "0.0.0.0:%d" % port
+    if method == "docker":
+        info = tool_text(["docker", "inspect", "-f", "{{.State.Status}}|{{json .Args}}", "free-turn-proxy"], timeout=15)
+        if not info:
+            return True
+        for needle in (listen_tok, connect, mode):
+            if needle and needle not in info:
+                return True
+        if obf_profile != "none":
+            if obf_profile not in info or obf_key not in info.lower():
+                return True
+        return False
+    bin_path = os.path.join(root, "server")
+    ver_path = os.path.join(root, "version")
+    env_path = os.path.join(root, "run.env")
+    if not os.path.isfile(bin_path) or not os.access(bin_path, os.X_OK):
+        return True
+    try:
+        with open(ver_path, "r", encoding="utf-8", errors="replace") as handle:
+            ver_text = handle.read(64).strip()
+        with open(env_path, "r", encoding="utf-8", errors="replace") as handle:
+            env_text = handle.read(8192)
+    except OSError:
+        return True
+    if not ver_text or ver_text.lower() == "latest":
+        return True
+    required = [
+        "-listen %s" % listen_tok,
+        "-connect %s" % connect,
+        "-mode %s" % mode,
+        "-clients-file ",
+    ]
+    if obf_profile != "none":
+        required.append("-obf-profile %s" % obf_profile)
+        required.append("-obf-key %s" % obf_key)
+    env_low = env_text.lower()
+    for item in required:
+        if item.lower() not in env_low:
+            return True
+    return False
+
+
+def reapply_argv(installed, root=INSTALL_ROOT):
+    backend = str(installed.get("BACKEND", "new") or "new").strip().lower()
+    obf_profile = str(installed.get("OBF_PROFILE", "rtpopus3") or "rtpopus3").strip()
+    obf_key = str(installed.get("OBF_KEY", "") or "").strip().lower()
+    host = str(installed.get("PUBLIC_HOST", "") or "").strip()
+    connect = str(installed.get("CONNECT", "") or "").strip()
+    ver_raw = str(installed.get("VERSION", "") or "").strip()
+    plan_flags = {
+        "method": str(installed.get("INSTALL_METHOD", "systemd") or "systemd").strip().lower(),
+        "backend": backend,
+        "listen_port": str(installed.get("LISTEN_PORT", "56000") or "56000").strip(),
+        "mode": str(installed.get("PROXY_MODE", "") or installed.get("MODE", "udp") or "udp").strip().lower(),
+        "obf_profile": obf_profile,
+        "version": "local" if ver_raw == "local" else FALLBACK_VERSION,
+        "script_sha256": DEFAULT_SHA256,
+    }
+    if backend == "new":
+        plan_flags["wg_port"] = str(installed.get("WG_PORT", "51820") or "51820").strip()
+        plan_flags["wg_net"] = str(installed.get("WG_NET", "10.13.13.0/24") or "10.13.13.0/24").strip()
+    elif connect:
+        plan_flags["connect"] = connect
+    if host:
+        plan_flags["host"] = host
+    if obf_profile != "none" and len(obf_key) == 64 and all(ch in "0123456789abcdef" for ch in obf_key):
+        plan_flags["obf_key"] = obf_key
+    ver_path = os.path.join(root, "version")
+    try:
+        with open(ver_path, "r", encoding="utf-8", errors="replace") as handle:
+            disk_ver = handle.read(64).strip().lower()
+    except OSError:
+        disk_ver = ""
+    if disk_ver == "latest":
+        plan_flags["update"] = "1"
+    return command_argv("apply", plan_flags, lookup=lambda _repo: (FALLBACK_VERSION, ""))
 
 
 def heal_runtime(script, command, flags, body):
     if command == "uninstall":
         return
     installed = read_install_conf()
+    reapplied = False
+    if command in {"probe", "restart", "client-list", "client-conf"} and installed and runtime_drift(installed):
+        heal_text, _heal_rc = run_script(script, reapply_argv(installed), TIMEOUTS["apply"])
+        heal_payload = last_json(heal_text)
+        if heal_payload and heal_payload.get("result") == "ok":
+            installed = read_install_conf()
+            reapplied = True
     if command in {"apply", "probe", "restart", "client-list", "client-conf"} and (command == "apply" or installed):
+        if installed.get("BACKEND", "new") == "new" and os.path.isfile(WG_CONF_PATH) and not os.path.isdir(WG_IFACE_PATH):
+            if shutil.which("systemctl"):
+                run_tool(["systemctl", "restart", "wg-quick@ft-wg0"], timeout=30)
         ensure_apply_port_open(flags, body)
+    if reapplied and command in {"probe", "client-list", "client-conf"}:
+        plan = command_argv(command, flags)
+        refreshed_text, _ref_rc = run_script(script, plan, TIMEOUTS.get(command, 120))
+        refreshed_payload = last_json(refreshed_text)
+        if refreshed_payload and refreshed_payload.get("result") == "ok" and isinstance(refreshed_payload.get("data"), dict):
+            body["data"] = dict(refreshed_payload["data"])
     if command == "apply":
         apply_data = dict(body.get("data") or {})
         probe_text, _code = run_script(script, ["probe"], TIMEOUTS["probe"])
@@ -1479,23 +1765,24 @@ def heal_runtime(script, command, flags, body):
                 if key in apply_data:
                     merged[key] = apply_data[key]
             body["data"] = merged
-    if command in {"apply", "probe"} and isinstance(body.get("data"), dict):
-        cfg = body["data"].get("config") or {}
+    if command in {"apply", "probe", "restart", "client-list", "client-conf"}:
+        data_dict = body.get("data") if isinstance(body.get("data"), dict) else {}
+        cfg = data_dict.get("config") or {}
         port = int(cfg.get("listen_port", 0) or installed.get("LISTEN_PORT", 0) or 0)
-        mode = str(cfg.get("mode", "") or installed.get("PROXY_MODE", "udp") or "udp").lower()
-        proto = "tcp" if mode == "tcp" else "udp"
-        if command == "apply" and body["data"].get("installed") and port and not port_listening(port, proto):
+        if port and (command == "apply" or installed) and not port_listening(port, "udp"):
             run_script(script, ["restart"], TIMEOUTS["restart"])
-            probe_text, _code = run_script(script, ["probe"], TIMEOUTS["probe"])
-            probe_payload = last_json(probe_text)
-            if probe_payload and probe_payload.get("result") == "ok" and isinstance(probe_payload.get("data"), dict):
-                for key, value in probe_payload["data"].items():
-                    body["data"][key] = value
-        links = read_client_links()
-        if links:
-            body["data"]["links"] = links
-        if port:
-            body["data"]["listening"] = port_listening(port, proto)
+            if command in {"apply", "probe"} and isinstance(body.get("data"), dict):
+                probe_text, _code = run_script(script, ["probe"], TIMEOUTS["probe"])
+                probe_payload = last_json(probe_text)
+                if probe_payload and probe_payload.get("result") == "ok" and isinstance(probe_payload.get("data"), dict):
+                    for key, value in probe_payload["data"].items():
+                        body["data"][key] = value
+        if command in {"apply", "probe"} and isinstance(body.get("data"), dict):
+            links = read_client_links()
+            if links:
+                body["data"]["links"] = links
+            if port:
+                body["data"]["listening"] = port_listening(port, "udp")
 
 
 if __name__ == "__main__":

@@ -634,7 +634,7 @@ def test_the_panel_guards_the_protocol_of_the_plan(tmp_path: Path) -> None:
     asyncio.run(bot.freeturn.route(1, 0, "ft:fw"))
     bot.freeturn.state.config.mode = "udp"
     asyncio.run(bot.freeturn.route(1, 0, "ft:fw"))
-    assert seen == ["tcp", "udp"]
+    assert seen == ["udp", "udp"]
 
 
 WG_STUB = """#!/usr/bin/env python3
@@ -753,4 +753,54 @@ def test_fetch_asn_accepts_gzipped_payload(monkeypatch: pytest.MonkeyPatch) -> N
     found, reason = fwguard.fetch_asn(47541)
     assert reason == ""
     assert found == ["87.240.128.0/18"]
+
+
+def test_ufw_and_iptables_guard_status_never_confuse_tcp_or_orphan_chain_with_open_udp(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util as imp_util
+
+    spec = imp_util.spec_from_file_location("ft_agent_fw", AGENT)
+    assert spec and spec.loader
+    agent_mod = imp_util.module_from_spec(spec)
+    spec.loader.exec_module(agent_mod)
+
+    ufw_tcp_only = (
+        "Status: active\n\n"
+        "     To                         Action      From\n"
+        "     --                         ------      ----\n"
+        "[ 1] 56000/tcp                  ALLOW IN    Anywhere\n"
+    )
+    monkeypatch.setattr(agent_mod, "tool_text", lambda cmd: ufw_tcp_only if cmd[:2] == ["ufw", "status"] else "")
+    mode, rules = agent_mod.guard_status("ufw", 56000, ["udp"])
+    assert mode == "closed"
+    assert rules == 0
+
+    ufw_udp_vk = (
+        "Status: active\n\n"
+        "     To                         Action      From\n"
+        "     --                         ------      ----\n"
+        "[ 1] 56000/tcp                  ALLOW IN    Anywhere\n"
+        "[ 2] 56000/udp                  ALLOW IN    91.231.135.0/24\n"
+    )
+    monkeypatch.setattr(agent_mod, "tool_text", lambda cmd: ufw_udp_vk if cmd[:2] == ["ufw", "status"] else "")
+    mode_vk, rules_vk = agent_mod.guard_status("ufw", 56000, ["udp"])
+    assert mode_vk == "vk"
+    assert rules_vk == 1
+
+    def fake_ipt_run(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
+        if cmd[:3] == ["iptables", "-L", agent_mod.GUARD_CHAIN]:
+            return 0, "Chain OBHOD-FT"
+        if cmd[:4] == ["iptables", "-C", "INPUT", "-p"]:
+            return 1, "No chain/target/match"
+        return 0, ""
+
+    monkeypatch.setattr(agent_mod, "run_tool", fake_ipt_run)
+    monkeypatch.setattr(
+        agent_mod,
+        "tool_text",
+        lambda cmd: "-N OBHOD-FT\n-A OBHOD-FT -s 91.231.135.0/24 -j ACCEPT\n-A OBHOD-FT -j DROP\n",
+    )
+    ipt_mode, ipt_rules = agent_mod.guard_status("iptables", 56000, ["udp"])
+    assert ipt_mode == "closed"
+    assert ipt_rules == 0
+
 

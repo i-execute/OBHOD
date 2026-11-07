@@ -120,8 +120,7 @@ def home(view: FtView) -> Any:
     else:
         buttons = [
             row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_PLAN"), "ft:plan", icon="settings")),
-            row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
-            row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users"), button(t("FT_BTN_LOGS"), "ft:logs", icon="logs")),
+            row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("FT_BTN_FW"), "ft:fw", icon="shield"), button(t("FT_BTN_LOGS"), "ft:logs", icon="logs")),
             row(button(t("UI_HOME"), "nav:home", icon="home")),
         ]
     return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, icon="tunnel")
@@ -181,8 +180,8 @@ def plan_screen(view: FtView) -> Any:
     ]
     if plan.backend == "new":
         pairs.append(("info", t("FT_FIELD_WG_NET"), code("%s (:%s)" % (plan.wg_net, plan.wg_port))))
-    elif plan.connect:
-        pairs.append(("link", t("FT_FIELD_CONNECT"), code(plan.connect)))
+    else:
+        pairs.append(("link", t("FT_FIELD_CONNECT"), code(plan.connect or t("UI_NOT_SET"))))
     blocks.append(table(pairs, (t("FT_CONFIG_TITLE"), t("UI_VALUE"))))
     blocks.append(
         details(
@@ -206,11 +205,15 @@ def plan_screen(view: FtView) -> Any:
         row(button(t("FT_BTN_RANDOM_PORT"), "ft:rport", icon="refresh"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
         input_row(t("FT_PORT_INPUT"), "ft_port", "-", view.lang),
         input_row(t("FT_HOST_INPUT"), "ft_host", "-", view.lang),
-        input_row(t("FT_WG_PORT_INPUT"), "ft_wg_port", "-", view.lang),
-        input_row(t("FT_WG_NET_INPUT"), "ft_wg_net", "-", view.lang),
-        input_row(t("FT_KEY_INPUT"), "ft_key", "-", view.lang),
-        back_row(view.lang),
     ]
+    if plan.backend == "new":
+        buttons.append(input_row(t("FT_WG_PORT_INPUT"), "ft_wg_port", "-", view.lang))
+        buttons.append(input_row(t("FT_WG_NET_INPUT"), "ft_wg_net", "-", view.lang))
+    else:
+        buttons.append(input_row(t("FT_CONNECT_INPUT"), "ft_connect", "-", view.lang))
+    if plan.obf_profile != "none":
+        buttons.append(input_row(t("FT_KEY_INPUT"), "ft_key", "-", view.lang))
+    buttons.append(back_row(view.lang))
     return screen(t("FT_CONFIG_TITLE"), t("FT_CONFIG_SUBTITLE"), blocks, buttons, icon="settings")
 
 

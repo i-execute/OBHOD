@@ -45,6 +45,26 @@ SERVICES = {
 PORT_KEYS = ("ports", "syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size", "enabled")
 
 
+SBIN_DIRS = ("/usr/local/sbin", "/usr/sbin", "/sbin")
+
+
+def ensure_sbin_path():
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        return
+    raw = str(os.environ.get("PATH", "") or "")
+    parts = [item for item in raw.split(os.pathsep) if item]
+    changed = False
+    for folder in SBIN_DIRS:
+        if folder not in parts:
+            parts.append(folder)
+            changed = True
+    if changed:
+        os.environ["PATH"] = os.pathsep.join(parts)
+
+
+ensure_sbin_path()
+
+
 class DDosError(Exception):
     def __init__(self, code, message, stage="ddos"):
         Exception.__init__(self, message)

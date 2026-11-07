@@ -1306,16 +1306,16 @@ class XrayPanel:
             return xscreens.inbound_screen(self.view(notice=notice), inbound)
         if ident in {"xr_scan_targets", "xr_scan_manual", "xr_scan_candidates", "xr_scan_sni", "xr_scan_xver"}:
             return xscreens.scan_targets_screen(self.view(notice=notice))
-        if ident in {"xr_dns_servers", "xr_api_port", "xr_access_log", "xr_ignoreip"}:
-            return screens.settings(self.view(notice=notice))
+        if ident in {"xr_dns_servers", "xr_api_port", "xr_access_log"}:
+            return screens.settings(self.bot.view(notice=notice))
         if ident == "xr_log_level":
             return xscreens.core_screen(self.view(notice=notice))
         if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
             return xscreens.subs_screen(self.view(notice=notice), self.sub_rows())
-        if ident in {"xr_ban_ip", "xr_bantime", "xr_ssh_bantime", "xr_ssh_maxretry"}:
-            return self.bot.ban_view(notice=notice)
+        if ident in {"xr_ban_ip", "xr_bantime", "xr_ssh_bantime", "xr_ssh_maxretry", "xr_ignoreip"}:
+            return screens.ban_screen(self.bot.ban_view(notice=notice))
         if ident in {"ssh_new_port", "ssh_pubkey"}:
-            return self.bot.sshd_view(notice=notice)
+            return screens.sshd_screen(self.bot.sshd_view(notice=notice))
         return xscreens.home(self.view(notice=notice))
 
 

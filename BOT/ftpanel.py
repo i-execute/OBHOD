@@ -26,6 +26,7 @@ from .freeturn import (
     valid_cidr,
     valid_hex64,
     valid_host,
+    valid_hostport,
     valid_name,
 )
 from .models import ModelError
@@ -237,8 +238,7 @@ class FtPanel:
         raise ModelError("unknown plan field: %s" % field[:24])
 
     def guard_proto(self) -> str:
-        mode = str(self.state.config.mode or self.draft.mode or "udp").strip().lower()
-        return "tcp" if mode == "tcp" else "udp"
+        return "udp"
 
     def guard_port(self) -> int:
         try:
@@ -335,11 +335,14 @@ class FtPanel:
                 name: self._finish_link(val) or rewrite_link_transport(val, saved_transport)
                 for name, val in self.state.links.items()
             }
-        elif saved_links:
+        elif saved_links and self.state.installed:
             self.state.links = {
                 name: rewrite_link_transport(val, saved_transport)
                 for name, val in saved_links.items()
             }
+        if "owner" in self.state.links:
+            self.link = self.state.links["owner"]
+            self.name = "owner"
         self.save()
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_NOTICE_CHECKED"))))
 
@@ -364,8 +367,17 @@ class FtPanel:
                 msg = self.describe(exc) + "  -  " + t("FT_HINT_METHOD")
             await self.render(chat_id, msg_id, ftscreens.plan_screen(self.view(error=msg)))
             return
+        prev_cfg = FtConfig.from_dict(self.state.config.to_dict())
         saved_links = dict(self.state.links)
         saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "tcp"
+        share_changed = bool(
+            key_rotated
+            or int(prev_cfg.listen_port) != int(self.draft.listen_port)
+            or str(prev_cfg.host or "") != str(self.draft.host or "")
+            or str(prev_cfg.mode or "") != str(self.draft.mode or "")
+            or str(prev_cfg.obf_profile or "") != str(self.draft.obf_profile or "")
+            or str(prev_cfg.backend or "") != str(self.draft.backend or "")
+        )
         self.state = state
         self.state.config.transport = saved_transport
         self.draft.transport = saved_transport
@@ -374,7 +386,7 @@ class FtPanel:
                 name: self._finish_link(val) or rewrite_link_transport(val, saved_transport)
                 for name, val in self.state.links.items()
             }
-        elif saved_links and not key_rotated:
+        elif saved_links and not share_changed:
             self.state.links = {
                 name: rewrite_link_transport(val, saved_transport)
                 for name, val in saved_links.items()
@@ -638,6 +650,11 @@ class FtPanel:
                 await self.send(chat_id, ftscreens.plan_screen(self.view(error=t("FT_KEY_INPUT"))))
                 return
             self.key_once = text
+        elif ident == "ft_connect":
+            if not valid_hostport(text):
+                await self.send(chat_id, ftscreens.plan_screen(self.view(error=t("FT_CONNECT_INPUT"))))
+                return
+            self.draft.connect = text
         elif ident == "ft_client":
             await self.add_client(chat_id, text)
             return

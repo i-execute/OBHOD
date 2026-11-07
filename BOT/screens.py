@@ -127,7 +127,7 @@ def home(view: View) -> Any:
         facts.extend(("xray", f"{item.id} {item.remark}", code(f"{item.port} {item.network} {item.security}")) for item in xray.inbounds)
     blocks.append(details(t("HOME_DETAILS"), table(facts, (t("UI_PARAM"), t("UI_VALUE")))))
     buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cores.snapshot(state, view.core, view.ft_clients)]
-    buttons.append(row(button(t("TOOLS_TITLE"), "tools:home", icon="tools"), button(t("NAV_UPDATE"), "upd:show", icon="update")))
+    buttons.append(row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("NAV_UPDATE"), "upd:show", icon="update")))
     buttons.append(row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_HELP"), "nav:help", icon="docs")))
     buttons.append(row(emoji_button(t, view), button(t("UI_REFRESH"), "nav:home", icon="refresh")))
     return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, icon="home")
@@ -177,9 +177,8 @@ def quick_screen(view: View) -> Any:
     blocks.append(quote(muted(t("HOME_EMOJI_NOTE"))))
     buttons = [
         row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield")),
-        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_SSH"), "nav:ssh", icon="key")),
-        row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), emoji_button(t, view)),
-        row(button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_LANGUAGE"), "nav:lang", icon="language")),
+        row(emoji_button(t, view), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("NAV_QUICK"), t("HOME_SUBTITLE"), blocks, buttons, icon="star")
 
@@ -250,19 +249,19 @@ def settings(view: View) -> Any:
     ]
     blocks.append(details(t("HOME_DETAILS"), table(extra_pairs, (t("UI_FIELD"), t("UI_VALUE")))))
     buttons = [
-        row(button(t("SET_VERSION_PINNED", version=xray.pinned()), "xr:core:ver:pin", icon="pin"), button(t("SET_VERSION_LATEST"), "xr:core:ver:latest", icon="update")),
-        input_row(t("SET_LOG_LEVEL"), "xr_log_level", "-", view.lang),
-        input_row(t("SET_SUB_PORT"), "xr_sub_port", "-", view.lang),
-        input_row(t("SET_SUB_ADDRESS"), "xr_sub_address", "-", view.lang),
-        input_row(t("SET_CANDIDATES"), "xr_scan_candidates", "-", view.lang),
-        row(button(t("XR_CHECK_BTN"), "xr:fit:" + str(target.id if target else ""), icon="scan")),
-        input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
-        input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
-        input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),
-        row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), emoji_button(t, view)),
-        row(button(t("NAV_QUICK"), "nav:quick", icon="star"), button(t("NAV_DEBUG"), "dbg:home", icon="bug")),
-        row(button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield")),
     ]
+    if target is not None:
+        buttons.append(row(button(t("XR_CHECK_BTN"), "xr:fit:" + str(target.id), icon="scan")))
+    buttons.extend(
+        [
+            input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
+            input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
+            input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),
+            row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), emoji_button(t, view)),
+            row(button(t("NAV_DEBUG"), "dbg:home", icon="bug"), button(t("UI_HOME"), "nav:home", icon="home")),
+        ]
+    )
     return screen(t("SET_TITLE"), t("SET_SUBTITLE"), blocks, buttons, icon="settings")
 
 

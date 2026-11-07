@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=@ENV_FILE@
 Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WorkingDirectory=@PREFIX@
 ExecStart=@PREFIX@/venv/bin/python -m BOT
 Restart=always

@@ -153,6 +153,7 @@ UNIT_TEMPLATE = (
     "WorkingDirectory={root}\n"
     "EnvironmentFile={env}\n"
     "Environment=HOME=/root\n"
+    "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
     "ExecStart={root}/.venv/bin/python -m BOT\n"
     "Restart=on-failure\n"
     "RestartSec=5\n"

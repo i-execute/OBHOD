@@ -1028,3 +1028,194 @@ def test_agent_accepts_verified_new_release_tag_with_sha256_and_escapes_sandbox(
     assert '"running": true' in out
     assert calls and calls[0][0] == "systemd-run"
 
+
+def test_bundled_install_script_seeds_offline_from_streamed_agent_code(tmp_path: Path) -> None:
+    import base64 as b64_mod
+    import gzip as gzip_mod
+    import hashlib as hash_mod
+    import subprocess as sp_mod
+    import sys as sys_mod
+
+    b64_path = freeturn.SCRIPT_B64_PATH
+    assert b64_path.is_file()
+    raw_b64 = b64_path.read_text(encoding="ascii")
+    unpacked = gzip_mod.decompress(b64_mod.b64decode("".join(raw_b64.split())))
+    expected_sha = freeturn.PINNED_SCRIPT_SHA256["v4.1.2"]
+    assert hash_mod.sha256(unpacked).hexdigest() == expected_sha
+    code_str = freeturn.agent_code()
+    assert 'BUNDLED_INSTALL_B64 = ""' not in code_str
+    cache_dir = tmp_path / "cache"
+    driver = (
+        "import hashlib, os\n"
+        "ns = {'__name__': 'ft_streamed'}\n"
+        "exec(compile(open(%r, encoding='utf-8').read(), '<stream>', 'exec'), ns)\n"
+        "ns['CACHE_DIR'] = %r\n"
+        "def _no_net(*a, **k): raise OSError('offline')\n"
+        "ns['urlopen'] = _no_net\n"
+        "seeded = ns['download']('https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/install.sh', %r)\n"
+        "assert os.path.isfile(seeded)\n"
+        "with open(seeded, 'rb') as fh:\n"
+        "    assert hashlib.sha256(fh.read()).hexdigest() == %r\n"
+        "print('SEEDED_OK')\n"
+    )
+    src_file = tmp_path / "streamed_agent.py"
+    src_file.write_text(code_str, encoding="utf-8")
+    proc = sp_mod.run(
+        [sys_mod.executable, "-c", driver % (str(src_file), str(cache_dir), expected_sha, expected_sha)],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "SEEDED_OK" in proc.stdout
+
+
+def test_sbin_path_and_systemd_run_fallback_recover_firewall_and_ddos_nft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = load_agent()
+    sbin = tmp_path / "sbin"
+    sbin.mkdir()
+    monkeypatch.setattr(module, "SBIN_DIRS", (str(sbin),))
+    monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    module.ensure_sbin_path()
+    assert str(sbin) in module.os.environ["PATH"].split(module.os.pathsep)
+
+    ufw_bin = sbin / "ufw"
+    ufw_bin.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
+    ufw_bin.chmod(0o755)
+    seen_cmds: list[list[str]] = []
+
+    class _Res:
+        def __init__(self, rc: int, out: bytes) -> None:
+            self.returncode = rc
+            self.stdout = out
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        seen_cmds.append(list(cmd))
+        if module.os.path.basename(cmd[0]) == "systemd-run":
+            return _Res(1, b"Failed to find executable ufw: No such file or directory\n")
+        return _Res(0, b"Rule added\n")
+
+    monkeypatch.setattr(module, "sandboxed_host", lambda: True)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    rc, out = module.run_tool(["ufw", "allow", "56000/udp"])
+    assert rc == 0
+    assert "Rule added" in out
+    assert len(seen_cmds) == 2
+    assert module.os.path.basename(seen_cmds[0][0]) == "systemd-run"
+    assert "-E" in seen_cmds[0]
+    assert seen_cmds[1][0] == str(ufw_bin)
+
+    nft_file = tmp_path / "ddos.nft"
+    nft_file.write_text(
+        'table inet obhod_ddos {\n  chain input {\n    iifname "lo" accept\n    udp dport 1-65535 drop\n  }\n}\n',
+        encoding="utf-8",
+    )
+    module.ddos_nft_file_sync(56000, ["udp"], str(nft_file))
+    updated = nft_file.read_text(encoding="utf-8")
+    assert "udp dport 56000 accept" in updated
+
+
+def test_tcp_mode_kcp_flags_external_backend_validation_and_owner_link_refresh() -> None:
+    tcp_cfg = FtConfig(mode="tcp", listen_port=56000)
+    argv = tcp_cfg.server_argv()
+    for expected in (
+        "--kcp-nodelay=1",
+        "--kcp-interval=20",
+        "--kcp-resend=2",
+        "--kcp-nc=1",
+        "--kcp-sndwnd=512",
+        "--kcp-rcvwnd=512",
+        "--kcp-mtu=1200",
+        "--kcp-acknodelay=true",
+    ):
+        assert expected in argv
+    udp_argv = FtConfig(mode="udp", listen_port=56000).server_argv()
+    assert not any(item.startswith("--kcp-") for item in udp_argv)
+
+    with pytest.raises(FtError):
+        FtConfig(backend="external", connect="").check()
+    FtConfig(backend="external", connect="127.0.0.1:51820").check()
+
+    stale = freeturn.encode_link(
+        {"v": 1, "provider": "vk", "peer": "89.125.48.221:55000", "transport": "tcp", "mode": "udp", "obf_profile": "rtpopus3", "obf_key": "1" * 64}
+    )
+    fresh = freeturn.encode_link(
+        {"v": 1, "provider": "vk", "peer": "89.125.48.221:56000", "transport": "tcp", "mode": "udp", "obf_profile": "rtpopus3", "obf_key": "2" * 64}
+    )
+    parsed = freeturn.FtState.from_dict(
+        {
+            "installed": True,
+            "running": True,
+            "config": {"listen_port": 56000, "host": "89.125.48.221", "mode": "udp", "transport": "tcp", "obf_profile": "rtpopus3"},
+            "links": {"owner": stale},
+            "owner": {"name": "owner", "link": fresh},
+        }
+    )
+    decoded_owner = freeturn.decode_link(parsed.links["owner"])
+    assert decoded_owner["peer"] == "89.125.48.221:56000"
+    assert decoded_owner["obf_key"] == "2" * 64
+
+
+def test_runtime_drift_auto_reapplies_and_checks_udp_listener_in_tcp_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = load_agent()
+    root = tmp_path / "ft"
+    (root / "auth").mkdir(parents=True)
+    (root / "clients.list").write_text("owner|00112233445566778899aabbccddeeff|10.13.13.2|pub\n", encoding="utf-8")
+    (root / "auth" / "clients.json").write_text('{"client_ids":[]}\n', encoding="utf-8")
+    (root / "server").write_text("#!/bin/sh\n", encoding="ascii")
+    (root / "server").chmod(0o755)
+    (root / "version").write_text("latest\n", encoding="ascii")
+    (root / "run.env").write_text('FT_ARGS="-listen 0.0.0.0:56000 -connect 127.0.0.1:51820 -mode tcp -clients-file /x"\n', encoding="utf-8")
+
+    installed = {
+        "INSTALL_METHOD": "systemd",
+        "BACKEND": "new",
+        "LISTEN_PORT": "56000",
+        "PROXY_MODE": "tcp",
+        "WG_PORT": "51820",
+        "WG_NET": "10.13.13.0/24",
+        "OBF_PROFILE": "rtpopus3",
+        "OBF_KEY": "a" * 64,
+        "VERSION": "v4.1.2",
+    }
+    assert module.runtime_drift(installed, str(root)) is True
+    plan = module.reapply_argv(installed, str(root))
+    assert plan[0] == "apply"
+    assert "--update" in plan
+
+    script_calls: list[list[str]] = []
+    proto_checks: list[tuple[int, str]] = []
+
+    def fake_run_script(_script: str, argv: list[str], _timeout: int) -> tuple[str, int]:
+        script_calls.append(list(argv))
+        if argv[0] == "apply":
+            (root / "auth" / "clients.json").write_text('{"client_ids":["00112233445566778899aabbccddeeff"]}\n', encoding="utf-8")
+            (root / "version").write_text("v4.1.2\n", encoding="ascii")
+            (root / "run.env").write_text(
+                'FT_ARGS="-listen 0.0.0.0:56000 -connect 127.0.0.1:51820 -mode tcp -obf-profile rtpopus3 -obf-key ' + ("a" * 64) + ' -clients-file /x"\n',
+                encoding="utf-8",
+            )
+            return '{"proto":3,"result":"ok","data":{"installed":true,"running":true,"config":{"listen_port":56000,"mode":"tcp"}}}', 0
+        return '{"proto":3,"result":"ok","data":{"installed":true,"running":true,"config":{"listen_port":56000,"mode":"tcp"}}}', 0
+
+    def fake_port_listening(port: int, proto: str = "udp") -> bool:
+        proto_checks.append((port, proto))
+        return True
+
+    monkeypatch.setattr(module, "INSTALL_ROOT", str(root))
+    monkeypatch.setattr(module, "read_install_conf", lambda: dict(installed))
+    monkeypatch.setattr(module, "ensure_apply_port_open", lambda flags, body: None)
+    monkeypatch.setattr(module, "run_script", fake_run_script)
+    monkeypatch.setattr(module, "port_listening", fake_port_listening)
+    monkeypatch.setattr(module, "read_client_links", lambda: {})
+
+    body: dict[str, Any] = {"result": "ok", "data": {"installed": True, "running": True, "config": {"listen_port": 56000, "mode": "tcp"}}}
+    module.heal_runtime("/tmp/install.sh", "probe", {}, body)
+    assert any(call[0] == "apply" for call in script_calls)
+    assert module.runtime_drift(installed, str(root)) is False
+    assert proto_checks and all(proto == "udp" for _p, proto in proto_checks)
+
+

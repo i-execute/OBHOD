@@ -772,12 +772,10 @@ heal_system() {
       fi
     fi
     if [ -f /opt/free-turn-proxy/install.conf ]; then
-      local ft_port ft_mode ft_proto ft_method
+      local ft_port ft_proto ft_method
       ft_port="$(awk -F= '$1=="LISTEN_PORT" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
-      ft_mode="$(awk -F= '$1=="PROXY_MODE" || $1=="MODE" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
       ft_method="$(awk -F= '$1=="INSTALL_METHOD" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
       ft_proto="udp"
-      [ "$ft_mode" = "tcp" ] && ft_proto="tcp"
       case "$ft_port" in
         ''|*[!0-9]*) ft_port="" ;;
       esac
@@ -790,7 +788,7 @@ heal_system() {
             nft insert rule inet obhod_ddos input "${ft_proto}" dport "${ft_port}" accept >/dev/null 2>&1 && ok_line "exempted FreeTurn ${ft_port}/${ft_proto} in obhod_ddos" || true
           fi
         fi
-        if ! (command -v iptables >/dev/null 2>&1 && iptables -S OBHOD-FT >/dev/null 2>&1); then
+        if ! (command -v iptables >/dev/null 2>&1 && iptables -C INPUT -p "${ft_proto}" --dport "${ft_port}" -j OBHOD-FT >/dev/null 2>&1); then
           if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
             if ! ufw status 2>/dev/null | grep -qE "^${ft_port}(/${ft_proto})?[[:space:]]+ALLOW"; then
               ufw allow "${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in ufw" || true

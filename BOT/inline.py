@@ -97,6 +97,7 @@ FIELDS: dict[str, Field] = {
     "ft_wg_port": Field("ft_wg_port", "FLD_FT_WG_PORT", "FLH_FT_WG_PORT", "51820"),
     "ft_wg_net": Field("ft_wg_net", "FLD_FT_WG_NET", "FLH_FT_WG_NET", "10.13.13.0/24"),
     "ft_host": Field("ft_host", "FLD_FT_HOST", "FLH_FT_HOST", "203.0.113.10"),
+    "ft_connect": Field("ft_connect", "FLD_FT_CONNECT", "FLH_FT_CONNECT", "127.0.0.1:51820"),
     "ft_key": Field("ft_key", "FLD_FT_KEY", "FLH_FT_KEY", "64 hex", True),
     "ft_client": Field("ft_client", "FLD_FT_CLIENT", "FLH_FT_CLIENT", "phone"),
 }
@@ -119,6 +120,7 @@ OPTIONS: dict[str, tuple[str, ...]] = {
     "ft_port": ("56000", "56123", "443", "8443"),
     "ft_wg_port": ("51820", "51821", "51830"),
     "ft_wg_net": ("10.13.13.0/24", "10.44.0.0/24", "10.8.0.0/24"),
+    "ft_connect": ("127.0.0.1:51820", "127.0.0.1:51821"),
 }
 
 _SECRET: bytes = os.urandom(32)
@@ -329,8 +331,7 @@ def _decode(body: str) -> str:
 def input_article(token: str, item: Field, value: str, current: str, lang: str, index: int = 0, src: str = "bot") -> dict:
     title = "%s %s" % (item.label(lang), title_symbol(len(value), index))
     if value:
-        shown = i18n.t("INL_HIDDEN", lang) if item.secret else value
-        description = i18n.t("INL_SAVE_DESC", lang, value=shown)
+        description = i18n.t("INL_SAVE_DESC", lang)
     elif current:
         description = i18n.t("INL_CURRENT", lang, value=current)
     else:

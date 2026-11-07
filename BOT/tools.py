@@ -73,7 +73,7 @@ def fw_screen(v: Any) -> Any:
     t=_t(v)
     blocks=banner(v,t)
     blocks.append(f"<p>{muted(t('TOOLS_FW_TEXT'))}</p>")
-    buttons=[row(button(t("TOOLS_STATUS"), "tools:fw:status", icon="shield"), button(t("UI_BACK"), "tools:home", icon="back"))]
+    buttons=[row(button(t("TOOLS_STATUS"), "ft:fw", icon="shield"), button(t("UI_BACK"), "dbg:home", icon="back"))]
     return screen(t("TOOLS_FW"), t("TOOLS_FW_SUB"), blocks, buttons, icon="shield")
 
 def fortress_screen(v: Any) -> Any:
@@ -81,5 +81,5 @@ def fortress_screen(v: Any) -> Any:
     blocks=banner(v,t)
     blocks.append(f"<p>{muted(t('TOOLS_FORTRESS_TEXT'))}</p>")
     blocks.append(table([("ok", t("TOOLS_RKN"), code(t("TOOLS_FORTRESS_RKN"))), ("ok", t("TOOLS_SERVER"), code(t("TOOLS_FORTRESS_SRV"))), ("ok", t("TOOLS_IMPORTS"), code("<100ms, 0 heavy"))], (t("TOOLS_CHECK"), "")))
-    buttons=[row(button(t("TOOLS_PENTEST"), "tools:pentest", icon="scan"), button(t("UI_BACK"), "tools:home", icon="back"))]
+    buttons=[row(button(t("TOOLS_PENTEST"), "dbg:home", icon="scan"), button(t("UI_BACK"), "dbg:home", icon="back"))]
     return screen(t("TOOLS_FORTRESS"), t("TOOLS_FORTRESS_SUB"), blocks, buttons, icon="shield")
