@@ -217,7 +217,7 @@ def sysctl_values(policy: Policy) -> dict[str, str]:
         "net.ipv4.tcp_rfc1337": "1",
         "net.ipv4.tcp_mtu_probing": "1",
         "net.ipv4.ip_local_port_range": "10240 65000",
-        "net.ipv4.conf.all.rp_filter": "1",
+        "net.ipv4.conf.all.rp_filter": "2",
         "net.ipv4.conf.all.accept_source_route": "0",
         "net.ipv4.conf.all.accept_redirects": "0",
         "net.ipv4.conf.all.secure_redirects": "0",

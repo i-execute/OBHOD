@@ -262,11 +262,13 @@ def test_decode_link_rejects_bad_prefix_and_payload() -> None:
 def test_complete_link_adds_transport_and_arq_profile() -> None:
     base = encode_link({"v": 1, "provider": "vk", "peer": "203.0.113.10:56123", "cid": "0123456789abcdef0123456789abcdef"})
     filled = decode_link(complete_link(base, FtConfig(backend="external", mode="tcp")))
-    assert filled["transport"] == "tcp"
+    assert "transport" not in filled
     assert filled["mode"] == "tcp"
     assert filled["kcp"]["mtu"] == 1200
     assert filled["n"] == 12
     assert filled["spc"] == 12
+    tcp_filled = decode_link(complete_link(base, FtConfig(backend="external", mode="tcp", transport="tcp")))
+    assert tcp_filled["transport"] == "tcp"
     udp_filled = decode_link(complete_link(base, FtConfig(transport="udp")))
     assert udp_filled["transport"] == "udp"
     assert udp_filled["n"] == 12
@@ -370,14 +372,14 @@ def test_agent_ensure_apply_port_open_handles_normalized_flags_and_nft(monkeypat
 def test_ft_state_migrates_legacy_udp_links_to_tcp() -> None:
     from BOT.freeturn import FtState
 
-    legacy_uri = encode_link({"v": 1, "provider": "vk", "peer": "89.125.48.221:56000", "transport": "udp", "obf": "rtpopus3"})
-    migrated = FtState.from_dict({"installed": True, "config": {"transport": "udp"}, "links": {"owner": legacy_uri}})
-    assert migrated.config.transport == "tcp"
-    assert decode_link(migrated.links["owner"])["transport"] == "tcp"
+    legacy_uri = encode_link({"v": 1, "provider": "vk", "peer": "89.125.48.221:56000", "transport": "tcp", "obf": "rtpopus3"})
+    migrated = FtState.from_dict({"installed": True, "transport_schema": 2, "config": {"transport": "tcp"}, "links": {"owner": legacy_uri}})
+    assert migrated.config.transport == "auto"
+    assert "transport" not in decode_link(migrated.links["owner"])
     saved = migrated.to_dict()
-    assert saved["transport_schema"] == 2
+    assert saved["transport_schema"] == 3
     explicit_udp = encode_link({"v": 1, "provider": "vk", "peer": "89.125.48.221:56000", "transport": "udp"})
-    kept = FtState.from_dict({"installed": True, "transport_schema": 2, "config": {"transport": "udp"}, "links": {"owner": explicit_udp}})
+    kept = FtState.from_dict({"installed": True, "transport_schema": 3, "config": {"transport": "udp"}, "links": {"owner": explicit_udp}})
     assert kept.config.transport == "udp"
     assert decode_link(kept.links["owner"])["transport"] == "udp"
 

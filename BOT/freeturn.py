@@ -54,7 +54,7 @@ ASSET_BY_ARCH = {
 METHODS = ("systemd", "docker")
 BACKENDS = ("new", "external")
 MODES = ("udp", "tcp")
-TRANSPORTS = ("tcp", "udp")
+TRANSPORTS = ("auto", "udp", "tcp")
 OBF_PROFILES = ("rtpopus3", "rtpopus2", "rtpopus", "none")
 DNS_MODES = ("auto", "plain", "doh")
 TARGETS = ("all", "freeturn", "wg")
@@ -416,7 +416,7 @@ class FtConfig:
     wg_port: int = DEFAULT_WG_PORT
     wg_net: str = DEFAULT_WG_NET
     mode: str = "udp"
-    transport: str = "tcp"
+    transport: str = "auto"
     obf_profile: str = "rtpopus3"
     version: str = "latest"
 
@@ -428,7 +428,7 @@ class FtConfig:
         if self.mode not in MODES:
             raise FtError("the mode must be udp or tcp", "bad_arg")
         if self.transport not in TRANSPORTS:
-            raise FtError("the turn transport must be tcp or udp", "bad_arg")
+            raise FtError("the turn transport must be auto, tcp or udp", "bad_arg")
         if self.obf_profile not in OBF_PROFILES:
             raise FtError("the obfuscation profile is unknown", "bad_arg")
         if not is_port(self.listen_port):
@@ -494,7 +494,7 @@ class FtConfig:
         method = str(data.get("method", "systemd") or "systemd")
         backend = str(data.get("backend", "new") or "new")
         mode = str(data.get("mode", "udp") or "udp")
-        transport = str(data.get("transport", "tcp") or "tcp").strip().lower()
+        transport = str(data.get("transport", "auto") or "auto").strip().lower()
         obf = str(data.get("obf_profile", "rtpopus3") or "rtpopus3")
         return cls(
             method=method if method in METHODS else "systemd",
@@ -505,7 +505,7 @@ class FtConfig:
             wg_port=int(data.get("wg_port", DEFAULT_WG_PORT) or DEFAULT_WG_PORT),
             wg_net=str(data.get("wg_net", DEFAULT_WG_NET) or DEFAULT_WG_NET),
             mode=mode if mode in MODES else "udp",
-            transport=transport if transport in TRANSPORTS else "tcp",
+            transport=transport if transport in TRANSPORTS else "auto",
             obf_profile=obf if obf in OBF_PROFILES else "rtpopus3",
             version=str(data.get("version", "latest") or "latest")[:24],
         )
@@ -624,7 +624,7 @@ class FtState:
             "version": self.version,
             "config": self.config.to_dict(),
             "key_present": bool(self.key_present),
-            "transport_schema": 2,
+            "transport_schema": 3,
             "links": {str(key)[:NAME_MAX]: str(value)[:LINK_MAX] for key, value in list(self.links.items())[:LINKS_MAX]},
         }
 
@@ -641,8 +641,8 @@ class FtState:
         data = raw or {}
         config = FtConfig.from_dict(data.get("config"))
         schema = int(data.get("transport_schema", 0) or 0)
-        if schema < 2:
-            config.transport = "tcp"
+        if schema < 3:
+            config.transport = "auto"
         cfg_key = str((data.get("config") or {}).get("obf_key", "") or "")
         top_key = str(data.get("obf_key", "") or "")
         owner = data.get("owner") if isinstance(data.get("owner"), dict) else {}
@@ -652,7 +652,7 @@ class FtState:
                 text = str(value)[:LINK_MAX]
                 if not text.startswith("freeturn://"):
                     continue
-                if schema < 2:
+                if schema < 3:
                     text = rewrite_link_transport(text, config.transport)
                 links[str(name)[:NAME_MAX]] = text
         owner_link = str(owner.get("link", "") or "").strip()[:LINK_MAX]
@@ -971,8 +971,11 @@ def encode_link(fields: dict[str, Any]) -> str:
 
 def complete_link(link: str, config: FtConfig, transport: str = "") -> str:
     data = decode_link(link)
-    chosen = transport if transport in TRANSPORTS else (config.transport if getattr(config, "transport", "") in TRANSPORTS else "tcp")
-    data.setdefault("transport", chosen)
+    chosen = transport if transport in TRANSPORTS else (config.transport if getattr(config, "transport", "") in TRANSPORTS else "auto")
+    if chosen in {"udp", "tcp"}:
+        data.setdefault("transport", chosen)
+    elif transport == "auto":
+        data.pop("transport", None)
     has_key = valid_hex64(str(data.get("key", "") or ""))
     if has_key and config.obf_profile != "none":
         data.setdefault("obf", config.obf_profile)
@@ -991,11 +994,14 @@ def complete_link(link: str, config: FtConfig, transport: str = "") -> str:
     return encode_link(cleaned)
 
 
-def rewrite_link_transport(link: str, transport: str = "tcp") -> str:
-    chosen = transport if transport in TRANSPORTS else "tcp"
+def rewrite_link_transport(link: str, transport: str = "auto") -> str:
+    chosen = transport if transport in TRANSPORTS else "auto"
     try:
         data = decode_link(link)
-        data["transport"] = chosen
+        if chosen in {"udp", "tcp"}:
+            data["transport"] = chosen
+        else:
+            data.pop("transport", None)
         data.setdefault("n", 12)
         data.setdefault("spc", 12)
         if isinstance(data.get("wg"), str) and data["wg"]:

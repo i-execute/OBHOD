@@ -620,6 +620,12 @@ def run_tool(argv, timeout=GUARD_TIMEOUT):
         return 1, ""
     exe = shutil.which(items[0]) or items[0]
     resolved = [exe] + items[1:]
+    tool_env = dict(os.environ)
+    tool_env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    tool_env["HOME"] = "/root"
+    tool_env["LANG"] = "C.UTF-8"
+    tool_env["LC_ALL"] = "C.UTF-8"
+    tool_env["TERM"] = "dumb"
     if sandboxed_host():
         systemd_bin = shutil.which("systemd-run") or "systemd-run"
         systemd_cmd = [
@@ -641,7 +647,7 @@ def run_tool(argv, timeout=GUARD_TIMEOUT):
             "--",
         ] + resolved
         try:
-            escaped = subprocess.run(systemd_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            escaped = subprocess.run(systemd_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, env=tool_env, check=False)
             out_text = (escaped.stdout or b"").decode("utf-8", "replace").strip()
             code = int(escaped.returncode or 0)
             if code == 0 or not any(
@@ -652,7 +658,7 @@ def run_tool(argv, timeout=GUARD_TIMEOUT):
         except (OSError, subprocess.SubprocessError):
             pass
     try:
-        done = subprocess.run(resolved, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+        done = subprocess.run(resolved, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, env=tool_env, check=False)
     except (OSError, subprocess.SubprocessError):
         return 1, ""
     return int(done.returncode or 0), (done.stdout or b"").decode("utf-8", "replace").strip()
@@ -1504,6 +1510,20 @@ def ddos_nft_file_sync(port, protos, nft_path=DDOS_NFT_PATH):
         return
 
 
+def _nft_chain_blocks_port(joined, proto, port):
+    has_drop = "policy drop" in joined or bool(re.search(r"(?:^|\s)(drop|reject)(?:\s|$|;)", joined))
+    if not has_drop:
+        return False
+    accept_re = re.compile(r"\b%s\s+dport\s+%d\b[^\n]*\baccept\b" % (re.escape(proto), int(port)))
+    drop_re = re.compile(r"(?:^|\s)(drop|reject)(?:\s|$|;)")
+    for line in joined.splitlines():
+        if accept_re.search(line):
+            return False
+        if "hook input" not in line and drop_re.search(line):
+            return True
+    return True
+
+
 def nft_open_port(port, protos):
     if not shutil.which("nft") or not 1 <= int(port or 0) <= 65535:
         return
@@ -1527,7 +1547,7 @@ def nft_open_port(port, protos):
     targets = []
     for raw in ruleset.splitlines():
         line = raw.strip()
-        table_match = re.match(r"^table\s+(inet|ip)\s+([A-Za-z0-9_.-]+)\s*\{", line)
+        table_match = re.match(r"^table\s+(inet|ip|ip6)\s+([A-Za-z0-9_.-]+)\s*\{", line)
         if table_match:
             family = table_match.group(1)
             table_name = table_match.group(2)
@@ -1543,7 +1563,7 @@ def nft_open_port(port, protos):
             continue
         if chain_name:
             chain_body.append(line)
-            if "hook input" in line and "policy drop" in line and table_name != "obhod_ddos":
+            if "hook input" in line and table_name != "obhod_ddos":
                 in_input = True
             if line == "}":
                 if in_input:
@@ -1554,7 +1574,7 @@ def nft_open_port(port, protos):
                 chain_body = []
     for fam, tbl, chn, joined in targets[:8]:
         for proto in protos:
-            if ("%s dport %d" % (proto, port)) not in joined:
+            if _nft_chain_blocks_port(joined, proto, port):
                 run_tool(["nft", "insert", "rule", fam, tbl, chn, proto, "dport", str(port), "accept"], timeout=10)
 
 
@@ -1565,6 +1585,47 @@ def ensure_wg_forward():
         run_tool(["iptables", "-I", "FORWARD", "1", "-i", "ft-wg0", "-j", "ACCEPT"])
     if run_tool(["iptables", "-C", "FORWARD", "-o", "ft-wg0", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"])[0] != 0:
         run_tool(["iptables", "-I", "FORWARD", "1", "-o", "ft-wg0", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
+
+
+def _relax_rp_filter():
+    if not shutil.which("sysctl"):
+        return
+    keys = ["net.ipv4.conf.all.rp_filter", "net.ipv4.conf.default.rp_filter"]
+    conf_root = "/proc/sys/net/ipv4/conf"
+    if os.path.isdir(conf_root):
+        try:
+            for name in sorted(os.listdir(conf_root))[:32]:
+                if re.match(r"^[A-Za-z0-9_.-]+$", name) and name not in {"all", "default", "lo"}:
+                    keys.append("net.ipv4.conf.%s.rp_filter" % name)
+        except OSError:
+            pass
+    for key in keys:
+        rp = tool_text(["sysctl", "-n", key], timeout=10).strip()
+        if rp == "1":
+            run_tool(["sysctl", "-q", "-w", "%s=2" % key], timeout=10)
+
+
+def _iptables_accept_above_drop(bin_name, proto, port):
+    listing = tool_text([bin_name, "-S", "INPUT"])
+    accept_re = re.compile(r"^-A\s+INPUT\b.*-p\s+%s\b.*--dport\s+%d\b.*-j\s+ACCEPT\b" % (re.escape(proto), int(port)))
+    drop_re = re.compile(r"^-A\s+INPUT\b.*-j\s+(DROP|REJECT)\b")
+    seen_drop = False
+    accepted_first = False
+    for line in listing.splitlines():
+        row = line.strip()
+        if accept_re.search(row) and not seen_drop:
+            accepted_first = True
+            break
+        if drop_re.search(row):
+            seen_drop = True
+    if accepted_first:
+        return
+    if listing and seen_drop:
+        while run_tool([bin_name, "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])[0] == 0:
+            run_tool([bin_name, "-D", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
+        run_tool([bin_name, "-I", "INPUT", "1", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
+    elif run_tool([bin_name, "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])[0] != 0:
+        run_tool([bin_name, "-I", "INPUT", "1", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
 
 
 def ensure_apply_port_open(flags, body):
@@ -1590,9 +1651,7 @@ def ensure_apply_port_open(flags, body):
     protos = ["udp", "tcp"] if mode == "tcp" else ["udp"]
     if shutil.which("sysctl"):
         run_tool(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"], timeout=10)
-        rp = tool_text(["sysctl", "-n", "net.ipv4.conf.all.rp_filter"], timeout=10).strip()
-        if rp == "1":
-            run_tool(["sysctl", "-q", "-w", "net.ipv4.conf.all.rp_filter=2"], timeout=10)
+        _relax_rp_filter()
     ensure_wg_forward()
     nft_open_port(port, protos)
     backend = guard_backend()
@@ -1601,6 +1660,10 @@ def ensure_apply_port_open(flags, body):
     found_mode, found_rules = guard_status(backend, port, ["udp"])
     if found_mode == "vk" and found_rules > 0:
         return
+    if backend in {"ufw", "firewalld"} and shutil.which("iptables") and iptables_chain_present():
+        for proto in protos:
+            while run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])[0] == 0:
+                run_tool(["iptables", "-D", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])
     if backend == "ufw" and found_mode != "open":
         ufw_clear(port)
         for proto in protos:
@@ -1613,8 +1676,11 @@ def ensure_apply_port_open(flags, body):
         for proto in protos:
             while run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])[0] == 0:
                 run_tool(["iptables", "-D", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])
-            if run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])[0] != 0:
-                run_tool(["iptables", "-I", "INPUT", "1", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
+            _iptables_accept_above_drop("iptables", proto, port)
+            if shutil.which("iptables-legacy"):
+                legacy_in = tool_text(["iptables-legacy", "-S", "INPUT"])
+                if legacy_in and re.search(r"-j\s+(DROP|REJECT)\b", legacy_in):
+                    _iptables_accept_above_drop("iptables-legacy", proto, port)
 
 
 def owner_allowlisted(root=INSTALL_ROOT):
@@ -1777,6 +1843,8 @@ def heal_runtime(script, command, flags, body):
                 if probe_payload and probe_payload.get("result") == "ok" and isinstance(probe_payload.get("data"), dict):
                     for key, value in probe_payload["data"].items():
                         body["data"][key] = value
+        if port and command in {"apply", "restart"} and shutil.which("conntrack"):
+            run_tool(["conntrack", "-D", "-p", "udp", "--dport", str(port)], timeout=10)
         if command in {"apply", "probe"} and isinstance(body.get("data"), dict):
             links = read_client_links()
             if links:

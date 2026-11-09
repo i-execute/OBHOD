@@ -119,7 +119,7 @@ def home(view: FtView) -> Any:
         ]
     else:
         buttons = [
-            row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_PLAN"), "ft:plan", icon="settings")),
+            row(button(t("FT_BTN_INSTALL"), "ft:apply", icon="ok"), button(t("FT_BTN_PLAN"), "ft:plan", icon="settings")),
             row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("FT_BTN_FW"), "ft:fw", icon="shield"), button(t("FT_BTN_LOGS"), "ft:logs", icon="logs")),
             row(button(t("UI_HOME"), "nav:home", icon="home")),
         ]
@@ -198,11 +198,12 @@ def plan_screen(view: FtView) -> Any:
             ),
         )
     )
+    apply_key = "FT_BTN_APPLY" if view.state.installed else "FT_BTN_INSTALL"
     buttons = [
         row(button(t("FT_FIELD_METHOD"), "ft:cyc:method", icon="tools"), button(t("FT_FIELD_BACKEND"), "ft:cyc:backend", icon="module")),
         row(button(t("FT_FIELD_MODE"), "ft:cyc:mode", icon="settings"), button(t("FT_FIELD_TRANSPORT"), "ft:cyc:transport", icon="link")),
         row(button(t("FT_FIELD_OBF"), "ft:cyc:obf_profile", icon="lock"), button(t("FT_FIELD_VERSION"), "ft:cyc:version", icon="tag")),
-        row(button(t("FT_BTN_RANDOM_PORT"), "ft:rport", icon="refresh"), button(t("FT_BTN_APPLY"), "ft:apply", icon="ok")),
+        row(button(t("FT_BTN_RANDOM_PORT"), "ft:rport", icon="refresh"), button(t(apply_key), "ft:apply", icon="ok")),
         input_row(t("FT_PORT_INPUT"), "ft_port", "-", view.lang),
         input_row(t("FT_HOST_INPUT"), "ft_host", "-", view.lang),
     ]

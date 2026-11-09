@@ -840,7 +840,42 @@ class Updater:
         else:
             steps.append("untracked files removed")
 
+    async def _sync_unit(self) -> None:
+        if os.geteuid() != 0 or shutil.which("systemctl") is None:
+            return
+        template = self.root / "Storage" / "obhod.service"
+        target = Path("/etc/systemd/system") / self.unit
+        if not template.is_file() or template.is_symlink() or not target.is_file() or target.is_symlink():
+            return
+        try:
+            current = target.read_text(encoding="utf-8")
+            raw = template.read_text(encoding="utf-8")
+        except OSError:
+            return
+        env_file = str(self.env_file())
+        state_dir = str(self._state_dir or "/var/lib/obhod")
+        for line in current.splitlines():
+            if line.startswith("EnvironmentFile="):
+                env_file = line.split("=", 1)[1].strip() or env_file
+        rendered = (
+            raw.replace("@PREFIX@/venv/bin/python", self._python())
+            .replace("@PREFIX@", str(self.root))
+            .replace("@ENV_FILE@", env_file)
+            .replace("@STATE_DIR@", state_dir)
+        )
+        if rendered == current:
+            return
+        try:
+            tmp = target.with_suffix(".service.tmp")
+            tmp.write_text(rendered, encoding="utf-8")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, target)
+            await self._run(["systemctl", "daemon-reload"], UNIT_TIMEOUT)
+        except (OSError, UpdateError):
+            return
+
     async def _restart(self) -> bool:
+        await self._sync_unit()
         if shutil.which("systemctl") is None:
             return False
         if shutil.which("systemd-run") is not None:

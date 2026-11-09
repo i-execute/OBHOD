@@ -20,7 +20,7 @@ from .freeturn import FtControl, FtError
 from .ftpanel import FtPanel
 from .guard import DEFAULT_BANTIME, BanState, GuardClient, SshState, ddos_call, ddos_argv, honey_events
 from .models import ModelError, valid_port
-from .panel import PanelError, XrayPanel
+from .panel import PanelError, XrayPanel, state_report
 from .audit import Audit
 from .seclog import SecurityLog
 from .ratelimit import CALLBACK_LIMIT, CLAIM_LIMIT, EXPENSIVE_LIMIT, INLINE_LIMIT, MESSAGE_LIMIT, Limiter
@@ -96,6 +96,55 @@ def public_address() -> str:
     return str(parsed)
 
 
+def _extract_event_lang(evt: object, app: Any = None) -> str:
+    for attr in ("lang_code", "language_code"):
+        val = getattr(evt, attr, None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    raw = getattr(evt, "raw", None)
+    if isinstance(raw, dict):
+        nested_raw = raw.get("raw") if isinstance(raw.get("raw"), dict) else {}
+        nested_upd = raw.get("raw_update") if isinstance(raw.get("raw_update"), dict) else {}
+        for obj in (
+            raw.get("from"),
+            raw.get("user"),
+            nested_raw.get("from"),
+            nested_upd.get("from"),
+        ):
+            if isinstance(obj, dict):
+                code = obj.get("language_code") or obj.get("lang_code")
+                if isinstance(code, str) and code.strip():
+                    return code.strip()
+    getter = getattr(evt, "get", None)
+    if callable(getter):
+        try:
+            sender = getter("from")
+        except Exception:
+            sender = None
+        if isinstance(sender, dict):
+            code = sender.get("language_code") or sender.get("lang_code")
+            if isinstance(code, str) and code.strip():
+                return code.strip()
+    who = int(getattr(evt, "from_id", 0) or 0)
+    if who > 0 and app is not None:
+        mt = getattr(app, "mt", None)
+        entities = getattr(mt, "entities", None)
+        if isinstance(entities, dict):
+            ent = entities.get(("user", who))
+            if isinstance(ent, dict):
+                code = ent.get("lang_code") or ent.get("language_code")
+                if isinstance(code, str) and code.strip():
+                    return code.strip()
+        users = getattr(app, "_users", None)
+        if isinstance(users, dict):
+            cached = users.get(who)
+            if isinstance(cached, dict):
+                code = cached.get("lang_code") or cached.get("language_code")
+                if isinstance(code, str) and code.strip():
+                    return code.strip()
+    return ""
+
+
 class Bot:
     def __init__(
         self,
@@ -145,6 +194,8 @@ class Bot:
         self.notify_poll_at = 0.0
         self.ddos_state: Any = None
         self.ddos_reported = 0.0
+        self.cores_warmed = False
+        self.lang_probed = False
         ui.use_icons(self.emoji_enabled)
         self.seed_ports()
 
@@ -394,17 +445,48 @@ class Bot:
         return raised
 
     async def freeturn_warmup(self) -> None:
+        probe_fn = getattr(self.freeturn.control, "probe", None)
+        if asyncio.iscoroutine(probe_fn):
+            probe_fn.close()
+            return
+        if not callable(probe_fn):
+            return
         try:
-            state = await self.freeturn.control.probe()
+            state = await probe_fn()
         except Exception as exc:
             log.debug("freeturn warmup skipped: %s", exc)
             return
+        saved_transport = self.freeturn.draft.transport
         self.freeturn.state = state
+        self.freeturn.state.config.transport = saved_transport
         self.freeturn.draft = state.config.from_dict(state.config.to_dict())
+        self.freeturn.draft.transport = saved_transport
         if "owner" in state.links:
             self.freeturn.link = state.links["owner"]
             self.freeturn.name = "owner"
+        if state.installed and (not isinstance(self.freeturn.control, FtControl) or os.path.isfile("/opt/free-turn-proxy/clients.list")):
+            self.freeturn.clients, self.freeturn.share = await self.freeturn._safe_list()
         self.freeturn.save()
+
+    async def ensure_cores_warm(self) -> None:
+        if self.cores_warmed:
+            return
+        self.cores_warmed = True
+        if not self.xray.core and (not isinstance(self.xray.control, XrayControl) or os.geteuid() == 0):
+            try:
+                probed = await self.xray.control.probe(self.state.ssh)
+                self.xray.core = state_report(probed)
+                self.state.last_probe = dict(self.xray.core)
+                self.save()
+            except Exception as exc:
+                log.debug("xray warmup skipped: %s", exc)
+        if not self.freeturn.state.installed and (
+            not isinstance(self.freeturn.control, FtControl)
+            or self.state.freeturn.configured
+            or os.path.isfile("/opt/free-turn-proxy/install.conf")
+            or os.path.isfile("/etc/systemd/system/free-turn-proxy.service")
+        ):
+            await self.freeturn_warmup()
 
     async def run(self) -> None:
         app = await self.boot()
@@ -417,11 +499,11 @@ class Bot:
             await self.notify_start()
         except Exception as exc:
             log.warning("the notification poller was skipped: %s", exc)
-        if os.geteuid() == 0 and os.path.isfile("/opt/free-turn-proxy/install.conf"):
+        if os.geteuid() == 0:
             try:
-                await self.track(self.freeturn_warmup(), "ft_warmup")
+                await self.track(self.ensure_cores_warm(), "cores_warmup")
             except Exception as exc:
-                log.debug("freeturn warmup not scheduled: %s", exc)
+                log.debug("cores warmup not scheduled: %s", exc)
         await app.run()
 
     async def verify_update(self) -> None:
@@ -541,6 +623,28 @@ class Bot:
     def allowed(self, who: int, scope: str = "any", limit: int = 0, window: float = 0.0) -> bool:
         return self.limiter.allow(str(who), scope=scope, limit=limit, window=window)
 
+    async def sync_user_language(self, evt: object) -> None:
+        if getattr(self.state, "language_set", False):
+            return
+        code = _extract_event_lang(evt, self.app)
+        if not code:
+            return
+        detected = i18n.detect_user_language(code)
+        changed = self.state.language != detected
+        self.state.language = detected
+        self.state.language_set = True
+        self.save()
+        if (
+            changed
+            and self.app is not None
+            and callable(getattr(self.app, "set_my_commands", None))
+            and (not isinstance(self.app, GoyGram) or getattr(getattr(self.app, "api", None), "_session", None) is not None)
+        ):
+            try:
+                await self.register_commands()
+            except Exception:
+                pass
+
     async def guard_admin(self, evt: object) -> bool:
         who = int(getattr(evt, "from_id", 0) or 0)
         bot_id = str(self.cfg.bot_token or "").partition(":")[0]
@@ -554,8 +658,10 @@ class Bot:
                 self.state.admin_id = who
                 self.save()
                 log.info("admin claimed: %s", who)
+                await self.sync_user_language(evt)
                 return True
         elif who == self.admin_id:
+            await self.sync_user_language(evt)
             return True
         chat_id = int(getattr(evt, "chat_id", 0) or 0)
         log.warning("blocked non-admin: who=%s, chat_id=%s", who, chat_id)
@@ -750,6 +856,7 @@ class Bot:
         return
 
     async def command_screen(self, chat_id: int, found: commands.Command, t: i18n.Translator) -> None:
+        await self.ensure_cores_warm()
         cards = cores.snapshot(self.state, dict(self.xray.core), len(self.freeturn.clients))
         if found.name == "start":
             await self.send(chat_id, commands.start_screen(t, cards, self.language))
@@ -1040,7 +1147,17 @@ class Bot:
         choice = code_value or action
         if action == "set" and choice in i18n.LANGUAGES:
             self.state.language = i18n.normalize(choice)
+            self.state.language_set = True
             self.save()
+            if (
+                self.app is not None
+                and callable(getattr(self.app, "set_my_commands", None))
+                and (not isinstance(self.app, GoyGram) or getattr(getattr(self.app, "api", None), "_session", None) is not None)
+            ):
+                try:
+                    await self.register_commands()
+                except Exception:
+                    pass
             notice = i18n.t("LANG_CHANGED", self.language, name=i18n.t("LANG_NAME", self.language))
             await self.render(chat_id, msg_id, screens.language_screen(self.view(notice=notice)))
             return
@@ -1048,6 +1165,7 @@ class Bot:
 
     async def navigate(self, chat_id: int, msg_id: int, page: str) -> None:
         if page == "server" or page == "home":
+            await self.ensure_cores_warm()
             await self.render(chat_id, msg_id, screens.home(self.view()))
             return
         if page == "ssh":

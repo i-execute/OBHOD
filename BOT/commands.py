@@ -72,7 +72,8 @@ def start_screen(t, cards, lang: str = "en"):
 
         blocks.append(table(rows_data, (t("HOME_CORE_TABLE"), t("HOME_CORE_TABLE2"))))
     buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cards]
-    buttons.append(row(button(t("NAV_HELP"), "nav:help", icon="docs"), button(t("UI_HOME"), "nav:home", icon="home")))
+    buttons.append(row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("NAV_UPDATE"), "upd:show", icon="update")))
+    buttons.append(row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_HELP"), "nav:help", icon="docs")))
     return screen(t("CMD_START_TITLE"), t("CMD_START_DESC"), blocks, buttons, icon="bot")
 
 

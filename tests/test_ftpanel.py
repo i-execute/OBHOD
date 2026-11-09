@@ -244,13 +244,21 @@ def test_client_link_is_completed_for_the_transport(tmp_path: Path) -> None:
 
     data = decode_link(finished)
     assert data["mode"] == "tcp"
-    assert data["transport"] == "tcp"
+    assert "transport" not in data
     panel.remember_link("owner", finished)
     panel.link = finished
     panel.cycle("transport")
     assert panel.draft.transport == "udp"
     assert decode_link(panel.state.links["owner"])["transport"] == "udp"
     assert decode_link(panel.link)["transport"] == "udp"
+    panel.cycle("transport")
+    assert panel.draft.transport == "tcp"
+    assert decode_link(panel.state.links["owner"])["transport"] == "tcp"
+    assert decode_link(panel.link)["transport"] == "tcp"
+    panel.cycle("transport")
+    assert panel.draft.transport == "auto"
+    assert "transport" not in decode_link(panel.state.links["owner"])
+    assert "transport" not in decode_link(panel.link)
     assert panel._finish_link("garbage") == ""
 
 

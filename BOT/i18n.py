@@ -6,6 +6,7 @@ from typing import Any
 from . import strings
 
 LANGUAGES = ("en", "ru", "zh")
+AUTO_LANGUAGES = ("en", "ru")
 DEFAULT_LANGUAGE = "en"
 PLACEHOLDER = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 CATALOGS = {"en": strings.EN, "ru": strings.RU, "zh": strings.ZH}
@@ -22,6 +23,14 @@ def normalize(language: object) -> str:
         return text
     base = text.split("-")[0]
     if base in LANGUAGES:
+        return base
+    return DEFAULT_LANGUAGE
+
+
+def detect_user_language(language: object) -> str:
+    text = str(language or "").strip().lower().replace("_", "-")
+    base = text.split("-")[0]
+    if base in AUTO_LANGUAGES:
         return base
     return DEFAULT_LANGUAGE
 

@@ -789,9 +789,9 @@ heal_system() {
           fi
         fi
         if ! (command -v iptables >/dev/null 2>&1 && iptables -C INPUT -p "${ft_proto}" --dport "${ft_port}" -j OBHOD-FT >/dev/null 2>&1); then
-          if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-            if ! ufw status 2>/dev/null | grep -qE "^${ft_port}(/${ft_proto})?[[:space:]]+ALLOW"; then
-              ufw allow "${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in ufw" || true
+          if command -v ufw >/dev/null 2>&1 && LC_ALL=C LANG=C ufw status 2>/dev/null | grep -q "Status: active"; then
+            if ! LC_ALL=C LANG=C ufw status 2>/dev/null | grep -qE "^${ft_port}(/${ft_proto})?[[:space:]]+ALLOW"; then
+              LC_ALL=C LANG=C ufw allow "${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in ufw" || true
             fi
           elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null || true)" = "running" ]; then
             if ! firewall-cmd --query-port="${ft_port}/${ft_proto}" >/dev/null 2>&1; then

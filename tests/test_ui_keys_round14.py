@@ -219,3 +219,154 @@ def test_simplified_navigation_eliminates_duplicate_hub_and_unknown_routes(tmp_p
         if bot.sent:
             last_html = bot.sent[-1][1]
             assert unknown_notice not in last_html, cb
+
+
+def test_start_screen_warms_cores_and_removes_redundant_text_and_home_btn(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from tests.fakes import FakeFtControl
+
+    bot = make_bot(tmp_path)
+    bot.freeturn.control = FakeFtControl()
+
+    evt = SimpleNamespace(
+        from_id=bot.admin_id,
+        chat_id=bot.admin_id,
+        text="/start",
+        is_private=True,
+        raw={"from": {"id": bot.admin_id, "language_code": "ru"}},
+    )
+    asyncio.run(bot.on_command(evt))
+
+    assert bot.language == "ru"
+    assert bot.state.language_set is True
+    assert bot.sent, "expected /start screen"
+    html = bot.sent[-1].to_html()
+    assert 'data="nav:home"' not in html
+    assert 'data="xr:home"' in html
+    assert 'data="ft:home"' in html
+    assert 'data="dbg:home"' in html
+    assert 'data="nav:settings"' in html
+    assert i18n.t("CORE_STATE_MISSING", "ru").lower() not in html.lower()
+    assert i18n.t("CORE_STATE_RUNNING", "ru").lower() in html.lower()
+    assert html.lower().count(i18n.t("CMD_START_DESC", "ru").lower()) == 1
+
+
+def test_language_autodetect_respects_fallback_and_manual_override(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    bot_de = make_bot(tmp_path / "de")
+    evt_de = SimpleNamespace(
+        from_id=bot_de.admin_id,
+        chat_id=bot_de.admin_id,
+        text="/start",
+        is_private=True,
+        raw={"from": {"id": bot_de.admin_id, "language_code": "de-DE"}},
+    )
+    asyncio.run(bot_de.on_command(evt_de))
+    assert bot_de.language == "en"
+    assert bot_de.state.language_set is True
+
+    bot_mt = make_bot(tmp_path / "mt")
+    bot_mt.app = SimpleNamespace(mt=SimpleNamespace(entities={("user", bot_mt.admin_id): {"lang_code": "ru-RU"}}))
+    evt_mt = SimpleNamespace(from_id=bot_mt.admin_id, chat_id=bot_mt.admin_id, text="/start", is_private=True, raw={})
+    asyncio.run(bot_mt.on_command(evt_mt))
+    assert bot_mt.language == "ru"
+
+    asyncio.run(bot_mt.language_action(bot_mt.admin_id, 1, "set", "en"))
+    assert bot_mt.language == "en"
+    asyncio.run(bot_mt.on_command(evt_mt))
+    assert bot_mt.language == "en"
+
+
+def test_ftscreens_shows_install_button_until_installed(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.language = "ru"
+    bot.freeturn.state = FtState(installed=False)
+    uninstalled_html = ftscreens.home(bot.freeturn.view()).to_html()
+    plan_uninstalled = ftscreens.plan_screen(bot.freeturn.view()).to_html()
+    assert i18n.t("FT_BTN_INSTALL", "ru") in uninstalled_html
+    assert i18n.t("FT_BTN_INSTALL", "ru") in plan_uninstalled
+    assert 56000 <= bot.freeturn.draft.listen_port <= 56999
+
+    bot.freeturn.state = FtState(installed=True, running=True)
+    installed_html = ftscreens.home(bot.freeturn.view()).to_html()
+    assert i18n.t("FT_BTN_APPLY", "ru") in installed_html
+
+
+def test_freeturn_agent_locale_env_nft_accept_policy_drop_and_iptables_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import importlib.util
+    import subprocess as sp
+
+    spec = importlib.util.spec_from_file_location(
+        "freeturn_agent_r15",
+        Path(__file__).resolve().parent.parent / "Storage" / "remote" / "freeturn_agent.py",
+    )
+    assert spec and spec.loader
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+
+    captured_env: dict[str, str] = {}
+
+    def _fake_subproc_run(cmd: list[str], **kwargs: object) -> object:
+        nonlocal captured_env
+        env_arg = kwargs.get("env")
+        if isinstance(env_arg, dict):
+            captured_env = dict(env_arg)
+        return sp.CompletedProcess(cmd, 0, stdout=b"Status: active\n")
+
+    monkeypatch.setattr(agent, "sandboxed_host", lambda: False)
+    monkeypatch.setattr(agent.subprocess, "run", _fake_subproc_run)
+    code, out = agent.run_tool(["ufw", "status"])
+    assert code == 0
+    assert "Status: active" in out
+    assert captured_env.get("LANG") == "C.UTF-8"
+    assert captured_env.get("LC_ALL") == "C.UTF-8"
+
+    nft_ruleset = (
+        "table inet hostfw {\n"
+        "\tchain input {\n"
+        "\t\ttype filter hook input priority filter; policy accept;\n"
+        "\t\tct state established,related accept\n"
+        "\t\tcounter drop\n"
+        "\t}\n"
+        "}\n"
+    )
+    nft_cmds: list[list[str]] = []
+
+    def _fake_nft_run(argv: list[str], timeout: float = 15.0) -> tuple[int, str]:
+        nft_cmds.append(list(argv))
+        if argv[:3] == ["nft", "list", "ruleset"]:
+            return 0, nft_ruleset
+        return 0, ""
+
+    monkeypatch.setattr(agent.shutil, "which", lambda name: f"/usr/sbin/{name}")
+    monkeypatch.setattr(agent, "run_tool", _fake_nft_run)
+    monkeypatch.setattr(agent, "tool_text", lambda argv, timeout=15.0: nft_ruleset if argv[:3] == ["nft", "list", "ruleset"] else "")
+    agent.nft_open_port(56432, ["udp"])
+    assert ["nft", "insert", "rule", "inet", "hostfw", "input", "udp", "dport", "56432", "accept"] in nft_cmds
+
+    ipt_cmds: list[list[str]] = []
+    ipt_listing = (
+        "-P INPUT ACCEPT\n"
+        "-A INPUT -j DROP\n"
+        "-A INPUT -p udp -m udp --dport 56432 -j ACCEPT\n"
+    )
+    checks_left = [0, 1]
+
+    def _fake_ipt_run(argv: list[str], timeout: float = 15.0) -> tuple[int, str]:
+        ipt_cmds.append(list(argv))
+        if "-C" in argv:
+            return (checks_left.pop(0) if checks_left else 1), ""
+        return 0, ""
+
+    monkeypatch.setattr(agent, "run_tool", _fake_ipt_run)
+    monkeypatch.setattr(agent, "tool_text", lambda argv, timeout=15.0: ipt_listing)
+    agent._iptables_accept_above_drop("iptables", "udp", 56432)
+    assert ["iptables", "-D", "INPUT", "-p", "udp", "--dport", "56432", "-j", "ACCEPT"] in ipt_cmds
+    assert ["iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", "56432", "-j", "ACCEPT"] in ipt_cmds
+
+    real_service = (Path(__file__).resolve().parent.parent / "Storage" / "obhod.service").read_text(encoding="utf-8")
+    assert "ProtectSystem=strict" in real_service
+

@@ -6,6 +6,7 @@ from typing import Any
 from . import ftscreens, fwguard, i18n, traffic
 from .freeturn import (
     BACKENDS,
+    DEFAULT_LISTEN_PORT,
     METHODS,
     PINNED_SCRIPT_SHA256,
     TRANSPORTS,
@@ -38,6 +39,8 @@ class FtPanel:
         self.control = control or FtControl()
         self.state: FtState = bot.state.freeturn
         self.draft: FtConfig = FtConfig.from_dict(bot.state.freeturn.config.to_dict())
+        if not self.state.installed and not self.state.configured and self.draft.listen_port == DEFAULT_LISTEN_PORT:
+            self.draft.listen_port = random_listen_port()
         self.clients: list[FtClient] = []
         self.share: FtShare | None = None
         self.logs: list[str] = []
@@ -319,11 +322,13 @@ class FtPanel:
             await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
             return
         saved_links = dict(self.state.links)
-        saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "tcp"
+        saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "auto"
         self.state = state
         self.state.config.transport = saved_transport
         draft = FtConfig.from_dict(state.config.to_dict())
         draft.transport = saved_transport
+        if not state.installed and not state.configured and draft.listen_port == DEFAULT_LISTEN_PORT:
+            draft.listen_port = self.draft.listen_port if self.draft.listen_port != DEFAULT_LISTEN_PORT else random_listen_port()
         ver = str(draft.version or "").strip()
         if ver and ver.lower() not in {"latest", "local", "auto", "default"}:
             tag = ver if ver.startswith("v") else "v" + ver
@@ -369,7 +374,7 @@ class FtPanel:
             return
         prev_cfg = FtConfig.from_dict(self.state.config.to_dict())
         saved_links = dict(self.state.links)
-        saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "tcp"
+        saved_transport = self.draft.transport if self.draft.transport in TRANSPORTS else "auto"
         share_changed = bool(
             key_rotated
             or int(prev_cfg.listen_port) != int(self.draft.listen_port)
@@ -380,7 +385,14 @@ class FtPanel:
         )
         self.state = state
         self.state.config.transport = saved_transport
-        self.draft.transport = saved_transport
+        applied_draft = FtConfig.from_dict(state.config.to_dict())
+        applied_draft.transport = saved_transport
+        ver = str(applied_draft.version or "").strip()
+        if ver and ver.lower() not in {"latest", "local", "auto", "default"}:
+            tag = ver if ver.startswith("v") else "v" + ver
+            if tag not in PINNED_SCRIPT_SHA256:
+                applied_draft.version = "latest"
+        self.draft = applied_draft
         if self.state.links:
             self.state.links = {
                 name: self._finish_link(val) or rewrite_link_transport(val, saved_transport)
@@ -608,7 +620,7 @@ class FtPanel:
         if not text:
             return ""
         try:
-            done = complete_link(text, self.draft)
+            done = complete_link(text, self.draft, transport=self.draft.transport)
         except FtError:
             return ""
         return done

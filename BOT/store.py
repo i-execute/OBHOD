@@ -32,6 +32,7 @@ class State:
     sub_port: int = SUB_PORT
     last_probe: dict[str, Any] = field(default_factory=dict)
     language: str = i18n.DEFAULT_LANGUAGE
+    language_set: bool = False
     traffic: dict[str, Any] = field(default_factory=dict)
     xray: XrayState = field(default_factory=XrayState)
     freeturn: FtState = field(default_factory=FtState)
@@ -49,6 +50,7 @@ class State:
             "sub_port": int(self.sub_port),
             "last_probe": dict(self.last_probe),
             "language": i18n.normalize(self.language),
+            "language_set": bool(self.language_set),
             "traffic": {str(key)[:TRAFFIC_NAME]: dict(value) for key, value in list(self.traffic.items())[:4096] if isinstance(value, dict)},
             "xray": self.xray.to_dict(),
             "freeturn": self.freeturn.to_dict(),
@@ -69,6 +71,7 @@ class State:
             sub_port=int(data.get("sub_port", SUB_PORT) or SUB_PORT),
             last_probe=dict(data.get("last_probe") or {}),
             language=i18n.normalize(data.get("language", i18n.DEFAULT_LANGUAGE)),
+            language_set=bool(data.get("language_set", False)),
             traffic={str(key)[:TRAFFIC_NAME]: dict(value) for key, value in list((data.get("traffic") or {}).items())[:4096] if isinstance(value, dict)} if isinstance(data.get("traffic"), dict) else {},
             xray=XrayState.from_dict(data.get("xray")),
             freeturn=FtState.from_dict(data.get("freeturn")),
