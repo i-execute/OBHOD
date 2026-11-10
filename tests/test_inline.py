@@ -72,10 +72,10 @@ def test_unknown_token_is_reported() -> None:
 
 
 def test_idle_query_lists_fields() -> None:
-    results = results_for("", "bot", lang="en")
-    assert len(results) == min(len(FIELDS), inline.MAX_RESULTS)
-    assert all(text_of(item) == MARKER or text_of(item).startswith(MARKER) for item in results)
+    before = dict(inline._REGISTRY)
+    assert results_for("", "bot", lang="en") == []
     assert results_for("nonsense", "bot", lang="en") == []
+    assert inline._REGISTRY == before
 
 
 def test_input_token_gives_one_card() -> None:

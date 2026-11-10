@@ -14,6 +14,7 @@ class FakeEvent:
     def __init__(self, **kwargs: Any) -> None:
         self.chat_id = kwargs.get("chat_id", 1)
         self.msg_id = kwargs.get("msg_id", 0)
+        self.inline_message_id = kwargs.get("inline_message_id")
         self.from_id = kwargs.get("from_id", 7)
         self.data = kwargs.get("data", "")
         self.text = kwargs.get("text", "")
@@ -44,6 +45,9 @@ class FakeApp:
         self.deleted: list[tuple[int, int]] = []
         self.messages: list[dict[str, Any]] = []
         self.sent_rich: list[dict[str, Any]] = []
+        self.inline_edits: list[dict[str, Any]] = []
+        self.mt_calls: list[tuple[str, dict[str, Any]]] = []
+        self.bot_calls: list[tuple[str, dict[str, Any]]] = []
 
     async def delete_msg(self, chat_id: int, msg_ids: int | list[int], **kw: Any) -> None:
         items = msg_ids if isinstance(msg_ids, list) else [msg_ids]
@@ -55,6 +59,14 @@ class FakeApp:
 
     async def send_rich(self, chat_id: int, rich: Any, **kw: Any) -> None:
         self.sent_rich.append({"chat_id": int(chat_id), "rich": rich, **kw})
+
+    async def mt_req(self, method: str, **kw: Any) -> dict[str, Any]:
+        self.mt_calls.append((method, dict(kw)))
+        return {"ok": True}
+
+    async def bot_req(self, method: str, **kw: Any) -> dict[str, Any]:
+        self.bot_calls.append((method, dict(kw)))
+        return {"ok": True}
 
 
 class FakeControl:

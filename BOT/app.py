@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import ipaddress
 import json
@@ -8,6 +9,7 @@ import logging
 import os
 import re
 import socket
+import struct
 import sys
 import time
 from typing import Any
@@ -742,10 +744,14 @@ class Bot:
         elif who == self.admin_id:
             await self.sync_user_language(evt)
             return True
-        chat_id = int(getattr(evt, "chat_id", 0) or 0)
+        raw_chat = getattr(evt, "chat_id", 0)
+        chat_id = int(raw_chat or 0) if isinstance(raw_chat, (int, str)) and str(raw_chat).lstrip("-").isdigit() else 0
         log.warning("blocked non-admin: who=%s, chat_id=%s", who, chat_id)
         if self.allowed(str(chat_id or who), "deny", DENY_LIMIT, DENY_WINDOW):
-            await self.send(chat_id, screens.denied(self.language))
+            if chat_id:
+                await self.send(chat_id, screens.denied(self.language))
+            else:
+                await self.toast(evt, self.tr()("DENIED_BODY"), alert=True)
         return False
 
     def input_values(self) -> dict[str, str]:
@@ -831,6 +837,120 @@ class Bot:
                 values["xr_client_limit"] = str(first_client.limit_ip)
         return values
 
+    def default_scan_target(self) -> str:
+        for raw in (self.state.xray.sub_address, getattr(self.state.ssh, "address", ""), getattr(self.state.ssh, "host", "")):
+            token = str(raw or "").strip()
+            if token and token not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
+                return token
+        return ""
+
+    @staticmethod
+    def unpack_inline_id(token: str) -> dict[str, Any] | None:
+        raw_str = str(token or "").strip()
+        if not raw_str:
+            return None
+        padded = raw_str + "=" * ((4 - len(raw_str) % 4) % 4)
+        try:
+            buf = base64.urlsafe_b64decode(padded)
+        except Exception:
+            return None
+        if len(buf) == 20:
+            dc_id, mid, access_hash = struct.unpack("<iqq", buf)
+            return {"_": "inputBotInlineMessageID", "dc_id": int(dc_id), "id": int(mid), "access_hash": int(access_hash)}
+        if len(buf) == 24:
+            dc_id, owner_id, mid, access_hash = struct.unpack("<iqiq", buf)
+            return {
+                "_": "inputBotInlineMessageID64",
+                "dc_id": int(dc_id),
+                "owner_id": int(owner_id),
+                "id": int(mid),
+                "access_hash": int(access_hash),
+            }
+        return None
+
+    def extract_inline_id(self, evt: object) -> Any:
+        direct = getattr(evt, "inline_message_id", None)
+        if direct:
+            return direct
+        msg_id = getattr(evt, "msg_id", None)
+        if isinstance(msg_id, dict) and str(msg_id.get("_", "")).startswith("inputBotInlineMessageID"):
+            return msg_id
+        raw = getattr(evt, "raw", None)
+        raw_dict = raw if isinstance(raw, dict) else {}
+        if raw_dict.get("inline_message_id"):
+            return raw_dict["inline_message_id"]
+        if isinstance(raw_dict.get("msg_id"), dict) and str(raw_dict["msg_id"].get("_", "")).startswith("inputBotInlineMessageID"):
+            return raw_dict["msg_id"]
+        for sub_key in ("chosen_inline_result", "callback_query", "raw_update"):
+            sub = raw_dict.get(sub_key)
+            if isinstance(sub, dict):
+                if sub.get("inline_message_id"):
+                    return sub["inline_message_id"]
+                sub_mid = sub.get("msg_id")
+                if isinstance(sub_mid, dict) and str(sub_mid.get("_", "")).startswith("inputBotInlineMessageID"):
+                    return sub_mid
+        return None
+
+    async def edit_inline_rich(self, inline_id: Any, rich: Any, fallback_kbd: list[list[dict[str, Any]]] | None = None) -> bool:
+        if inline_id is None or self.app is None:
+            return False
+        hook = getattr(self.app, "edit_inline_rich", None)
+        if callable(hook):
+            await hook(inline_id, rich, reply_markup=fallback_kbd)
+            return True
+        mt_id = inline_id if isinstance(inline_id, dict) else None
+        if mt_id is None and isinstance(inline_id, str) and getattr(self.app, "bot", None) is None:
+            mt_id = self.unpack_inline_id(inline_id)
+        if mt_id is not None and callable(getattr(self.app, "mt_req", None)):
+            payload_mt = rich.to_tl() if hasattr(rich, "to_tl") else {"_": "inputRichMessageHTML", "html": str(rich)}
+            try:
+                await self.app.mt_req("messages.editInlineBotMessage", id=mt_id, message="", rich_message=payload_mt)
+                return True
+            except Exception as exc:
+                log.debug("mt inline rich edit failed, falling back to entities: %s", exc)
+                try:
+                    from goygram.sugar import html_to_entities
+
+                    html_text = rich.to_html() if hasattr(rich, "to_html") else str(rich)
+                    plain, ents = html_to_entities(html_text)
+                    data: dict[str, Any] = {"id": mt_id, "no_webpage": True, "message": plain[:4000]}
+                    if ents:
+                        data["entities"] = ents
+                    if fallback_kbd:
+                        data["reply_markup"] = inline.inline_kbd(fallback_kbd, "mt")
+                    await self.app.mt_req("messages.editInlineBotMessage", **data)
+                    return True
+                except Exception as exc2:
+                    log.warning("mt inline fallback edit failed: %s", exc2)
+        if isinstance(inline_id, str) and callable(getattr(self.app, "bot_req", None)):
+            payload_bot = rich.to_msg() if hasattr(rich, "to_msg") else {"html": str(rich)}
+            try:
+                await self.app.bot_req("editMessageText", inline_message_id=inline_id, rich_message=payload_bot)
+                return True
+            except Exception as exc:
+                log.warning("bot inline rich edit failed: %s", exc)
+        return False
+
+    async def run_inline_ipscan(self, inline_id: Any, raw_target: str, force: bool = False) -> None:
+        if force or str(raw_target or "").strip().lower() in {"", "self", "ip"}:
+            await self.edit_inline_rich(inline_id, ipscan.scanning_screen(raw_target, self.language))
+        report = await ipscan.full_scan_async(raw_target, default_target=self.default_scan_target(), force=force)
+        card, kbd = ipscan.rich_report(report, self.language)
+        await self.edit_inline_rich(inline_id, card, fallback_kbd=kbd)
+
+    async def run_callback_ipscan(self, inline_id: Any, chat_id: int, msg_id: int, raw_target: str) -> None:
+        loading = ipscan.scanning_screen(raw_target, self.language)
+        if inline_id is not None:
+            await self.edit_inline_rich(inline_id, loading)
+        elif chat_id and msg_id:
+            await self.render(chat_id, msg_id, loading)
+        report = await ipscan.full_scan_async(raw_target, default_target=self.default_scan_target(), force=True)
+        card, kbd = ipscan.rich_report(report, self.language)
+        if inline_id is not None:
+            await self.edit_inline_rich(inline_id, card, fallback_kbd=kbd)
+        elif chat_id and msg_id:
+            await self.render(chat_id, msg_id, card)
+
     async def on_inline(self, evt: object) -> None:
         await self.track(self.handle_inline(evt), "inline")
 
@@ -842,16 +962,17 @@ class Bot:
         allowed = who > 0 and who == self.admin_id and self.allowed(who, "inline", self.inline_limit, 60.0)
         if allowed:
             stripped = query.strip()
-            if not stripped:
-                hint_cards = await ipscan.inline_results("ip", src=src, lang=self.language)
-                field_cards = inline.results_for(query, src=src, current=self.input_values(), lang=self.language)
-                results = (hint_cards + field_cards)[: inline.MAX_RESULTS]
+            token, _rest = inline.parse_query(stripped)
+            ident, _ctx, _mode = inline.resolve(token) if token else ("", "", "")
+            if token and ident:
+                results = inline.results_for(query, src=src, current=self.input_values(), lang=self.language)
             else:
-                token, _rest = inline.parse_query(stripped)
-                if token:
-                    results = inline.results_for(query, src=src, current=self.input_values(), lang=self.language)
-                else:
-                    results = await ipscan.inline_results(stripped, src=src, lang=self.language)
+                results = await ipscan.inline_results(
+                    stripped,
+                    src=src,
+                    lang=self.language,
+                    default_target=self.default_scan_target(),
+                )
         try:
             await evt.answer(results=results, cache_time=0, is_personal=True)
         except Exception as exc:
@@ -880,9 +1001,14 @@ class Bot:
         if not self.allowed(who, "inline", self.inline_limit, 60.0):
             return
         rid = str(payload.get("result_id") or raw_upd.get("id") or "")
+        query = str(payload.get("query") or raw_upd.get("query") or getattr(evt, "query", "") or "")
         if rid.startswith("ipscan:"):
+            inline_id = self.extract_inline_id(evt)
+            target_part = rid.partition(":")[2].strip()
+            raw_target = query.strip() if (not target_part or target_part == "self") and query.strip() else (target_part or "self")
+            if inline_id is not None:
+                await self.run_inline_ipscan(inline_id, raw_target, force=False)
             return
-        query = str(payload.get("query") or raw_upd.get("query") or "")
         kind, token, index = inline.parse_option_id(rid)
         if not kind:
             kind, token, index = inline.parse_result_id(rid)
@@ -1087,9 +1213,17 @@ class Bot:
                 await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
             return
         data = str(getattr(evt, "data", "") or "")
-        chat_id = int(getattr(evt, "chat_id", 0) or 0)
-        msg_id = int(getattr(evt, "msg_id", 0) or 0)
+        raw_chat = getattr(evt, "chat_id", 0)
+        raw_msg = getattr(evt, "msg_id", 0)
+        chat_id = int(raw_chat or 0) if isinstance(raw_chat, (int, str)) and str(raw_chat).lstrip("-").isdigit() else 0
+        msg_id = int(raw_msg or 0) if isinstance(raw_msg, (int, str)) and str(raw_msg).lstrip("-").isdigit() else 0
         who = int(getattr(evt, "from_id", 0) or 0)
+        if data.startswith("ipscan:"):
+            inline_id = self.extract_inline_id(evt)
+            target = data.split(":", 2)[2] if data.count(":") >= 2 else "self"
+            await self.toast(evt, self.tr()("IPSCAN_TOAST_START"))
+            await self.run_callback_ipscan(inline_id, chat_id, msg_id, target)
+            return
         if self.is_busy() and not is_navigation(data) and not CONFIRM_STEPS.match(data):
             if self.quiet("busy", BUSY_QUIET):
                 await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)

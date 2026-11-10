@@ -5,6 +5,7 @@ import hmac
 import os
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from . import i18n
 from .xray import FLOWS, FINGERPRINTS, LOG_LEVELS
@@ -252,8 +253,25 @@ def article(rid: str, title: str, description: str, text: str, src: str) -> dict
     }
 
 
-def html_article(rid: str, title: str, description: str, html_text: str, src: str) -> dict:
+def inline_kbd(rows_spec: list[list[dict[str, Any]]], src: str) -> Any:
+    raw = {"inline_keyboard": [row for row in rows_spec if row]}
+    if src == "mt":
+        from goygram.types.kbd import kbd_to_tl
+
+        return kbd_to_tl(raw)
+    return raw
+
+
+def html_article(
+    rid: str,
+    title: str,
+    description: str,
+    html_text: str,
+    src: str,
+    reply_markup: list[list[dict[str, Any]]] | None = None,
+) -> dict:
     ident = rid if len(rid) <= 64 else rid[:64]
+    kbd = inline_kbd(reply_markup, src) if reply_markup else None
     if src == "mt":
         from goygram.sugar import html_to_entities
 
@@ -261,6 +279,8 @@ def html_article(rid: str, title: str, description: str, html_text: str, src: st
         msg: dict[str, object] = {"_": "inputBotInlineMessageText", "no_webpage": True, "message": plain}
         if ents:
             msg["entities"] = ents
+        if kbd is not None:
+            msg["reply_markup"] = kbd
         return {
             "_": "inputBotInlineResult",
             "id": ident,
@@ -269,7 +289,7 @@ def html_article(rid: str, title: str, description: str, html_text: str, src: st
             "description": description[:240],
             "send_message": msg,
         }
-    return {
+    out: dict[str, Any] = {
         "type": "article",
         "id": ident,
         "title": title[:120],
@@ -280,6 +300,9 @@ def html_article(rid: str, title: str, description: str, html_text: str, src: st
             "disable_web_page_preview": True,
         },
     }
+    if kbd is not None:
+        out["reply_markup"] = kbd
+    return out
 
 
 def parse_query(query: str) -> tuple[str, str]:
@@ -385,13 +408,6 @@ def input_article(token: str, item: Field, value: str, current: str, lang: str, 
     return article("%s:%s" % (KIND_INPUT, token), title, description, MARKER, src)
 
 
-def pick_article(token: str, item: Field, current: str, lang: str, src: str = "bot") -> dict:
-    description = item.hint(lang)
-    if current:
-        description = i18n.t("INL_CURRENT", lang, value=current)
-    return article("%s:%s" % (KIND_INPUT, token), item.label(lang), description, MARKER, src)
-
-
 def option_article(token: str, index: int, value: str, item: Field, lang: str, src: str = "bot") -> dict:
     shown = value or i18n.t("INL_EMPTY_VALUE", lang)
     return article(
@@ -412,14 +428,6 @@ def results_for(query: str, src: str = "bot", current: dict[str, str] | None = N
     shown = current or {}
     token, value = parse_query(query)
     if not token:
-        if not str(query or "").strip():
-            out = []
-            for item in FIELDS.values():
-                entry = token_for(item.ident)
-                out.append(pick_article(entry, item, shown.get(item.ident, ""), lang, src))
-                if len(out) >= MAX_RESULTS:
-                    break
-            return out
         return []
     ident, _ctx, mode = resolve(token)
     if not ident:
