@@ -17,8 +17,22 @@ SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+PRE_BLOCK = re.compile(r"(<pre(?:\s[^>]*)?>.*?</pre>)", re.S)
 SEP = " · "
 _ICONS = False
+
+
+class ScreenRich(Rich):
+    def to_html(self) -> str:
+        html = self.build()
+        parts = PRE_BLOCK.split(html)
+        out: list[str] = []
+        for idx, chunk in enumerate(parts):
+            if idx % 2 == 1:
+                out.append(chunk)
+            else:
+                out.append(re.sub(r"\n(?![^<]*>)", "<br>", chunk))
+        return "".join(out)
 
 
 def use_icons(value: bool) -> None:
@@ -238,9 +252,12 @@ def divider() -> str:
 
 
 def pre(text: str, lang: str = "") -> str:
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if "\\n" in raw and "\n" not in raw:
+        raw = raw.replace("\\n", "\n")
     if lang:
-        return f'<pre><code class="language-{esc(lang)}">{esc(text)}</code></pre>'
-    return f"<pre>{esc(text)}</pre>"
+        return f'<pre><code class="language-{esc(lang)}">{esc(raw)}</code></pre>'
+    return f"<pre>{esc(raw)}</pre>"
 
 
 def screen(
@@ -251,7 +268,7 @@ def screen(
     footer: str = "",
     icon: str = "",
 ) -> Rich:
-    root = Rich()
+    root = ScreenRich()
     root.add(f"<h2>{ico(icon, '')}{esc(title)}</h2>")
     if subtitle:
         root.add(f"<p>{subtitle}</p>")

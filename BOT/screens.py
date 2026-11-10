@@ -112,8 +112,6 @@ def home(view: View) -> Any:
     state = view.state
     xray = state.xray
     blocks = banner(view, t)
-    blocks.append(f"<p>{ssh_line(view, t)}</p>")
-    blocks.append(f"<p>{home_line(view, t)}</p>")
     blocks.append(table(core_rows(view, t), (t("HOME_SUMMARY_TITLE"), t("HOME_CORE_TABLE2"))))
     facts = [
         ("info", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
@@ -127,8 +125,8 @@ def home(view: View) -> Any:
         facts.extend(("xray", f"{item.id} {item.remark}", code(f"{item.port} {item.network} {item.security}")) for item in xray.inbounds)
     blocks.append(details(t("HOME_DETAILS"), table(facts, (t("UI_PARAM"), t("UI_VALUE")))))
     buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cores.snapshot(state, view.core, view.ft_clients)]
-    buttons.append(row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("NAV_UPDATE"), "upd:show", icon="update")))
-    buttons.append(row(button(t("NAV_SETTINGS"), "nav:settings", icon="settings"), button(t("NAV_HELP"), "nav:help", icon="docs")))
+    buttons.append(row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("NAV_SETTINGS"), "nav:settings", icon="settings")))
+    buttons.append(row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("NAV_HELP"), "nav:help", icon="docs")))
     buttons.append(row(emoji_button(t, view), button(t("UI_REFRESH"), "nav:home", icon="refresh")))
     return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, icon="home")
 
@@ -248,18 +246,16 @@ def settings(view: View) -> Any:
         ("shield", t("XR_SEC_CURRENT"), code(xscreens.security_label(target.security_kind(), view.lang) if target else t("UI_NONE"))),
     ]
     blocks.append(details(t("HOME_DETAILS"), table(extra_pairs, (t("UI_FIELD"), t("UI_VALUE")))))
-    buttons = [
-        row(button(t("NAV_SSHD"), "nav:sshd", icon="lock"), button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield")),
-    ]
+    buttons = []
     if target is not None:
         buttons.append(row(button(t("XR_CHECK_BTN"), "xr:fit:" + str(target.id), icon="scan")))
     buttons.extend(
         [
+            row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), emoji_button(t, view)),
             input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
             input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
             input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),
-            row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), emoji_button(t, view)),
-            row(button(t("NAV_DEBUG"), "dbg:home", icon="bug"), button(t("UI_HOME"), "nav:home", icon="home")),
+            row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
         ]
     )
     return screen(t("SET_TITLE"), t("SET_SUBTITLE"), blocks, buttons, icon="settings")
@@ -317,7 +313,7 @@ def ban_screen(view: View) -> Any:
         input_row(t("SET_SSH_MAXRETRY"), "xr_ssh_maxretry", "-", view.lang),
         input_row(t("SET_IGNOREIP"), "xr_ignoreip", "-", view.lang),
         row(button(t("FB_BTN_RESET"), "fb:reset", icon="restart"), button(t("FB_BTN_DISABLE"), "fb:remove", icon="delete")),
-        row(button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("FB_TITLE"), t("FB_SUBTITLE"), blocks, buttons, icon="shield")
 
@@ -354,17 +350,15 @@ def sshd_screen(view: View) -> Any:
         else:
             blocks.append(quote(bold(t("SSHD_KEYS_EMPTY", path=item.key_path or "~/.ssh/authorized_keys", user=item.key_user or "root"))))
             blocks.append(f"<p>{muted(t('SSHD_KEYS_HINT'))}</p>")
-            blocks.append(f"<p>{muted(t('SSHD_PW_BLOCKED', user=item.key_user or 'root', path=item.key_path or '~/.ssh/authorized_keys'))}</p>")
-        blocks.append(f"<p>{muted(t('SSHD_KEYS_ONLY'))}</p>")
     buttons = [
-        row(button(t("SSHD_BTN_CHECK"), "sshd:status", icon="info")),
+        row(button(t("SSHD_BTN_CHECK"), "sshd:status", icon="info"), button(t("SSHD_REMOVE"), "sshd:remove", icon="delete")),
         input_row(t("SSHD_NEW_PORT"), "ssh_new_port", "-", view.lang),
         input_row(t("SSHD_PUBKEY"), "ssh_pubkey", "-", view.lang),
         row(button(t("SSHD_PW_OFF"), "sshd:auth:no", icon="lock"), button(t("SSHD_PW_ON"), "sshd:auth:yes", icon="unlock")),
         row(button(t("SSHD_ROOT_KEY"), "sshd:root:prohibit-password", icon="key"), button(t("SSHD_ROOT_OFF"), "sshd:root:no", icon="lock")),
-        row(button(t("SSHD_REMOVE"), "sshd:remove", icon="delete"), button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("SSHD_TITLE"), t("SSHD_SUBTITLE"), blocks, buttons, footer=t("SSHD_FOOTER"), icon="lock")
+    return screen(t("SSHD_TITLE"), t("SSHD_SUBTITLE"), blocks, buttons, icon="lock")
 
 
 def update_screen(view: View, info: dict[str, Any]) -> Any:

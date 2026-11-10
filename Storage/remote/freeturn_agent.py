@@ -100,7 +100,7 @@ GUARD_PRIORITY_DROP = 10
 CIDR_RE = re.compile(r"^[0-9]{1,3}(?:\.[0-9]{1,3}){3}/[0-9]{1,2}$")
 PORT_RE = re.compile(r"^[0-9]{1,5}$")
 TIMEOUTS = {
-    "fw-guard": 180,
+    "fw-guard": 300,
     "wg-peers": 60,
     "scripts-list": 60,
     "scripts-probe": 120,

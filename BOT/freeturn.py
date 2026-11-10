@@ -708,7 +708,7 @@ class FtControl:
             raise FtError(exc.message, "transport") from None
         return parse_response(out.text)
 
-    async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 240.0, keep: str = "") -> FtGuard:
+    async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 300.0, keep: str = "") -> FtGuard:
         argv = ["fw-guard", "--mode=%s" % mode, "--port=%d" % int(port), "--proto=%s" % str(proto or "udp")]
         if cidrs:
             argv.append("--cidrs=%s" % cidrs)
@@ -1013,8 +1013,11 @@ def rewrite_link_transport(link: str, transport: str = "auto") -> str:
 
 
 def normalize_conf(text: str) -> str:
+    cleaned = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if "\\n" in cleaned and "\n" not in cleaned:
+        cleaned = cleaned.replace("\\n", "\n")
     lines = []
-    for raw in str(text or "").splitlines():
+    for raw in cleaned.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or line.startswith(";"):
             continue
