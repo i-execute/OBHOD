@@ -29,7 +29,6 @@ from .xray import (
 
     NETWORKS,
     SECURITIES,
-    SUB_SEGMENT_LEN,
     VLESS_COMBOS,
     XrayInbound,
     XrayState,

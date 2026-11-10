@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from BOT import dscreens, ftscreens, i18n, subs, ui, xscreens
-from BOT.xray import SUB_SEGMENT_LEN, TUNNEL_HOST_RE, XrayState, new_inbound
+from BOT import dscreens, ftscreens, i18n, ui, xscreens
+from BOT.xray import SUB_SEGMENT_LEN, TUNNEL_HOST_RE, new_inbound
 from tests.fakes import make_bot
 from tests.test_screens import render_all
 

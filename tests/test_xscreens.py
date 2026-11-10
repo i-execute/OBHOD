@@ -6,7 +6,7 @@ from BOT import i18n, screens, subs, xscreens
 from BOT.store import State
 from BOT.scan import ScanResult, security_fits
 from BOT.ui import MAX_BUTTONS, count_buttons
-from BOT.xray import NETWORKS, SECURITIES, SUB_SEGMENT_LEN, XrayState, new_inbound
+from BOT.xray import NETWORKS, SECURITIES, XrayState, new_inbound
 
 
 def view(security: str = "reality", network: str = "raw") -> xscreens.XrayView:
