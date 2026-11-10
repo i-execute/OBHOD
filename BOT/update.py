@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import inspect
 import json
 import logging
 import os
@@ -702,6 +703,8 @@ class Updater:
             queued = await self._run(timer, UNIT_TIMEOUT)
             if int(queued.code or 0) != 0:
                 log.warning("the delayed restart could not be queued: %s", clean_output(queued.text)[:200])
+            if not argv:
+                return int(queued.code or 0) == 0
         request = [
             "systemd-run",
             "--quiet",
@@ -885,13 +888,21 @@ class Updater:
         out = await self._run(["systemctl", "restart", "--no-block", self.unit], UNIT_TIMEOUT)
         return int(out.code or 0) == 0
 
-    async def apply(self, mode: str) -> UpdateResult:
+    async def _emit_step(self, on_step: Any, stage: str, **payload: Any) -> None:
+        if not callable(on_step):
+            return
+        maybe = on_step(stage, dict(payload))
+        if inspect.isawaitable(maybe):
+            await maybe
+
+    async def apply(self, mode: str, on_step: Any = None) -> UpdateResult:
         if mode not in MODES:
             raise UpdateError("the update mode %s is not known" % mode)
         result = UpdateResult(mode=mode)
         before = await self.read()
         result.source = before.commit
         log.info("update %s starts from %s at %s", mode, before.commit[:12], self.root)
+        await self._emit_step(on_step, "fetch", source=before.commit[:12])
         fetched = await self._fetch_remote(force=True)
         result.steps.append("fetch from %s" % REMOTE)
         log.info("update fetch from %s: code=%s %s", REMOTE, fetched.code, clean_output(fetched.text)[:200])
@@ -899,6 +910,7 @@ class Updater:
             result.message = "the fetch failed: %s" % clean_output(fetched.text)
             log.warning("update %s stopped, the fetch failed: %s", mode, result.message)
             return result
+        await self._emit_step(on_step, "compare", source=before.commit[:12])
         info = await self.read()
         info.release, info.release_error = await self._release()
         target, subject = await self._resolve(mode, info)
@@ -910,7 +922,9 @@ class Updater:
             result.message = "already up to date"
             log.info("update %s reports already up to date at %s", mode, before.commit[:12])
             return result
+        await self._emit_step(on_step, "apply", source=before.commit[:12], target=result.target, subject=subject)
         await self._reset(target, result.steps)
+        await self._emit_step(on_step, "verify", source=before.commit[:12], target=result.target, subject=subject)
         compiled, output = await self._compile()
         result.steps.append("syntax check passed" if compiled else "syntax check failed")
         if not compiled:
@@ -923,7 +937,9 @@ class Updater:
             )
             return result
         changed = await self._git_text("diff", "--name-only", "%s..%s" % (before.commit, target))
-        if "requirements.txt" in changed.splitlines():
+        deps_needed = "requirements.txt" in changed.splitlines()
+        if deps_needed:
+            await self._emit_step(on_step, "deps", source=before.commit[:12], target=result.target, subject=subject, deps=True)
             installed, output = await self._install_deps()
             result.steps.append("dependencies synced" if installed else "the dependency sync failed")
             if not installed:
@@ -949,6 +965,7 @@ class Updater:
         )
         result.ok = True
         result.message = "updated to %s" % subject
+        await self._emit_step(on_step, "restarting", source=before.commit[:12], target=result.target, subject=subject, deps=deps_needed)
         result.restarted = await self._restart()
         result.steps.append("the restart of %s is requested" % self.unit if result.restarted else "restart skipped")
         return result

@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import inspect
 import ipaddress
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import socket
 import struct
@@ -42,7 +44,21 @@ BUSY_QUIET = 5.0
 BUSY_TTL = 900.0
 RENDER_QUIET = 5.0
 LOADING_MARKS = ("xr:", "ft:", "dbg:", "upd:", "fb:", "sshd:", "ssh:", "tools:")
-LOADING_SKIP = ("nav:", "lang:", "set:", "dbg:home", "dbg:emoji", "dbg:info", "ft:home", "xr:home", "tools:home", "tools:fortress", "tools:pentest")
+LOADING_SKIP = (
+    "nav:",
+    "lang:",
+    "set:",
+    "dbg:home",
+    "dbg:emoji",
+    "dbg:info",
+    "ft:home",
+    "xr:home",
+    "tools:home",
+    "tools:fortress",
+    "tools:pentest",
+    "upd:commit:go",
+    "upd:release:go",
+)
 RENDER_CACHE = 64
 DENY_LIMIT = 1
 DENY_WINDOW = 60.0
@@ -51,6 +67,7 @@ NAV_QUIET = 60.0
 HOME_QUIET = 3.0
 RATE_QUIET = 10.0
 UPDATE_QUIET = 10.0
+UPDATE_STEP_DELAY = 0.5
 TOAST_TIMEOUT = 6.0
 ACTION_TIMEOUT = 240.0
 JOB_CACHE = 64
@@ -199,6 +216,7 @@ class Bot:
         self.ddos_reported = 0.0
         self.cores_warmed = False
         self.lang_probed = False
+        self.update_step_delay = UPDATE_STEP_DELAY
         ui.use_icons(self.emoji_enabled)
         self.seed_ports()
 
@@ -597,6 +615,105 @@ class Bot:
         if found:
             await self.report_update(found)
 
+    async def probe_update_daemons(self, bot_state: str = "active") -> list[dict[str, str]]:
+        daemons: list[dict[str, str]] = [
+            {
+                "id": "bot",
+                "icon": "bot",
+                "state": str(bot_state or "active"),
+                "detail": "",
+            }
+        ]
+        try:
+            core = await self.xray.control.probe(self.state.ssh)
+        except Exception:
+            core = None
+        if core is not None and (bool(getattr(core, "installed", False)) or bool(self.state.xray.inbounds)):
+            if bool(getattr(core, "installed", False)):
+                daemons.append(
+                    {
+                        "id": "xray",
+                        "icon": "xray",
+                        "state": str(getattr(core, "service", "") or "inactive"),
+                        "detail": str(getattr(core, "version", "") or ""),
+                    }
+                )
+            else:
+                daemons.append({"id": "xray", "icon": "xray", "state": "missing", "detail": ""})
+        ft_check = (
+            bool(getattr(self.state.freeturn, "configured", False))
+            or Path("/opt/free-turn-proxy/install.conf").exists()
+            or Path("/etc/systemd/system/free-turn-proxy.service").exists()
+            or not isinstance(self.freeturn.control, FtControl)
+        )
+        if ft_check:
+            try:
+                ft_state = await self.freeturn.control.probe()
+            except Exception:
+                ft_state = None
+            if ft_state is not None and (bool(getattr(ft_state, "installed", False)) or bool(getattr(self.state.freeturn, "configured", False))):
+                if bool(getattr(ft_state, "installed", False)):
+                    daemons.append(
+                        {
+                            "id": "freeturn",
+                            "icon": "calls",
+                            "state": "active" if bool(getattr(ft_state, "running", False)) else "inactive",
+                            "detail": str(getattr(ft_state, "version", "") or ""),
+                        }
+                    )
+                else:
+                    daemons.append({"id": "freeturn", "icon": "calls", "state": "missing", "detail": ""})
+        if bool(self.state.xray.sub_enabled):
+            try:
+                sub_state = await self.xray.control.sub_status(self.state.ssh, int(self.state.xray.sub_port or 0))
+            except Exception:
+                sub_state = None
+            if sub_state is not None:
+                port_val = int(getattr(sub_state, "port", 0) or self.state.xray.sub_port or 0)
+                daemons.append(
+                    {
+                        "id": "sub",
+                        "icon": "link",
+                        "state": "active" if bool(getattr(sub_state, "listening", False)) else "inactive",
+                        "detail": f":{port_val}" if port_val else "",
+                    }
+                )
+        if bool(self.state.xray.tunnel_enabled) or bool(self.state.xray.tunnel_host):
+            try:
+                tun_state = await self.xray.control.tunnel_status(self.state.ssh)
+            except Exception:
+                tun_state = None
+            if tun_state is not None:
+                if not bool(getattr(tun_state, "installed", False)):
+                    t_status = "missing"
+                    t_detail = ""
+                elif bool(getattr(tun_state, "expired", False)):
+                    t_status = "expired"
+                    t_detail = ""
+                elif str(getattr(tun_state, "backend", "") or "").strip().lower() == "running":
+                    t_status = "active"
+                    t_detail = "Funnel" if bool(getattr(tun_state, "funnel", False)) else ""
+                else:
+                    t_status = "inactive"
+                    t_detail = ""
+                daemons.append({"id": "tailnet", "icon": "tunnel", "state": t_status, "detail": t_detail})
+        try:
+            ban_state = await self.guard.status(self.state.ssh, port=0)
+        except Exception:
+            ban_state = None
+        if ban_state is not None and bool(getattr(ban_state, "installed", False)):
+            jails = list(getattr(ban_state, "jails", []) or [])
+            is_active = bool(getattr(ban_state, "active", False)) or bool(jails)
+            daemons.append(
+                {
+                    "id": "fail2ban",
+                    "icon": "shield",
+                    "state": "active" if is_active else "inactive",
+                    "detail": "",
+                }
+            )
+        return daemons
+
     async def report_update(self, notice: dict[str, object]) -> None:
         owner = int(getattr(self, "admin_id", 0) or 0)
         if not owner or self.app is None:
@@ -604,6 +721,8 @@ class Bot:
         saved = dict(self.update_notice or notice or {})
         if not saved:
             return
+        if "daemons" not in saved:
+            saved["daemons"] = await self.probe_update_daemons(str(saved.get("state") or "active"))
         self.update_notice = {}
         card = screens.update_verified_screen(self.view(), saved)
         try:
@@ -1564,11 +1683,11 @@ class Bot:
 
     async def run_update(self, chat_id: int, msg_id: int, mode: str) -> None:
         t = self.tr()
-        steps = [t("UPD_STEP_FETCH"), t("UPD_STEP_RESET"), t("UPD_STEP_CHECK"), t("UPD_STEP_DEPS"), t("UPD_STEP_RESTART")]
-        await self.render(chat_id, msg_id, screens.busy_screen(t("UPD_BUSY"), self.language, steps))
         self.audit.note(self.admin_id, "upd:%s" % mode, "start")
         try:
             if mode == "reinstall":
+                steps = [t("UPD_STEP_FETCH"), t("UPD_STEP_RESET"), t("UPD_STEP_CHECK"), t("UPD_STEP_DEPS"), t("UPD_STEP_RESTART")]
+                await self.render(chat_id, msg_id, screens.busy_screen(t("UPD_BUSY"), self.language, steps))
                 await self.refresh_system()
                 probe_ok, probe_reason = True, ""
                 try:
@@ -1584,7 +1703,33 @@ class Bot:
                 self.audit.note(self.admin_id, "upd:reinstall", "ok")
                 await self.render(chat_id, msg_id, screens.update_result_screen(self.view(), self.update_info, self.update_result))
                 return
-            result = await self.updater.apply(mode)
+            step_meta: dict[str, Any] = {}
+            handoff_rendered = False
+            delay = max(0.0, float(getattr(self, "update_step_delay", UPDATE_STEP_DELAY) or 0.0))
+
+            async def on_step(stage: str, payload: dict[str, Any] | None = None) -> None:
+                nonlocal handoff_rendered
+                if payload:
+                    step_meta.update(payload)
+                if stage == "restarting":
+                    handoff_rendered = True
+                    await self.render(chat_id, msg_id, screens.update_handoff_screen(self.view(), self.update_info, step_meta, restarted=True))
+                    return
+                await self.render(chat_id, msg_id, screens.update_progress_screen(self.view(), self.update_info, stage, step_meta))
+                if delay > 0.0:
+                    await asyncio.sleep(delay)
+
+            accepts_step = False
+            try:
+                params = inspect.signature(self.updater.apply).parameters
+                accepts_step = "on_step" in params or any(item.kind == inspect.Parameter.VAR_KEYWORD for item in params.values())
+            except (TypeError, ValueError):
+                accepts_step = False
+            if accepts_step:
+                result = await self.updater.apply(mode, on_step=on_step)
+            else:
+                await self.render(chat_id, msg_id, screens.update_progress_screen(self.view(), self.update_info, "fetch", step_meta))
+                result = await self.updater.apply(mode)
         except UpdateError as exc:
             self.audit.note(self.admin_id, "upd:%s" % mode, "failed")
             self.update_error = exc.message
@@ -1617,10 +1762,28 @@ class Bot:
             self.update_error = str(exc)
             await self.render(chat_id, msg_id, screens.update_screen(self.view(error=self.update_error), self.update_info))
             return
-        self.audit.note(self.admin_id, "upd:%s" % mode, "ok" if result.ok else "failed")
-        self.update_result = result.to_dict()
+        ok_flag = bool(getattr(result, "ok", False))
+        msg_text = str(getattr(result, "message", "") or "")
+        restarted_flag = bool(getattr(result, "restarted", False))
+        self.audit.note(self.admin_id, "upd:%s" % mode, "ok" if ok_flag else "failed")
+        self.update_result = result.to_dict() if hasattr(result, "to_dict") else {"ok": ok_flag}
         self.update_error = ""
-        await self.render(chat_id, msg_id, screens.update_result_screen(self.view(), self.update_info, self.update_result))
+        if not ok_flag:
+            await self.render(chat_id, msg_id, screens.update_failed_screen(self.view(), self.update_info, self.update_result))
+            return
+        if msg_text == "already up to date":
+            await self.render(chat_id, msg_id, screens.update_already_screen(self.view(), self.update_info, self.update_result))
+            return
+        final_meta = dict(step_meta)
+        final_meta.setdefault("source", str(getattr(result, "source", "") or ""))
+        final_meta.setdefault("target", str(getattr(result, "target", "") or ""))
+        final_meta.setdefault("subject", str(getattr(result, "subject", "") or ""))
+        if not restarted_flag or not handoff_rendered:
+            await self.render(
+                chat_id,
+                msg_id,
+                screens.update_handoff_screen(self.view(), self.update_info, final_meta, restarted=restarted_flag),
+            )
 
     async def ssh_action(self, chat_id: int, msg_id: int, action: str) -> None:
         await self.render(chat_id, msg_id, screens.ssh_settings(self.view()))

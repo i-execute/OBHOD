@@ -18,6 +18,7 @@ from .ui import (
     fitted,
     details,
     heading,
+    ico,
     inline_button,
     muted,
     muted_html,
@@ -508,7 +509,128 @@ def service_state_label(raw_state: object, lang: str = i18n.DEFAULT_LANGUAGE) ->
         return i18n.t("SVC_STATE_FAILED", lang)
     if value in {"inactive", "stopped", "dead", "deactivating"}:
         return i18n.t("SVC_STATE_INACTIVE", lang)
+    if value == "expired":
+        return i18n.t("SVC_STATE_EXPIRED", lang)
+    if value in {"missing", "not_installed"}:
+        return i18n.t("SVC_STATE_MISSING", lang)
     return i18n.t("UI_NONE", lang)
+
+
+def _update_stage_catalog(t: i18n.Translator, include_deps: bool = False) -> list[dict[str, str]]:
+    items = [
+        {"key": "fetch", "run": t("UPD_STAGE_FETCH_RUN"), "done": t("UPD_STAGE_FETCH_DONE")},
+        {"key": "compare", "run": t("UPD_STAGE_COMPARE_RUN"), "done": t("UPD_STAGE_COMPARE_DONE")},
+        {"key": "apply", "run": t("UPD_STAGE_APPLY_RUN"), "done": t("UPD_STAGE_APPLY_DONE")},
+        {"key": "verify", "run": t("UPD_STAGE_VERIFY_RUN"), "done": t("UPD_STAGE_VERIFY_DONE")},
+    ]
+    if include_deps:
+        items.append({"key": "deps", "run": t("UPD_STAGE_DEPS_RUN"), "done": t("UPD_STAGE_DEPS_DONE")})
+    return items
+
+
+def update_progress_screen(view: View, info: dict[str, Any], stage: str, meta: dict[str, Any] | None = None) -> Any:
+    t = view.tr()
+    data = dict(meta or {})
+    repo = str(info.get("repo") or DEFAULT_REPO)
+    include_deps = bool(data.get("deps")) or stage == "deps"
+    catalog = _update_stage_catalog(t, include_deps=include_deps)
+    keys = [item["key"] for item in catalog]
+    active_idx = keys.index(stage) if stage in keys else 0
+    active_label = catalog[active_idx]["run"]
+    blocks = banner(view, t)
+    blocks.append(quote(ico("loading") + bold(active_label)))
+    rows = []
+    for idx, entry in enumerate(catalog):
+        if idx < active_idx:
+            rows.append(("ok", entry["done"], code(t("UPD_STATE_DONE"))))
+        elif idx == active_idx:
+            rows.append(("loading", entry["run"], bold(t("UPD_STATE_RUNNING"))))
+        else:
+            rows.append(("clock", entry["run"], muted(t("UPD_STATE_WAIT"))))
+    blocks.append(table(rows, (t("UPD_COL_STAGE"), t("UPD_COL_STATE"))))
+    target = str(data.get("target") or "")[:12]
+    subject = str(data.get("subject") or "").strip()
+    if target:
+        tail = f" {esc(subject)}" if subject else ""
+        blocks.append(quote(muted_html(f"{ref_link(target, repo)}{tail}")))
+    subtitle = t("UPD_PROGRESS_SUBTITLE", step=active_idx + 1, total=len(catalog))
+    return screen(t("UPD_PROGRESS_TITLE"), subtitle, blocks, [], icon="update")
+
+
+def update_already_screen(view: View, info: dict[str, Any], result: dict[str, Any]) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    repo = str(info.get("repo") or DEFAULT_REPO)
+    commit = str(result.get("target") or result.get("source") or info.get("commit") or "")[:12]
+    linked = ref_link(commit, repo) if commit else code(t("UI_NOT_SET"))
+    blocks.append(quote(bold_html(t("UPD_ALREADY", commit=linked))))
+    rows = [("info", t("UPD_LABEL_COMMIT"), linked)]
+    branch = str(info.get("branch") or "").strip()
+    if branch:
+        rows.append(("tag", t("UPD_LABEL_BRANCH"), code(branch)))
+    blocks.append(table(rows, (t("UI_PARAM"), t("UI_VALUE"))))
+    subject = str(result.get("subject") or info.get("subject") or "").strip()
+    if subject:
+        blocks.append(quote(muted(subject)))
+    buttons = [
+        row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
+    ]
+    return screen(t("UPD_ALREADY_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, icon="ok")
+
+
+def update_handoff_screen(view: View, info: dict[str, Any], meta: dict[str, Any] | None = None, restarted: bool = True) -> Any:
+    t = view.tr()
+    data = dict(meta or {})
+    repo = str(info.get("repo") or DEFAULT_REPO)
+    commit = str(data.get("target") or "")[:12]
+    linked = ref_link(commit, repo) if commit else code(t("UI_NOT_SET"))
+    catalog = _update_stage_catalog(t, include_deps=bool(data.get("deps")))
+    blocks = banner(view, t)
+    if restarted:
+        blocks.append(quote(bold_html(t("UPD_RESTARTING_BODY", commit=linked))))
+    else:
+        blocks.append(quote(bold_html(t("UPD_RESTART_MANUAL_BODY", commit=linked))))
+    rows = [("ok", entry["done"], code(t("UPD_STATE_DONE"))) for entry in catalog]
+    blocks.append(table(rows, (t("UPD_COL_STAGE"), t("UPD_COL_STATE"))))
+    subject = str(data.get("subject") or "").strip()
+    if subject:
+        blocks.append(quote(muted(subject)))
+    if restarted:
+        return screen(t("UPD_RESTARTING_TITLE"), t("UPD_RESTARTING_SUBTITLE"), blocks, [], icon="restart")
+    buttons = [
+        row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
+    ]
+    return screen(t("UPD_RESTART_MANUAL_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, icon="info")
+
+
+def update_failed_screen(view: View, info: dict[str, Any], result: dict[str, Any]) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    repo = str(info.get("repo") or DEFAULT_REPO)
+    message = str(result.get("message") or t("UPD_NOTHING_DONE")).strip()
+    prefix = esc(str(t("UPD_FAILED", error="")).rstrip(": ").strip())
+    blocks.append(quote(bold_html(f"{prefix}: {esc(message)}")))
+    if result.get("rollback"):
+        source = str(result.get("source") or "")[:12]
+        if source:
+            blocks.append(quote(muted_html(t("UPD_ROLLBACK", commit=ref_link(source, repo)))))
+    buttons = [
+        row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
+    ]
+    return screen(t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, icon="warn")
+
+
+def _daemon_label(t: i18n.Translator, key: str) -> str:
+    mapping = {
+        "bot": "UPD_DAEMON_BOT",
+        "xray": "UPD_DAEMON_XRAY",
+        "freeturn": "UPD_DAEMON_FREETURN",
+        "sub": "UPD_DAEMON_SUB",
+        "tailnet": "UPD_DAEMON_TAILNET",
+        "fail2ban": "UPD_DAEMON_FAIL2BAN",
+    }
+    token = mapping.get(str(key or "").strip().lower(), "")
+    return t(token) if token else str(key or "")
 
 
 def update_verified_screen(view: View, notice: dict[str, Any]) -> Any:
@@ -518,19 +640,45 @@ def update_verified_screen(view: View, notice: dict[str, Any]) -> Any:
     healthy = bool(notice.get("healthy", True))
     commit = str(notice.get("commit") or notice.get("to") or "")[:12]
     linked = ref_link(commit, repo) if commit else code(t("UI_NOT_SET"))
-    state_label = service_state_label(notice.get("state") or "active", view.lang)
-    if healthy:
-        blocks.append(quote(bold_html(t("UPD_NOTICE_VERIFIED", commit=linked, state=code(state_label)))))
-    else:
+    raw_daemons = list(notice.get("daemons") or [])
+    if not raw_daemons:
+        raw_daemons = [
+            {
+                "id": "bot",
+                "icon": "bot",
+                "state": str(notice.get("state") or ("active" if healthy else "failed")),
+                "detail": "",
+            }
+        ]
+    ok_count = sum(1 for item in raw_daemons if str(item.get("state") or "").strip().lower() in {"active", "running", "activating"})
+    total_count = len(raw_daemons)
+    all_ok = healthy and ok_count == total_count
+    if not healthy:
         blocks.append(quote(bold_html(t("UPD_NOTICE_BROKEN", commit=linked))))
-    rows = [
-        ("info", t("UPD_LABEL_COMMIT"), linked),
-        ("info", t("UPD_LABEL_SERVICE"), code(state_label)),
-    ]
+    elif all_ok:
+        blocks.append(quote(bold_html(t("UPD_BOOTED_ALL_OK", commit=linked, ok=ok_count, total=total_count))))
+    else:
+        blocks.append(quote(bold_html(t("UPD_BOOTED_PARTIAL", commit=linked, ok=ok_count, total=total_count))))
+    meta_rows = [("info", t("UPD_LABEL_COMMIT"), linked)]
     branch = str(notice.get("branch") or "").strip()
     if branch:
-        rows.append(("tag", t("UPD_LABEL_BRANCH"), code(branch)))
-    blocks.append(table(rows, (t("UI_PARAM"), t("UI_VALUE"))))
+        meta_rows.append(("tag", t("UPD_LABEL_BRANCH"), code(branch)))
+    blocks.append(table(meta_rows, (t("UI_PARAM"), t("UI_VALUE"))))
+    blocks.append(heading(t("UPD_DAEMONS_HEAD"), 3, icon="server"))
+    daemon_rows = []
+    for item in raw_daemons:
+        raw_state = str(item.get("state") or "inactive").strip().lower()
+        state_text = service_state_label(raw_state, view.lang)
+        detail = str(item.get("detail") or "").strip()
+        cell = code(f"{state_text} / {detail}") if detail else code(state_text)
+        if raw_state in {"active", "running", "activating"}:
+            row_icon = "ok"
+        elif raw_state in {"failed", "error", "expired"}:
+            row_icon = "fail"
+        else:
+            row_icon = "warn"
+        daemon_rows.append((row_icon, _daemon_label(t, str(item.get("id") or "")), cell))
+    blocks.append(table(daemon_rows, (t("UPD_COL_DAEMON"), t("UPD_COL_STATE"))))
     subject = str(notice.get("subject") or "").strip()
     if subject:
         blocks.append(quote(muted(subject)))
@@ -540,7 +688,9 @@ def update_verified_screen(view: View, notice: dict[str, Any]) -> Any:
     buttons = [
         row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("UPD_DONE_TITLE") if healthy else t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, icon="ok" if healthy else "warn")
+    title = t("UPD_BOOTED_TITLE") if healthy else t("UPD_TITLE")
+    subtitle = t("UPD_BOOTED_SUBTITLE") if healthy else t("UPD_SUBTITLE")
+    return screen(title, subtitle, blocks, buttons, icon="ok" if all_ok else "warn")
 
 
 def body_text(value: object) -> str:

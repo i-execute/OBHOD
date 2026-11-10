@@ -45,6 +45,7 @@ class FakeApp:
         self.deleted: list[tuple[int, int]] = []
         self.messages: list[dict[str, Any]] = []
         self.sent_rich: list[dict[str, Any]] = []
+        self.edited_rich: list[dict[str, Any]] = []
         self.inline_edits: list[dict[str, Any]] = []
         self.mt_calls: list[tuple[str, dict[str, Any]]] = []
         self.bot_calls: list[tuple[str, dict[str, Any]]] = []
@@ -59,6 +60,9 @@ class FakeApp:
 
     async def send_rich(self, chat_id: int, rich: Any, **kw: Any) -> None:
         self.sent_rich.append({"chat_id": int(chat_id), "rich": rich, **kw})
+
+    async def edit_rich(self, chat_id: int, msg_id: int, rich: Any, **kw: Any) -> None:
+        self.edited_rich.append({"chat_id": int(chat_id), "msg_id": int(msg_id), "rich": rich, **kw})
 
     async def mt_req(self, method: str, **kw: Any) -> dict[str, Any]:
         self.mt_calls.append((method, dict(kw)))
@@ -487,6 +491,7 @@ def make_config(state_dir: Path) -> SimpleNamespace:
 def make_bot(tmp_path: Path) -> Bot:
     Path(tmp_path).mkdir(parents=True, exist_ok=True)
     bot = Bot(make_config(tmp_path), control=FakeControl(), guard=FakeGuard())
+    bot.update_step_delay = 0.0
     bot.sent = []
     bot.rendered = []
 

@@ -1,6 +1,6 @@
 {
   "files": {
-    "BOT/app.py": "de4ff4bee4385e22c1808b56b93f7afece347a5768b5e2f800ee0ea491c28359",
+    "BOT/app.py": "e6be06581d4813df83735f1bf3245b50e01bed5cda72d03dbdb97cfd51366b9e",
     "BOT/audit.py": "10df919dc8bb9d0affdc513dfa4ad0c78870d43619cca60cddb44269cbc71676",
     "BOT/guard.py": "b3a554d3fdbd0980f53ff4a75f1b6722f39269414a5f9d14ae76783274820cc6",
     "BOT/inline.py": "c4094d27fc943ffc65ff2ad59f1a1d27fdc4dac08bc7b68679cc6de3322006ef",
@@ -8,7 +8,7 @@
     "BOT/releases.py": "69e01e035ff2c449fcd2903e0b4bfd5d36c222dfe6cad31722b1ed05fab923ac",
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
     "BOT/shell.py": "9fab9536eee40a0d0f367082130f73da5d5ced3333462c96108afab9dbe37626",
-    "BOT/update.py": "aa358c3eb1b4984192e8e9615da08c3902b4ee60114fceac8b0370988aa62b4e",
+    "BOT/update.py": "86e492d6e72249c5384be2ed3fcc3ff6dbf200f7b0dde03292474514cfce9413",
     "Storage/remote/fail2ban_agent.py": "e9852f965e217a639a61aa372e54f973ba993da9baefdcc9b5d23b393d002be0",
     "Storage/remote/freeturn_agent.py": "6a20512a0302a491ed3abb1b20e29d8c9060c4f07736362098aabea0b2647d27",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
