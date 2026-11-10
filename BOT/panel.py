@@ -19,6 +19,7 @@ from .xray import (
     MASS_FINGERPRINTS,
     NETWORKS,
     SECURITIES,
+    SUB_PORT,
     SUB_SEGMENT_LEN,
     SYNTHETIC_FINGERPRINTS,
     TUNNEL_HOST_RE,
@@ -32,6 +33,8 @@ from .xray import (
     gen_short_id,
     link_for,
     new_inbound,
+    random_funnel_port,
+    random_port,
     sanitize_remark,
     valid_alpn,
     valid_cert_path,
@@ -162,6 +165,7 @@ class XrayPanel:
         item.draft = dict(self.draft)
         item.address = self.address()
         item.bundle = self.sub_bundle()
+        item.key_mask = self.key_mask()
         return item
 
     async def render(self, chat_id: int, msg_id: int, rich: Any) -> None:
@@ -442,6 +446,80 @@ class XrayPanel:
         self.save()
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_KEYS_REGEN")), inbound))
 
+    def ensure_random_sub_port(self) -> int:
+        current = int(self.state.sub_port or 0)
+        if current in {0, 80, 443, SUB_PORT}:
+            used = set(self.state.ports()) | {int(self.state.api_port)}
+            current = random_port(used)
+        self.state.sub_port = current
+        self.bot.state.sub_port = current
+        return current
+
+    async def ensure_random_sub_inbound(self) -> XrayInbound:
+        non_443 = [item for item in self.state.inbounds if item.enable and int(item.port) != 443]
+        if non_443:
+            chosen = non_443[0]
+            if not chosen.clients:
+                chosen.make_client("owner")
+            return chosen
+        used = set(self.state.ports()) | {int(self.state.sub_port), int(self.state.api_port), 443}
+        port = random_port(used)
+        inbound = new_inbound("vless", port, "raw", "reality")
+        inbound.remark = f"sub-{port}"
+        private, public = x25519_keypair()
+        inbound.reality_private = private
+        inbound.reality_public = public
+        inbound.short_ids = [gen_short_id()]
+        inbound.make_client("owner")
+        self.state.add(inbound)
+        self.save()
+        await self.auto_apply_live()
+        return inbound
+
+    async def setup_domain_subs(self) -> tuple[str, str]:
+        t = self.tr()
+        port = self.ensure_random_sub_port()
+        await self.ensure_random_sub_inbound()
+        raw_host = (self.state.tunnel_host or "").strip().lower()
+        if raw_host and not TUNNEL_HOST_RE.match(raw_host):
+            return "", t("DOM_HOST_BAD")
+        host_hint = raw_host.split(":", 1)[0] if raw_host else ""
+        funnel_port = random_funnel_port()
+        try:
+            tunnel = await self.control.tunnel_up(
+                self.bot.state.ssh,
+                self.tunnel_key,
+                host_hint,
+                port,
+                https_port=funnel_port,
+                auto_install=True,
+            )
+        except RpcError as exc:
+            return "", exc.message
+        domain = ""
+        if getattr(tunnel, "url", ""):
+            domain = str(tunnel.url).strip().lower().removeprefix("https://").removeprefix("http://").strip("/")
+        if not domain or not TUNNEL_HOST_RE.match(domain):
+            candidate = str(getattr(tunnel, "hostname", "") or raw_host).strip().lower().rstrip(".")
+            if candidate and TUNNEL_HOST_RE.match(candidate):
+                domain = candidate
+        if not domain:
+            return "", t("DOM_REQUIRED")
+        self.state.tunnel_host = domain
+        self.state.tunnel_enabled = True
+        self.state.tunnel_backend = getattr(tunnel, "backend", "") or "Running"
+        self.state.ensure_sub_all()
+        try:
+            await self.control.sub_install(self.bot.state.ssh, port, domain)
+            registry = self.state.sub_registry(self.state.address(self.address()), [])
+            await self.control.sub_sync(self.bot.state.ssh, registry, port, domain)
+        except (RpcError, OSError) as exc:
+            self.save()
+            return "", str(getattr(exc, "message", exc))
+        self.state.sub_enabled = True
+        self.save()
+        return t("DOM_READY"), ""
+
     async def tunnel_action(self, chat_id: int, msg_id: int, action: str) -> None:
         t = self.tr()
         tunnel = None
@@ -453,29 +531,44 @@ class XrayPanel:
                 await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
                 return
         elif action == "up":
-            host = (self.state.tunnel_host or "").strip().lower()
-            if not TUNNEL_HOST_RE.match(host):
-                host = ""
-            if not host:
+            raw_host = (self.state.tunnel_host or "").strip().lower()
+            if raw_host and not TUNNEL_HOST_RE.match(raw_host):
                 await self.render(chat_id, msg_id, self.dom_screen(self.view(error=t("DOM_HOST_BAD")), None))
                 return
             if not self.tunnel_key:
                 await self.render(chat_id, msg_id, self.dom_screen(self.view(error=t("DOM_KEY_MISSING")), None))
                 return
             await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_UP"), self.bot.state.language))
+            port = int(self.state.sub_port or 0)
+            if port in {0, 80, 443}:
+                port = self.ensure_random_sub_port()
+            self.bot.state.sub_port = port
             try:
-                tunnel = await self.control.tunnel_up(self.bot.state.ssh, self.tunnel_key, host, self.state.sub_port)
+                tunnel = await self.control.tunnel_up(
+                    self.bot.state.ssh,
+                    self.tunnel_key,
+                    raw_host,
+                    port,
+                    https_port=random_funnel_port(),
+                    auto_install=True,
+                )
             except RpcError as exc:
-                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
                 return
+            if getattr(tunnel, "url", ""):
+                parsed = str(tunnel.url).strip().lower().removeprefix("https://").removeprefix("http://").strip("/")
+                if TUNNEL_HOST_RE.match(parsed):
+                    self.state.tunnel_host = parsed
             self.state.tunnel_enabled = True
             self.state.tunnel_backend = tunnel.backend
             self.save()
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=t("DOM_READY")), self.sub_rows()))
+            return
         elif action == "off":
             try:
                 tunnel = await self.control.tunnel_down(self.bot.state.ssh)
             except RpcError as exc:
-                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
                 return
             self.state.tunnel_enabled = False
             if self.state.sub_enabled:
@@ -485,7 +578,7 @@ class XrayPanel:
                 except RpcError:
                     pass
             self.save()
-            await self.render(chat_id, msg_id, self.dom_screen(self.view(notice=t("DOM_OFF_DONE")), tunnel))
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=t("DOM_OFF_DONE")), self.sub_rows()))
             return
         else:
             await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_CHECK"), self.bot.state.language))
@@ -625,12 +718,8 @@ class XrayPanel:
 
     def sub_bundle(self, host: str = ""):
         address = str(host or self.state.address(self.address()))
-        extra: list[str] = []
-        freeturn = getattr(self.bot, "freeturn", None)
-        if freeturn is not None:
-            extra = freeturn.state.link_values()
         try:
-            return subs.aggregate(self.state, extra, address, self.state.sub_port)
+            return subs.aggregate(self.state, [], address, self.state.sub_port)
         except subs.SubError:
             return None
 
@@ -655,12 +744,21 @@ class XrayPanel:
             await self.subs_stop(chat_id, msg_id)
             return
         if action == "rotate":
+            self.state.sub_all_id = ""
+            self.state.sub_all_key = ""
+            self.state.ensure_sub_all()
             for inbound in self.state.inbounds:
                 for client in inbound.clients:
-                    client.ensure_subscription()
                     client.sub_id = client.sub_key = ""
                     client.ensure_subscription()
             self.save()
+            domain = self.public_domain()
+            if self.state.sub_enabled and domain:
+                try:
+                    registry = self.state.sub_registry(self.state.address(self.address()), [])
+                    await self.control.sub_sync(self.bot.state.ssh, registry, self.state.sub_port, domain)
+                except (RpcError, OSError):
+                    pass
             await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=self.tr()("NOTICE_SUBS_ROTATED")), self.sub_rows()))
             return
         await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
@@ -679,15 +777,10 @@ class XrayPanel:
             xscreens.busy_screen(t("BUSY_SUBS_WRITE"), self.bot.state.language, [t("BUSY_STEP_FILE"), t("BUSY_STEP_REGISTRY"), t("BUSY_STEP_SERVICE")]),
         )
         try:
-            self.bot.state.sub_port = int(state.sub_port)
-            state.sub_port = int(state.sub_port)
-            await self.control.sub_install(self.bot.state.ssh, state.sub_port, domain)
-            extra: list[str] = []
-            freeturn = getattr(self.bot, "freeturn", None)
-            if freeturn is not None:
-                extra = freeturn.state.link_values()
-            registry = state.sub_registry(state.address(self.address()), extra)
-            await self.control.sub_sync(self.bot.state.ssh, registry, state.sub_port, domain)
+            port = self.ensure_random_sub_port()
+            await self.control.sub_install(self.bot.state.ssh, port, domain)
+            registry = state.sub_registry(state.address(self.address()), [])
+            await self.control.sub_sync(self.bot.state.ssh, registry, port, domain)
         except (RpcError, OSError) as exc:
             message = getattr(exc, "message", str(exc))
             await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=str(message)), self.sub_rows()))
@@ -1294,6 +1387,26 @@ class XrayPanel:
             await self.send(chat_id, self.error_screen(ident, ctx, str(exc)))
             return
         self.save()
+        if ident == "xr_tunnel_key":
+            if not (value or "").strip():
+                if self.state.tunnel_enabled:
+                    try:
+                        await self.control.tunnel_down(self.bot.state.ssh)
+                    except RpcError:
+                        pass
+                    self.state.tunnel_enabled = False
+                if self.state.sub_enabled:
+                    try:
+                        await self.control.sub_stop(self.bot.state.ssh, self.state.sub_port)
+                    except RpcError:
+                        pass
+                    self.state.sub_enabled = False
+                self.save()
+                await self.send(chat_id, xscreens.subs_screen(self.view(notice=notice), self.sub_rows()))
+                return
+            ready_notice, err = await self.setup_domain_subs()
+            await self.send(chat_id, xscreens.subs_screen(self.view(notice=ready_notice or notice, error=err), self.sub_rows()))
+            return
         await self.send(chat_id, await self.screen_for(ident, ctx, notice))
 
     def error_screen(self, ident: str, ctx: str, message: str) -> Any:
@@ -1323,7 +1436,7 @@ class XrayPanel:
             return screens.settings(self.bot.view(notice=notice))
         if ident == "xr_log_level":
             return xscreens.core_screen(self.view(notice=notice))
-        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
+        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce", "xr_tunnel_host", "xr_tunnel_key"}:
             return xscreens.subs_screen(self.view(notice=notice), self.sub_rows())
         if ident in {"xr_ban_ip", "xr_bantime", "xr_ssh_bantime", "xr_ssh_maxretry", "xr_ignoreip"}:
             return screens.ban_screen(self.bot.ban_view(notice=notice))

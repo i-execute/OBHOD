@@ -167,6 +167,10 @@ def json_body(bundle: Bundle, address: str = "", port: int = 0) -> str:
     return json.dumps(body, ensure_ascii=True, sort_keys=True)
 
 
+def xray_links(links: Any) -> list[str]:
+    return [item for item in clean_links(links) if item.startswith("vless://")]
+
+
 def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port: int = 0) -> Bundle:
     bundle = Bundle()
     if xray_state is not None:
@@ -174,8 +178,8 @@ def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port:
         bundle.title = ALL_TITLE
         for item in xray_state.subscriptions(address):
             bundle.links.extend(item.links)
-    bundle.links.extend(clean_links(extra_links))
-    bundle.links = clean_links(bundle.links)
+    bundle.links.extend(xray_links(extra_links))
+    bundle.links = xray_links(bundle.links)
     return bundle
 
 

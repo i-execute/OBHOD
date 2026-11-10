@@ -1196,14 +1196,15 @@ def start_sub(port, registry):
         raise ScriptError("start_failed", "the subscription server exited right after the start", "sub")
 
 
-SUB_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){2,4}$")
+SUB_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){2,4}(?::(?:[1-9][0-9]{3,4}))?$")
 
 
 def sub_domain(flags):
     host = str(flags.get("domain", "") or "").strip().lower()
     if not host:
         raise ScriptError("no_domain", "the subscription needs a public domain, bring the tunnel up first", "sub")
-    if not SUB_DOMAIN_RE.match(host) or host.replace(".", "").isdigit():
+    bare = host.split(":", 1)[0]
+    if not SUB_DOMAIN_RE.match(host) or bare.replace(".", "").isdigit():
         raise ScriptError("bad_arg", "the subscription domain is not valid", "sub")
     return host
 
@@ -1297,8 +1298,10 @@ def cmd_sub_stop(flags, rest):
 
 TUNNEL_KEY_RE = re.compile(r"^tskey-[a-z]{2,6}-[A-Za-z0-9]{4,64}(-[A-Za-z0-9]{4,64}){0,4}$")
 TUNNEL_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+TUNNEL_FQDN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){1,4}$")
 TUNNEL_CODENAME_RE = re.compile(r"^[a-z]{2,16}$")
-TUNNEL_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+\.ts\.net")
+TUNNEL_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+\.ts\.net(?::[0-9]{2,5})?")
+TUNNEL_FUNNEL_PORTS = (8443, 10000)
 TUNNEL_PKG_KEY = "/usr/share/keyrings/tailscale-archive-keyring.gpg"
 
 
@@ -1398,21 +1401,35 @@ def cmd_tunnel_install(flags, rest):
 
 def cmd_tunnel_up(flags, rest):
     key = str(flags.get("key", "") or "").strip()
-    hostname = str(flags.get("hostname", "") or "").strip().lower()
+    raw_host = str(flags.get("hostname", "") or "").strip().lower()
+    if not raw_host:
+        hostname = "obhod-" + os.urandom(2).hex()
+    elif TUNNEL_HOST_RE.match(raw_host):
+        hostname = raw_host
+    elif TUNNEL_FQDN_RE.match(raw_host):
+        hostname = raw_host.split(".", 1)[0]
+    else:
+        hostname = ""
     port = int(str(flags.get("port", "2096")))
+    https_port = int(str(flags.get("https_port", "0") or "0"))
+    if https_port not in TUNNEL_FUNNEL_PORTS:
+        https_port = TUNNEL_FUNNEL_PORTS[os.urandom(1)[0] % len(TUNNEL_FUNNEL_PORTS)]
     if not TUNNEL_KEY_RE.match(key):
         raise ScriptError("bad_arg", "the tailscale auth key is not valid", "tunnel")
-    if not TUNNEL_HOST_RE.match(hostname):
+    if not hostname or not TUNNEL_HOST_RE.match(hostname):
         raise ScriptError("bad_arg", "the tunnel hostname is not valid", "tunnel")
-    if not 1 <= port <= 65535:
+    if not 1 <= port <= 65535 or port == 443:
         raise ScriptError("bad_arg", "the tunnel port is out of range", "tunnel")
     found = tunnel_binary()
+    if not found and str(flags.get("auto_install", "")) == "1":
+        cmd_tunnel_install(flags, rest)
+        found = tunnel_binary()
     if not found:
         raise ScriptError("not_installed", "tailscale is not installed", "tunnel")
     code, text = run([found, "up", "--authkey=" + key, "--hostname=" + hostname, "--accept-dns=false", "--accept-routes=false", "--reset"], timeout=180)
     if code != 0:
         raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
-    code, text = run([found, "funnel", "--bg", "--https=443", "http://127.0.0.1:%d" % port], timeout=180)
+    code, text = run([found, "funnel", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port], timeout=180)
     if code != 0:
         raise ScriptError("internal", "the funnel did not start: " + text[:300] + " enable funnel in the tailnet policy and turn on https certificates", "tunnel")
     state = tunnel_state()

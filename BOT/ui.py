@@ -205,12 +205,12 @@ def row_parts(item: object) -> tuple[str, str, object]:
 def table(pairs: Iterable[object], headers: tuple[str, str] | None = None) -> str:
     head = ""
     if headers:
-        head = f"<tr><th>{esc(headers[0])}</th><th>{esc(headers[1])}</th></tr>"
+        head = f'<tr><th align="center">{esc(headers[0])}</th><th align="center">{esc(headers[1])}</th></tr>'
     cells = []
     for item in pairs:
         icon, key, value = row_parts(item)
         label = ico(icon, "") + esc(key)
-        cells.append(f"<tr><td>{label}</td><td>{value}</td></tr>")
+        cells.append(f'<tr><td align="center">{label}</td><td align="center">{value}</td></tr>')
     body = "".join(cells)
     return f'<table bordered="false" striped="false">{head}{body}</table>'
 

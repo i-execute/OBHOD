@@ -135,11 +135,21 @@ class FakeControl:
         self.calls.append(["tunnel-install"])
         return TunnelState(installed=True, version="1.80.2", backend="NeedsLogin")
 
-    async def tunnel_up(self, cfg: Any, key: str, hostname: str, port: int = 2096) -> Any:
+    async def tunnel_up(
+        self,
+        cfg: Any,
+        key: str,
+        hostname: str = "",
+        port: int = 2096,
+        https_port: int = 0,
+        auto_install: bool = False,
+    ) -> Any:
         from BOT.xrayrpc import TunnelState
 
         self.calls.append(["tunnel-up", key, hostname, str(port)])
-        return TunnelState(installed=True, version="1.80.2", backend="Running", hostname=hostname, url="https://" + hostname, funnel=True)
+        fqdn = hostname if "." in hostname else ((hostname or "obhod") + ".tail1234.ts.net")
+        suffix = (":%d" % int(https_port)) if https_port and int(https_port) != 443 and ":" not in fqdn else ""
+        return TunnelState(installed=True, version="1.80.2", backend="Running", hostname=fqdn.split(":", 1)[0], url="https://" + fqdn + suffix, funnel=True)
 
     async def tunnel_down(self, cfg: Any) -> Any:
         from BOT.xrayrpc import TunnelState

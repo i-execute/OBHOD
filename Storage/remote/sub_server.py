@@ -262,17 +262,25 @@ def read_registry():
     return body
 
 
-def payload_of(entry):
-    links = entry.get("links")
+def xray_only(links):
     if not isinstance(links, list):
+        return []
+    out = []
+    for item in links:
+        text = str(item or "").strip()
+        if text.startswith("vless://"):
+            out.append(text)
+    return out
+
+
+def payload_of(entry):
+    links = xray_only(entry.get("links"))
+    if not links:
         return ""
     budget = (MAX_BODY // 4) * 3
     kept = []
     size = 0
-    for item in links:
-        text = str(item).strip()
-        if not text:
-            continue
+    for text in links:
         chunk = len(text.encode("utf-8")) + 1
         if kept and size + chunk > budget:
             break
@@ -488,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         base = base_url(self.headers.get("Host"))
         if want_json:
-            count = len([item for item in entry.get("links") or [] if str(item).strip()])
+            count = len(xray_only(entry.get("links")))
             if want_info:
                 document = info_body(entry, count, base)
             else:

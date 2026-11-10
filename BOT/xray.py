@@ -79,7 +79,26 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHORT_ID_RE = re.compile(r"^[0-9a-f]{0,16}$")
 SUB_ALPHABET = string.ascii_letters + string.digits + "-_"
 SUB_PORT = 2096
-TUNNEL_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){2,4}$")
+FUNNEL_PORTS = (8443, 10000)
+RANDOM_PORT_MIN = 20000
+RANDOM_PORT_MAX = 59999
+TUNNEL_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){2,4}(?::(?:[1-9][0-9]{3,4}))?$")
+
+
+def random_port(exclude: Any = ()) -> int:
+    busy = {int(item) for item in (exclude or ()) if str(item).isdigit()}
+    busy.update({80, 443, API_PORT, 11111})
+    for _ in range(256):
+        candidate = RANDOM_PORT_MIN + secrets.randbelow(RANDOM_PORT_MAX - RANDOM_PORT_MIN + 1)
+        if candidate in busy or candidate in portguard.CRITICAL:
+            continue
+        if candidate <= 65535:
+            return candidate
+    return 37481
+
+
+def random_funnel_port() -> int:
+    return secrets.choice(FUNNEL_PORTS)
 XRAY_VERSION = "v26.10.31"
 LATEST_CHOICE = "latest"
 VERSION_CHOICES = (XRAY_VERSION, LATEST_CHOICE)

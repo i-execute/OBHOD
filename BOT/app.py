@@ -294,15 +294,7 @@ class Bot:
         self.store.save(self.state)
 
     def subs_payload(self) -> dict[str, Any]:
-        state = self.state.xray
-        extra: list[str] = []
-        freeturn = getattr(self, "freeturn", None)
-        if freeturn is not None:
-            try:
-                extra = freeturn.state.link_values()
-            except Exception:
-                extra = []
-        return state.sub_registry(self.address(), extra)
+        return self.state.xray.sub_registry(self.address(), [])
 
     async def subs_sync(self, force: bool = False) -> bool:
         state = self.state.xray

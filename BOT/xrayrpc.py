@@ -394,14 +394,14 @@ class XrayControl:
     async def sub_install(self, cfg: SshSettings, port: int = SUB_PORT, domain: str = "") -> SubState:
         payload = sub_server_code().encode("utf-8")
         flag, stdin = payload_arg("server-b64", payload)
-        response = await self.call(cfg, ["sub-install", flag, f"--port={int(port)}", "--domain=" + str(domain)[:64]], timeout=180, stdin=stdin)
+        response = await self.call(cfg, ["sub-install", flag, f"--port={int(port)}", "--domain=" + str(domain)[:128]], timeout=180, stdin=stdin)
         response.raise_for_status()
         return SubState.from_dict(response.data)
 
     async def sub_sync(self, cfg: SshSettings, registry: dict[str, Any], port: int = SUB_PORT, domain: str = "") -> SubState:
         payload = json.dumps(registry, ensure_ascii=False, sort_keys=True).encode("utf-8")
         flag, stdin = payload_arg("registry-b64", payload)
-        response = await self.call(cfg, ["sub-sync", flag, f"--port={int(port)}", "--domain=" + str(domain)[:64]], timeout=180, stdin=stdin)
+        response = await self.call(cfg, ["sub-sync", flag, f"--port={int(port)}", "--domain=" + str(domain)[:128]], timeout=180, stdin=stdin)
         response.raise_for_status()
         return SubState.from_dict(response.data)
 
@@ -415,8 +415,21 @@ class XrayControl:
         response.raise_for_status()
         return TunnelState.from_dict(response.data)
 
-    async def tunnel_up(self, cfg: SshSettings, key: str, hostname: str, port: int = SUB_PORT) -> "TunnelState":
-        response = await self.call(cfg, ["tunnel-up", "--key=" + str(key)[:128], "--hostname=" + str(hostname)[:64], "--port=%d" % int(port)], timeout=600)
+    async def tunnel_up(
+        self,
+        cfg: SshSettings,
+        key: str,
+        hostname: str = "",
+        port: int = SUB_PORT,
+        https_port: int = 0,
+        auto_install: bool = False,
+    ) -> "TunnelState":
+        argv = ["tunnel-up", "--key=" + str(key)[:128], "--hostname=" + str(hostname)[:64], "--port=%d" % int(port)]
+        if https_port:
+            argv.append("--https-port=%d" % int(https_port))
+        if auto_install:
+            argv.append("--auto-install=1")
+        response = await self.call(cfg, argv, timeout=900 if auto_install else 600)
         response.raise_for_status()
         return TunnelState.from_dict(response.data)
 

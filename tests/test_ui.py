@@ -81,8 +81,8 @@ def test_big_is_single_button_row() -> None:
 
 def test_table_escapes_keys_not_values() -> None:
     html = table([("<k>", code("v"))])
-    assert "<td>&lt;k&gt;</td>" in html
-    assert "<td><code>v</code></td>" in html
+    assert '<td align="center">&lt;k&gt;</td>' in html
+    assert '<td align="center"><code>v</code></td>' in html
 
 
 def test_lists_details_quote_pre() -> None:

@@ -85,6 +85,7 @@ class XrayView:
     lang: str = i18n.DEFAULT_LANGUAGE
     bundle: Any = None
     address: str = ""
+    key_mask: str = ""
 
     @property
     def installed(self) -> bool:
@@ -143,11 +144,10 @@ def home(view: XrayView) -> Any:
         ("info", t("XR_HOME_INBOUNDS"), code(len(state.inbounds))),
         ("users", t("XR_HOME_CLIENTS"), code(sum(len(item.clients) for item in state.inbounds))),
         ("link", t("XR_HOME_SUBS"), code(t("UI_ON") if state.sub_enabled else t("UI_OFF"))),
-        ("link", t("XR_HOME_SUB_PORT"), code(state.sub_port)),
-        ("tag", t("XR_HOME_VERSION"), code(state.version)),
         ("settings", t("XR_HOME_ENCRYPTION"), code(state.encryption_label())),
-        ("world", t("DOM_TITLE"), code(state.public_base() or i18n.t("UI_NONE", view.lang))),
     ]
+    if state.public_base():
+        pairs.append(("world", t("DOM_TITLE"), code(state.public_base())))
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if state.inbounds:
         rows = []
@@ -159,11 +159,10 @@ def home(view: XrayView) -> Any:
         blocks.append(quote(muted(t("XR_HOME_EMPTY"))))
     buttons = [
         row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
-        row(button(t("DOM_TITLE"), "xr:dom", icon="world"), button(t("XR_BTN_CHECK"), "xr:check", icon="scan")),
-        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
+        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("XR_BTN_CHECK"), "xr:check", icon="scan"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
     ]
     if state.inbounds:
-        buttons.insert(2, row(*[button(t("XR_BTN_OPEN", remark=item.remark), f"xr:in:{item.id}", icon="module") for item in state.inbounds[:3]]))
+        buttons.insert(1, row(*[button(t("XR_BTN_OPEN", remark=item.remark), f"xr:in:{item.id}", icon="module") for item in state.inbounds[:3]]))
     buttons.append(back_row("nav:home", view.lang))
     return screen(t("XR_TITLE"), t("XR_SUBTITLE"), blocks, buttons, icon="xray")
 
@@ -335,7 +334,6 @@ def client_screen(view: XrayView, inbound: XrayInbound, email: str, link: str, s
     blocks.append(long_block(t("XR_CLIENT_ID"), client.ident))
     if link:
         blocks.append(long_block(t("XR_CLIENT_COPY"), link))
-    blocks.append(quote(muted(t("XR_CLIENT_LINK_NOTE"))))
     link_button = copy_row(t("XR_CLIENT_COPY"), link)
     buttons = [
         *([link_button] if link_button else []),
@@ -388,45 +386,42 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     t = view.tr()
     state = view.state
     blocks = banner(view, t)
+    domain_ok = bool(state.tunnel_enabled and state.public_base())
+    ready = bool(domain_ok or view.key_mask)
+    if not ready:
+        blocks.append(quote(muted(t("XR_SUBS_NO_DOMAIN"))))
+        buttons = [
+            input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
+            back_row("xr:home", view.lang),
+        ]
+        return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
+    bundle = view.bundle
+    links = [item for item in (bundle.links if bundle is not None else []) if str(item).startswith("vless://")]
     pairs = [
         ("link", t("XR_SUBS_ENABLED"), code(i18n.t("UI_YES" if state.sub_enabled else "UI_NO", view.lang))),
-        ("link", t("XR_SUBS_PORT"), code(state.sub_port)),
-        ("link", t("XR_SUBS_ADDRESS"), code(state.public_base() or state.address(view.address) or t("UI_NOT_SET"))),
-        ("clock", t("SET_SUB_REFRESH"), code(state.sub_refresh)),
+        ("world", t("DOM_TITLE"), code(state.public_base() or t("UI_NOT_SET"))),
+        ("users", t("XR_HOME_CLIENTS"), code(len(links))),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
-    if not state.address(view.address):
-        blocks.append(quote(bold(t("XR_SUBS_NO_ADDRESS"))))
-    bundle = view.bundle
-    if bundle is not None and bundle.links:
+    copy_btn = ""
+    if bundle is not None and links and domain_ok:
         host = state.address(view.address)
-        base = state.public_base()
-        quota = bundle.quota()
-        blocks.append(quote(muted(t("XR_SUBS_ONE_NOTE", count=len(bundle.links), traffic=traffic_line(t, quota)))))
-        blocks.append(long_block(t("XR_SUBS_ONE"), subs.url_of(bundle, host, state.sub_port, base)))
-        blocks.append(long_block(t("XR_SUBS_JSON"), subs.json_url_of(bundle, host, state.sub_port, base)))
-        blocks.append(long_block(t("XR_SUBS_LINKS_TITLE"), "\n".join(bundle.links)))
-        blocks.append(quote(muted(t("XR_SUBS_RAW_NOTE"))))
-    else:
+        url = subs.url_of(bundle, host, state.sub_port, state.public_base())
+        blocks.append(long_block(t("XR_SUBS_ONE"), url))
+        blocks.append(long_block(t("XR_SUBS_LINKS_TITLE"), "\n".join(links[:LINK_PREVIEW])))
+        copy_btn = copy_row(t("SUB_COPY"), url, icon="copy")
+    elif not links:
         blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
-    blocks.append(quote(muted(t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN))))
-    domain_ok = bool(state.tunnel_enabled and state.public_base())
     buttons = []
-    if not domain_ok:
-        blocks.insert(1, quote(bold(t("XR_SUBS_NO_DOMAIN"))))
-        buttons.append(row(button(t("NAV_DOMAIN"), "xr:dom", icon="world")))
+    if copy_btn:
+        buttons.append(copy_btn)
+    if domain_ok:
+        buttons.append(row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")))
+        buttons.append(row(button(t("DOM_OFF"), "xr:dom:off", icon="stop")))
     else:
-        buttons.append(row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_STATUS"), "xr:subs:status", icon="info")))
-        buttons.append(row(button(t("XR_SUBS_STOP"), "xr:subs:stop", icon="stop"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")))
-    buttons += [
-        input_row(t("XR_SUBS_PORT"), "xr_sub_port", "-", view.lang),
-        input_row(t("XR_SUBS_ADDRESS") if state.address(view.address) else t("XR_SUBS_SET_ADDRESS"), "xr_sub_address", "-", view.lang),
-        row(button(t("XR_SUBS_TRAFFIC_BTN"), "xr:subs:traffic", icon="chart")),
-        input_row(t("SET_SUB_REFRESH"), "xr_sub_refresh", "-", view.lang),
-        input_row(t("SET_SUB_SUPPORT"), "xr_sub_support", "-", view.lang),
-        input_row(t("SET_SUB_ANNOUNCE"), "xr_sub_announce", "-", view.lang),
-        back_row("xr:home", view.lang),
-    ]
+        buttons.append(row(button(t("DOM_UP"), "xr:dom:up", icon="world")))
+    buttons.append(input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang))
+    buttons.append(back_row("xr:home", view.lang))
     return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
 
 
@@ -438,14 +433,8 @@ def core_screen(view: XrayView) -> Any:
         pairs = [
             ("xray", t("XR_CORE_INSTALLED"), code(i18n.t("UI_YES" if core.get("installed") else "UI_NO", view.lang))),
             ("tag", t("XR_CORE_VERSION"), code(core.get("version", "") or t("UI_NONE"))),
-            ("tag", t("XR_CORE_PINNED"), code(core.get("pinned", "") or "")),
             ("xray", t("XR_CORE_SERVICE"), code(core.get("service", "") or t("UI_NONE"))),
-            ("xray", t("XR_CORE_SYSTEMD"), code(i18n.t("UI_YES" if core.get("systemd") else "UI_NO", view.lang))),
-            ("xray", t("XR_CORE_ARCH"), code(core.get("arch", "") or "")),
-            ("xray", t("XR_CORE_BINARY"), code(core.get("core_path", "") or "")),
-            ("xray", t("XR_CORE_CONFIG"), code(core.get("config_path", "") or "")),
             ("xray", t("XR_CORE_INBOUNDS"), code(core.get("inbounds", 0))),
-            ("xray", t("XR_CORE_PORTS"), code(", ".join(str(item) for item in core.get("ports") or []) or t("UI_NONE"))),
             ("xray", t("XR_CORE_LISTENING"), code(", ".join(str(item) for item in core.get("listening") or []) or t("UI_NONE"))),
         ]
         blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
@@ -612,27 +601,21 @@ def scan_mismatch_screen(view: XrayView, result: ScanResult, inbound: XrayInboun
 def domain_screen(view: XrayView, tunnel: Any = None, key_mask: str = "") -> Any:
     t = view.tr()
     state = view.state
+    mask = key_mask or view.key_mask
+    if not mask and not state.tunnel_enabled and tunnel is None:
+        return subs_screen(view, [])
     blocks = banner(view, t)
     state_name = t("DOM_STATE_ON") if state.tunnel_enabled and state.tunnel_host else t("DOM_STATE_OFF")
     pairs = [
         ("world", t("DOM_STATE"), code(state_name)),
-        ("link", t("DOM_HOST"), code(state.tunnel_host or t("UI_NONE"))),
-        ("link", t("DOM_SUB_URL"), code(state.sub_url_host(view.address) or t("UI_NOT_SET"))),
-        ("clock", t("DOM_CLIENT_IP"), code(t("DOM_CLIENT_IP_VALUE"))),
-        ("key", t("DOM_KEY_SET"), code(key_mask or t("UI_NOT_SET"))),
+        ("link", t("DOM_HOST"), code(state.public_base() or state.tunnel_host or t("UI_NONE"))),
+        ("key", t("DOM_KEY_SET"), code(mask or t("UI_NOT_SET"))),
     ]
-    if tunnel is not None:
-        pairs.append(("server", t("DOM_BACKEND"), code(tunnel.backend or "absent")))
-        pairs.append(("box", t("DOM_VERSION"), code(tunnel.version or t("UI_NONE"))))
-        pairs.append(("shield", t("DOM_FUNNEL"), code(i18n.t("UI_YES" if tunnel.funnel else "UI_NO", view.lang))))
-        pairs.append(("world", t("DOM_URL"), code(tunnel.url or t("UI_NONE"))))
+    if tunnel is not None and getattr(tunnel, "url", ""):
+        pairs.append(("world", t("DOM_URL"), code(tunnel.url)))
     blocks.append(table(pairs, (t("DOM_TITLE"), t("UI_VALUE"))))
-    blocks.append(quote(muted(t("DOM_NOTE"))))
-    blocks.append(quote(muted(t("DOM_NOTE2", port=state.sub_port))))
     buttons = [
-        row(button(t("DOM_CHECK"), "xr:dom:status", icon="scan"), button(t("DOM_INSTALL"), "xr:dom:install", icon="box")),
         row(button(t("DOM_UP"), "xr:dom:up", icon="world"), button(t("DOM_OFF"), "xr:dom:off", icon="stop")),
-        input_row(t("DOM_HOST_INPUT"), "xr_tunnel_host", "-", view.lang),
         input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
         back_row("xr:home", view.lang),
     ]

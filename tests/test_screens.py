@@ -294,6 +294,6 @@ def test_every_button_and_table_row_carries_emoji(lang: str) -> None:
             assert "<tg-emoji" in body or not body.strip(), "%s has a button without an emoji: %s" % (name, body[:40])
         rows = re.findall(r"<tr>(.*?)</tr>", html, re.S)
         for cell in rows:
-            if "<th>" in cell or not cell.strip():
+            if "<th" in cell or not cell.strip():
                 continue
             assert "<tg-emoji" in cell, "%s has a table row without an emoji: %s" % (name, cell[:60])

@@ -82,8 +82,9 @@ def test_a_broken_payload_decodes_to_nothing() -> None:
 def test_the_aggregate_carries_every_link() -> None:
     state = filled()
     bundle = subs.aggregate(state, ["freeturn://owner"], "203.0.113.5", 2096)
-    assert len(bundle.links) == 3
-    assert any(item.startswith("freeturn://") for item in bundle.links)
+    assert len(bundle.links) == 2
+    assert not any(item.startswith("freeturn://") for item in bundle.links)
+    assert all(item.startswith("vless://") for item in bundle.links)
     assert bundle.url("203.0.113.5", 2096).startswith("http://203.0.113.5:2096/")
 
 
@@ -108,7 +109,8 @@ def test_the_registry_carries_the_aggregate() -> None:
     titles = [entry["title"] for entry in registry["entries"].values()]
     assert "OBHOD all" in titles
     all_entry = [entry for entry in registry["entries"].values() if entry["title"] == "OBHOD all"][0]
-    assert len(all_entry["links"]) == 3
+    assert len(all_entry["links"]) == 2
+    assert all(item.startswith("vless://") for item in all_entry["links"])
 
 
 def test_the_registry_entries_are_shaped_for_the_server() -> None:
@@ -216,7 +218,7 @@ def test_the_server_serves_the_aggregate(server) -> None:
     url = "http://127.0.0.1:%d/%s/%s" % (port, "a" * 64, "b" * 64)
     code_value, raw, headers = fetch(url)
     assert code_value == 200
-    assert base64.b64decode(raw).decode() == "vless://a\nfreeturn://b\n"
+    assert base64.b64decode(raw).decode() == "vless://a\n"
     assert headers.get("Profile-Update-Interval") == "12"
 
 
@@ -226,7 +228,7 @@ def test_the_server_serves_the_json_view(server) -> None:
     code_value, raw, _headers = fetch(url)
     assert code_value == 200
     body = json.loads(raw)
-    assert body["count"] == 2
+    assert body["count"] == 1
     assert body["payload"]
 
 
@@ -307,13 +309,15 @@ def test_the_subs_screen_shows_the_aggregate(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     bot.state.xray = filled()
     bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net:8443"
+    bot.state.xray.tunnel_enabled = True
     rows = bot.xray.sub_rows()
     assert any(item[0] == "one link for everything" for item in rows)
     from BOT import xscreens
 
     html = xscreens.subs_screen(bot.xray.view(), rows).build()
-    assert "http://203.0.113.10:2096/" in html
-    assert "/json" in html
+    assert "https://obhod-test.tail1234.ts.net:8443/" in html
+    assert "/json" not in html
 
 
 def test_the_subs_screen_never_shows_a_loopback_link(tmp_path: Path) -> None:
@@ -328,8 +332,8 @@ def test_the_subs_screen_never_shows_a_loopback_link(tmp_path: Path) -> None:
     html = xscreens.subs_screen(bot.xray.view(), rows).build()
     assert "127.0.0.1" not in html
     assert "http://" not in html
-    assert i18n.t("XR_SUBS_NO_ADDRESS", "en") in html
-    assert i18n.t("XR_SUBS_SET_ADDRESS", "en") in html
+    assert "<table" not in html
+    assert i18n.t("XR_SUBS_NO_DOMAIN", "en") in html
 
 
 def test_a_freeturn_link_lands_in_the_bundle(tmp_path: Path) -> None:
@@ -340,7 +344,8 @@ def test_a_freeturn_link_lands_in_the_bundle(tmp_path: Path) -> None:
     bot.freeturn.state.remember("owner", "freeturn://abcdef")
     bundle = bot.xray.sub_bundle("203.0.113.5")
     assert bundle is not None
-    assert "freeturn://abcdef" in bundle.links
+    assert "freeturn://abcdef" not in bundle.links
+    assert all(item.startswith("vless://") for item in bundle.links)
 
 
 def test_a_busy_port_is_reported_and_not_started(tmp_path: Path) -> None:
@@ -386,9 +391,9 @@ def test_every_client_key_reaches_the_aggregate_bundle_once() -> None:
     ]
     bundle = subs.aggregate(state, extra, "203.0.113.10", 2096)
     links = bundle.links
-    assert len(links) == 8
-    assert links[-2:] == extra
-    assert all(item.startswith("freeturn://") or item.startswith("vless://") for item in links)
+    assert len(links) == 6
+    assert not any(item.startswith("freeturn://") for item in links)
+    assert all(item.startswith("vless://") for item in links)
     assert len(set(links)) == len(links)
     for name in ("owner", "phone1", "laptop"):
         assert sum(1 for item in links if item.rsplit("#", 1)[-1].endswith("-%s" % name) or "-%s-" % name in item.rsplit("#", 1)[-1] or item.rsplit("#", 1)[-1].startswith("%s-" % name)) == 2
@@ -563,7 +568,8 @@ def test_the_registry_always_holds_exactly_one_entry() -> None:
     registry = state.sub_registry("203.0.113.10", ["freeturn://" + "c" * 40])
     assert len(registry["entries"]) == 1
     entry = list(registry["entries"].values())[0]
-    assert len(entry["links"]) == 12 + 1
+    assert len(entry["links"]) == 12
+    assert not any(item.startswith("freeturn://") for item in entry["links"])
     canonical = state.canonical_clients()[0]
     assert entry["key"] == canonical.sub_key
     again = state.sub_registry("203.0.113.10", ["freeturn://" + "c" * 40])
@@ -619,23 +625,22 @@ def test_the_subs_screen_keeps_one_link_and_folds_the_rest() -> None:
     bot = make_bot(Path("/tmp"))
     state = filled()
     state.sub_address = "203.0.113.10"
-    state.tunnel_host = "obhod-test.tail1234.ts.net"
+    state.tunnel_host = "obhod-test.tail1234.ts.net:8443"
     state.tunnel_enabled = True
     bot.state.xray = state
     html = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).build()
     assert len(bot.xray.sub_rows()) == 1
     assert html.count("xr:subs:apply") == 1
-    assert html.count("https://obhod-test.tail1234.ts.net/") == 2
-    assert html.count("<details><summary>") == 3
-    assert "<pre>https://obhod-test.tail1234.ts.net/" in html
+    assert "https://obhod-test.tail1234.ts.net:8443/" in html
+    assert html.count("<details><summary>") == 2
+    assert "<pre>https://obhod-test.tail1234.ts.net:8443/" in html
     head = html.split("<details>")[0]
     assert head.count("vless://") == 0
     bundle = bot.xray.sub_bundle("obhod-test.tail1234.ts.net")
     tail = html.split("<details><summary>")[-1]
     assert tail.count("vless://") == len(bundle.links)
     assert len(bundle.links) >= 1
-    assert i18n.t("XR_SUBS_LINKS_MORE", "en", count=max(len(bundle.links) - 10, 0)) in html or len(bundle.links) <= 10
-    assert "/json" in html
+    assert "/json" not in html
 
 
 def test_the_subs_screen_has_no_per_client_link() -> None:
@@ -645,6 +650,8 @@ def test_the_subs_screen_has_no_per_client_link() -> None:
     bot = make_bot(Path("/tmp"))
     state = filled()
     state.sub_address = "203.0.113.10"
+    state.tunnel_host = "obhod-test.tail1234.ts.net:8443"
+    state.tunnel_enabled = True
     bot.state.xray = state
     rows = bot.xray.sub_rows()
     assert [item[0] for item in rows] == [i18n.t("XR_SUBS_ONE", "en")]

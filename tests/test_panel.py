@@ -987,7 +987,7 @@ def test_the_domain_screen_shows_the_masked_key(tmp_path: Path) -> None:
     html = item.dom_screen(item.view()).build()
     assert "tskey-auth-k7...4567" in html
     assert "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567" not in html
-    assert html.count('switch_inline_query_current_chat') == 2
+    assert html.count('switch_inline_query_current_chat') == 1
 
 
 def test_the_key_arrives_through_the_inline_button_and_never_through_a_message(tmp_path: Path) -> None:

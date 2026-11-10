@@ -118,8 +118,6 @@ def home(view: View) -> Any:
         ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
         ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
         ("shield", t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),
-        ("settings", t("HOME_LABEL_PROTOCOL"), code(xray.protocol_label())),
-        ("settings", t("HOME_LABEL_ENCRYPTION"), code(xray.encryption_label())),
     ]
     if xray.inbounds:
         facts.extend(("xray", f"{item.id} {item.remark}", code(f"{item.port} {item.network} {item.security}")) for item in xray.inbounds)
@@ -224,8 +222,6 @@ def settings(view: View) -> Any:
     blocks = banner(view, t)
     pairs = [
         ("star", t("SET_EMOJI"), code(t("SET_EMOJI_ON") if view.emoji_on else t("SET_EMOJI_OFF"))),
-        ("link", t("SET_SUB_PORT"), code(view.state.sub_port)),
-        ("link", t("SET_SUB_ADDRESS"), code(xray.sub_address or t("UI_NOT_SET"))),
         ("link", t("SET_SUB_PATH"), code(xray.sub_path_pattern())),
         ("tag", t("SET_CORE_VERSION"), code(xray.version)),
     ]
@@ -233,15 +229,8 @@ def settings(view: View) -> Any:
     target = next((item for item in xray.inbounds if item.security in {"reality", "tls"}), None)
     extra_pairs = [
         ("logs", t("SET_LOG_LEVEL"), code(xray.log_level)),
-        ("target", t("SET_TARGETS"), code(len(xray.scan_targets))),
-        ("info", t("SET_CANDIDATES"), code(len(xray.candidates()))),
-        ("scan", t("SET_SCAN_SNI"), code(xray.scan_sni or t("UI_NONE"))),
         ("world", t("SET_API_PORT"), code(xray.api_port)),
-        ("logs", t("SET_ACCESS_LOG"), code(xray.access_log)),
         ("world", t("SET_DNS"), code(xray.dns_csv() or t("UI_NONE"))),
-        ("clock", t("SET_SSH_BANTIME"), code(xray.fail2ban_ssh_bantime)),
-        ("clock", t("SET_SSH_MAXRETRY"), code(str(xray.fail2ban_ssh_maxretry))),
-        ("world", t("SET_IGNOREIP"), code(xray.fail2ban_ignoreip)),
         ("target", t("SET_CHECK_TARGET"), code(target.dest if target else t("UI_NOT_SET"))),
         ("shield", t("XR_SEC_CURRENT"), code(xscreens.security_label(target.security_kind(), view.lang) if target else t("UI_NONE"))),
     ]
@@ -253,7 +242,6 @@ def settings(view: View) -> Any:
         [
             row(button(t("NAV_LANGUAGE"), "nav:lang", icon="language"), emoji_button(t, view)),
             input_row(t("SET_API_PORT"), "xr_api_port", "-", view.lang),
-            input_row(t("SET_ACCESS_LOG"), "xr_access_log", "-", view.lang),
             input_row(t("SET_DNS"), "xr_dns_servers", "-", view.lang),
             row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
         ]

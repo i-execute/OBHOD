@@ -125,12 +125,12 @@ def test_mldsa_screen() -> None:
 def test_subs_screen_shows_path_format() -> None:
     item = view()
     html = xscreens.subs_screen(item, []).to_html()
-    assert i18n.t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN) in html
-    assert i18n.t("XR_SUBS_EMPTY") in html
     assert "xr:subs:apply" not in html
+    assert "xr:dom" not in html
+    assert "<table" not in html
     assert i18n.t("XR_SUBS_NO_DOMAIN") in html
-    assert "xr:dom" in html
-    item.state.tunnel_host = "obhod-test.tail1234.ts.net"
+    assert "switch_inline_query_current_chat" in html
+    item.state.tunnel_host = "obhod-test.tail1234.ts.net:8443"
     item.state.tunnel_enabled = True
     named = xscreens.subs_screen(item, []).to_html()
     assert named.count("xr:subs:apply") == 1
@@ -140,16 +140,17 @@ def test_subs_screen_shows_path_format() -> None:
 def test_subs_screen_keeps_one_link_in_a_collapsed_block() -> None:
     state = XrayState()
     state.sub_address = "203.0.113.10"
+    state.tunnel_host = "obhod-test.tail1234.ts.net:8443"
+    state.tunnel_enabled = True
     state.sub_enabled = True
-    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound = new_inbound("vless", 28443, "raw", "reality")
     inbound.make_client("owner")
     state.add(inbound)
-    bundle = subs.aggregate(state, [], "203.0.113.10", 2096)
+    bundle = subs.aggregate(state, [], "203.0.113.10", 30960)
     html = xscreens.subs_screen(xscreens.XrayView(state=state, lang="en", bundle=bundle, address="203.0.113.10"), []).to_html()
-    assert html.count("<details>") == 3
-    assert bundle.safe_url("203.0.113.10", 2096) in html
-    assert "<td><code>http" not in html
-    assert i18n.t("XR_SUBS_ONE_NOTE", count=len(bundle.links), traffic="0 B") in html
+    assert html.count("<details>") == 2
+    assert subs.url_of(bundle, "203.0.113.10", 30960, state.public_base()) in html
+    assert "/json" not in html
 
 
 def test_core_screen_with_and_without_state() -> None:
@@ -373,15 +374,15 @@ def test_the_domain_screen_renders_in_every_language() -> None:
 
 def test_the_domain_screen_shows_the_https_url_once_the_tunnel_is_on() -> None:
     st = XrayState(sub_address="203.0.113.10")
-    st.tunnel_host = "obhod.tail1234.ts.net"
+    st.tunnel_host = "obhod.tail1234.ts.net:8443"
     st.tunnel_enabled = True
     html = xscreens.domain_screen(xscreens.XrayView(state=st, lang="en"), None).to_html()
-    assert "https://obhod.tail1234.ts.net" in html
+    assert "https://obhod.tail1234.ts.net:8443" in html
     assert "xr:dom:up" in html
     assert i18n.t("DOM_KEY_INPUT") in html
-    assert i18n.t("DOM_HOST_INPUT") in html
 
 
 def test_the_home_screen_has_a_domain_button() -> None:
     html = xscreens.home(view()).to_html()
-    assert 'data="xr:dom"' in html
+    assert 'data="xr:dom"' not in html
+    assert 'data="xr:subs"' in html
