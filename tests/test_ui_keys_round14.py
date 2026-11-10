@@ -188,8 +188,27 @@ def test_simplified_navigation_eliminates_duplicate_hub_and_unknown_routes(tmp_p
     settings_html = screens.settings(bot.view()).to_html()
     assert 'data="nav:quick"' not in settings_html
     assert 'data="xr:fit:"' not in settings_html
-    assert 'data="nav:sshd"' in settings_html
-    assert 'data="nav:ban"' in settings_html
+    assert 'data="nav:sshd"' not in settings_html
+    assert 'data="nav:ban"' not in settings_html
+
+    tools_html = dscreens.home(bot.debug.view()).to_html()
+    for tool_cb in (
+        "ft:fw",
+        "dbg:dd",
+        "nav:ban",
+        "nav:sshd",
+        "dbg:hp",
+        "dbg:ntf",
+        "dbg:chk",
+        "dbg:dpi",
+        "dbg:vk",
+        "dbg:scan",
+        "dbg:trace",
+        "dbg:ports",
+        "dbg:scr",
+        "dbg:info",
+    ):
+        assert f'data="{tool_cb}"' in tools_html, tool_cb
 
     fw_html = tools.fw_screen(dscreens.DbgView(lang="en")).to_html()
     assert 'data="ft:fw"' in fw_html
@@ -290,7 +309,46 @@ def test_ftscreens_shows_install_button_until_installed(tmp_path: Path) -> None:
 
     bot.freeturn.state = FtState(installed=True, running=True)
     installed_html = ftscreens.home(bot.freeturn.view()).to_html()
-    assert i18n.t("FT_BTN_APPLY", "ru") in installed_html
+    plan_installed = ftscreens.plan_screen(bot.freeturn.view()).to_html()
+    assert i18n.t("FT_BTN_INSTALL", "ru") not in installed_html
+    assert i18n.t("FT_BTN_APPLY", "ru") in plan_installed
+
+
+def test_xscreens_back_rows_and_scan_buttons_stay_in_footer_and_localized() -> None:
+    from BOT.scan import ScanResult
+    from BOT.xray import XrayState, new_inbound
+
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.mldsa65_seed = "s" * 32
+    inbound.mldsa65_verify = "v" * 32
+    state.add(inbound)
+    short = ScanResult(
+        target="short.example:443",
+        host="short.example",
+        port=443,
+        feasible=True,
+        tls13=True,
+        h2=True,
+        x25519=True,
+        pq_hybrid=True,
+        cert_valid=True,
+        days_left=30,
+        cert_chain_bytes=1800,
+        ml_dsa_ready=False,
+    )
+    view_ru = xscreens.XrayView(state=state, lang="ru")
+    home_ru = xscreens.home(view_ru).to_html()
+    assert i18n.t("UI_HOME", "ru") in home_ru
+    assert 'data="xr:home"' not in home_ru
+
+    scan_ru = xscreens.scan_screen(view_ru, [short]).to_html()
+    body_part, buttons_part = scan_ru.split("<hr/>", 1)
+    assert "<tg-button-row>" not in body_part
+    assert 'data="xr:scan:fit:0"' in buttons_part
+    assert buttons_part.count('data="xr:home"') == 1
+    assert "3500" in body_part
 
 
 def test_freeturn_agent_locale_env_nft_accept_policy_drop_and_iptables_order(

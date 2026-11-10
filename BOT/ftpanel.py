@@ -250,6 +250,33 @@ class FtPanel:
             port = 0
         return port if 1 <= port <= 65535 else 0
 
+    async def _auto_guard_vk(self, port: int) -> None:
+        if not 1 <= int(port or 0) <= 65535:
+            return
+        if self.guard.get("port") == port and self.guard.get("mode") == "open":
+            return
+        if not isinstance(self.control, FtControl) and "vk" not in fwguard.CACHE:
+            return
+        try:
+            found, _reason = await asyncio.to_thread(fwguard.vk_cidrs)
+        except Exception:
+            found = []
+        if not found:
+            return
+        try:
+            res = await self.control.firewall("vk", port, fwguard.join_cidrs(found), proto=self.guard_proto())
+            self.guard = {
+                "port": res.port,
+                "proto": res.proto,
+                "backend": res.backend,
+                "mode": res.mode,
+                "rules": res.rules,
+                "cidrs": res.cidrs,
+            }
+            self.note("fw", "auto_vk", "%s %s" % (res.mode, res.backend))
+        except Exception:
+            return
+
     async def firewall(self, chat_id: int, msg_id: int, action: str, confirmed: str = "") -> None:
         t = self.tr()
         port = self.guard_port()
@@ -406,6 +433,7 @@ class FtPanel:
         if "owner" in self.state.links:
             self.link = self.state.links["owner"]
             self.name = "owner"
+        await self._auto_guard_vk(int(self.draft.listen_port))
         self.save()
         self.note("apply", "ok", "port=%d" % int(self.draft.listen_port))
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_NOTICE_APPLIED"))))

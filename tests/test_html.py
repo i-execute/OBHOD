@@ -200,3 +200,29 @@ def test_table_headers_come_from_the_catalog() -> None:
     for name, html in render_all():
         for header in re.findall(r"<th>([^<]*)</th>", html):
             assert header in known, (name, header)
+
+
+def test_to_html_preserves_newlines_inside_pre_and_wg_details() -> None:
+    from BOT import ftscreens
+    from BOT.freeturn import FtClient, FtShare, FtState, normalize_conf
+
+    raw_conf = "[Interface]\\nPrivateKey = abcdef123456=\\nAddress = 10.13.13.2/32\\n[Peer]\\nPublicKey = xyz987=\\nEndpoint = 127.0.0.1:18080"
+    conf = normalize_conf(raw_conf)
+    assert "\n" in conf and "\\n" not in conf
+
+    view = ftscreens.FtView(
+        state=FtState(installed=True, running=True),
+        clients=[FtClient(name="owner", owner=True, ip="10.13.13.2/32")],
+        share=FtShare(host="198.51.100.5", port=56120, mode="udp", obf_profile="rtpopus3", key_present=True),
+        link="freeturn://short",
+        conf=conf,
+        lang="ru",
+    )
+    for page in (ftscreens.share_screen(view), ftscreens.client_screen(view, "owner"), ftscreens.logs_screen(ftscreens.FtView(logs=["line1", "line2"]))):
+        wire = page.to_html()
+        pre_blocks = re.findall(r"<pre(?:\s[^>]*)?>(.*?)</pre>", wire, re.S)
+        assert pre_blocks
+        for inner in pre_blocks:
+            assert "<br>" not in inner
+    assert "[Interface]\nPrivateKey = abcdef123456=\nAddress = 10.13.13.2/32\n[Peer]\nPublicKey = xyz987=" in ftscreens.share_screen(view).to_html()
+

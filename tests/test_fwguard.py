@@ -291,8 +291,42 @@ def test_an_unknown_mode_never_crashes_the_screen() -> None:
 
 
 def test_the_freeturn_home_links_the_firewall() -> None:
-    html = ftscreens.home(view_with()).to_html()
-    assert "ft:fw" in html
+    from BOT import dscreens
+
+    tools_html = dscreens.home(dscreens.DbgView()).to_html()
+    assert 'data="ft:fw"' in tools_html
+
+
+def test_vk_asns_cover_all_six_llc_vk_networks() -> None:
+    numbers = tuple(asn for asn, _label in fwguard.ASNS)
+    assert numbers == (47541, 47542, 47764, 28709, 60863, 62243)
+
+
+def test_apply_automatically_enables_vk_firewall_and_respects_manual_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.fakes import FakeFtControl, make_bot
+
+    applied: list[tuple] = []
+
+    class AutoGuardControl(FakeFtControl):
+        async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 0) -> FtGuard:
+            applied.append((mode, port, cidrs, proto))
+            return FtGuard(port=port, proto=proto, backend="nftables", mode=mode, rules=10, cidrs=2)
+
+    monkeypatch.setitem(fwguard.CACHE, "vk", (9999999999.0, ["87.240.128.0/18", "95.142.204.0/23"]))
+    monkeypatch.setattr(fwguard, "vk_cidrs", lambda timeout=0: (["87.240.128.0/18", "95.142.204.0/23"], ""))
+
+    bot = make_bot(tmp_path)
+    bot.freeturn.control = AutoGuardControl()
+    port = bot.freeturn.draft.listen_port
+    asyncio.run(bot.freeturn.apply(1, 0))
+    assert ("vk", port, "87.240.128.0/18,95.142.204.0/23", "udp") in applied
+    assert bot.freeturn.guard["mode"] == "vk"
+
+    applied.clear()
+    bot.freeturn.guard = {"port": port, "proto": "udp", "backend": "nftables", "mode": "open", "rules": 1, "cidrs": 0}
+    asyncio.run(bot.freeturn.apply(1, 0))
+    assert not any(call[0] == "vk" for call in applied)
+    assert bot.freeturn.guard["mode"] == "open"
 
 
 def test_the_panel_applies_the_range_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

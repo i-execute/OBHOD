@@ -91,37 +91,35 @@ def home(view: FtView) -> Any:
     state = view.state
     plan = view.plan
     blocks = banner(view, t)
-    if not state.arch and not state.installed:
-        blocks.append(quote(muted(t("FT_STATE_UNKNOWN"))))
     endpoint = ("%s:%s" % (plan.host, plan.listen_port)) if plan.host else str(plan.listen_port)
-    pairs = [
-        ("info", t("FT_STATE_INSTALLED"), code(yes_no(view.lang, state.installed))),
-        ("info", t("FT_STATE_RUNNING"), code(yes_no(view.lang, state.running))),
-        ("world", t("FT_SHARE_PEER"), code(endpoint)),
-        ("settings", t("FT_STATE_METHOD"), code("%s / %s / %s" % (state.method or plan.method, plan.mode, plan.obf_profile))),
-        ("key", t("FT_STATE_KEY"), code(t("FT_STATE_KEY_SERVER") if state.key_present else t("FT_STATE_KEY_MISSING"))),
-    ]
-    if state.version:
-        pairs.append(("tag", t("FT_STATE_VERSION"), code(state.version)))
-    if view.clients:
-        pairs.append(("users", t("FT_CLIENTS_TITLE"), code(len(view.clients))))
+    if state.installed:
+        pairs = [
+            ("info", t("FT_STATE_RUNNING"), code(yes_no(view.lang, state.running))),
+            ("world", t("FT_SHARE_PEER"), code(endpoint)),
+            ("settings", t("FT_STATE_METHOD"), code("%s / %s / %s" % (state.method or plan.method, plan.mode, plan.obf_profile))),
+        ]
+        if view.clients:
+            pairs.append(("users", t("FT_CLIENTS_TITLE"), code(len(view.clients))))
+        guard_mode = str((view.guard or {}).get("mode", "") or "")
+        if guard_mode in {"vk", "open", "closed"}:
+            pairs.append(("shield", t("FT_FW_MODE"), code(mode_label(t, guard_mode))))
+    else:
+        pairs = [
+            ("info", t("FT_STATE_INSTALLED"), code(yes_no(view.lang, False))),
+            ("world", t("FT_SHARE_PEER"), code(endpoint)),
+            ("settings", t("FT_STATE_METHOD"), code("%s / %s / %s" % (plan.method, plan.mode, plan.obf_profile))),
+        ]
     blocks.append(table(pairs, (t("FT_STATE_TITLE"), t("UI_VALUE"))))
     if state.installed:
         buttons = [
             row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")),
-            row(button(t("FT_BTN_PLAN"), "ft:plan", icon="settings"), button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("FT_BTN_FW"), "ft:fw", icon="shield")),
-            row(
-                button(t("FT_BTN_RESTART"), "ft:restart", icon="restart"),
-                button(t("FT_BTN_STOP"), "ft:stop", icon="stop"),
-                button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"),
-            ),
-            row(button(t("FT_BTN_APPLY"), "ft:apply", icon="ok"), button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"), button(t("UI_HOME"), "nav:home", icon="home")),
+            row(button(t("FT_BTN_PLAN"), "ft:plan", icon="settings"), button(t("FT_BTN_RESTART"), "ft:restart", icon="restart"), button(t("FT_BTN_STOP"), "ft:stop", icon="stop")),
+            row(button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"), button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"), button(t("UI_HOME"), "nav:home", icon="home")),
         ]
     else:
         buttons = [
             row(button(t("FT_BTN_INSTALL"), "ft:apply", icon="ok"), button(t("FT_BTN_PLAN"), "ft:plan", icon="settings")),
-            row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("FT_BTN_FW"), "ft:fw", icon="shield"), button(t("FT_BTN_LOGS"), "ft:logs", icon="logs")),
-            row(button(t("UI_HOME"), "nav:home", icon="home")),
+            row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("UI_HOME"), "nav:home", icon="home")),
         ]
     return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, icon="tunnel")
 
@@ -153,9 +151,9 @@ def fw_screen(view: FtView) -> Any:
     buttons = [
         row(button(t("FT_FW_BTN_VK"), "ft:fw:vk", icon="shield"), button(t("FT_FW_BTN_OPEN"), "ft:fw:open", icon="unlock")),
         row(button(t("FT_FW_BTN_CLOSE"), "ft:fw:closed", icon="lock"), button(t("UI_REFRESH"), "ft:fw", icon="shield")),
-        row(button(t("FT_BTN_HOME"), "ft:home", icon="tunnel"), button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("FT_BTN_HOME"), "ft:home", icon="tunnel"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    return screen(t("FT_FW_TITLE"), t("FT_FW_SUBTITLE"), blocks, buttons, footer=t("FT_FOOTER"), icon="shield")
+    return screen(t("FT_FW_TITLE"), t("FT_FW_SUBTITLE"), blocks, buttons, icon="shield")
 
 
 def plan_screen(view: FtView) -> Any:
@@ -256,7 +254,6 @@ def clients_screen(view: FtView) -> Any:
             kind = t("FT_CLIENTS_OWNER") if item.owner else t("FT_CLIENTS_GUEST")
             rows.append(("user", item.name, "%s %s %s" % (kind, usage_line(usage, view.lang), tone(usage, view.lang))))
         blocks.append(table(rows, (t("FT_CLIENTS_TITLE"), t("FT_CLIENTS_SUBTITLE"))))
-        blocks.append(f"<p>{muted(t('FT_CLIENT_LINK_NOTE'))}</p>")
         total = view.totals or {}
         if total:
             blocks.append(
@@ -274,18 +271,6 @@ def clients_screen(view: FtView) -> Any:
         blocks.append(quote(muted(t("FT_CLIENTS_EMPTY"))))
     if view.traffic_error:
         blocks.append(quote(muted(view.traffic_error)))
-    if view.share is not None and view.share.peer():
-        blocks.append(
-            table(
-                [
-                    ("link", t("FT_SHARE_PEER"), code(view.share.peer())),
-                    ("settings", t("FT_SHARE_MODE"), code(view.share.mode or "-")),
-                    ("lock", t("FT_SHARE_OBF"), code(view.share.obf_profile or "-")),
-                    ("key", t("FT_SHARE_KEY"), code(t("FT_SHARE_KEY_HIDDEN") if view.share.key_present else t("FT_STATE_KEY_MISSING"))),
-                ],
-                (t("FT_SHARE_TITLE"), t("UI_VALUE")),
-            )
-        )
     buttons = [input_row(t("FT_BTN_CLIENT_ADD"), "ft_client", "-", view.lang)]
     buttons.append(row(button(t("FT_BTN_REFRESH"), "ft:clients:%d" % (view.page + 1), icon="users"), button(t("FT_BTN_TRAFFIC"), "ft:tr:%d" % (view.page + 1), icon="chart")))
     for item in view.page_rows():
@@ -300,20 +285,18 @@ def clients_screen(view: FtView) -> Any:
 def client_screen(view: FtView, name: str) -> Any:
     t = view.tr()
     blocks = banner(view, t)
-    blocks.append(f"<p>{t('FT_CLIENT_LINK_READY')}</p>")
     client = next((item for item in view.clients if item.name == name), None)
     usage = view.usage_of(name)
     pairs = [
         ("user", t("FT_CLIENTS_SUBTITLE"), code(t("FT_CLIENTS_OWNER") if client is not None and client.owner else t("FT_CLIENTS_GUEST"))),
-        ("tag", t("FT_CLIENT_ID"), code(client.client_id if client is not None and client.client_id else t("UI_NONE"))),
         ("world", t("FT_CLIENTS_IP"), code(client.ip if client is not None and client.ip else "-")),
         ("clock", t("FT_CLIENTS_HANDSHAKE"), code(client.handshake if client is not None and client.handshake else t("FT_CLIENTS_NEVER"))),
+        ("chart", t("FT_TRAFFIC_TOTAL"), code(traffic.human(usage.total if usage else 0))),
     ]
     blocks.append(table(pairs, (t("FT_CLIENT_TITLE", name=name), t("UI_VALUE"))))
     traffic_pairs = [
         ("save", t("FT_TRAFFIC_RX"), code(traffic.human(usage.rx if usage else 0))),
         ("link", t("FT_TRAFFIC_TX"), code(traffic.human(usage.tx if usage else 0))),
-        ("chart", t("FT_TRAFFIC_TOTAL"), code(traffic.human(usage.total if usage else 0))),
         ("calendar", t("FT_TRAFFIC_DAY"), code("%s / %s" % (traffic.human(usage.day_rx if usage else 0), traffic.human(usage.day_tx if usage else 0)))),
         ("update", t("FT_TRAFFIC_SPEED"), code("%s / %s" % (traffic.speed(usage.down if usage else 0), traffic.speed(usage.up if usage else 0)))),
         ("clock", t("FT_TRAFFIC_LAST"), code(tone(usage, view.lang))),
@@ -321,10 +304,9 @@ def client_screen(view: FtView, name: str) -> Any:
     ]
     if usage is not None and usage.first_at:
         traffic_pairs.append(("calendar", t("FT_TRAFFIC_FIRST"), code(traffic.stamp(usage.first_at))))
-    blocks.append(table(traffic_pairs, (t("FT_TRAFFIC_TITLE"), t("UI_VALUE"))))
+    blocks.append(details(t("FT_TRAFFIC_TITLE"), table(traffic_pairs, (t("FT_TRAFFIC_TITLE"), t("UI_VALUE")))))
     if view.traffic_error:
         blocks.append(quote(muted(view.traffic_error)))
-    blocks.append(f"<p>{muted(t('FT_CLIENT_LINK_NOTE'))}</p>")
     buttons = []
     if view.link:
         link_button, link_block = fitted(t("FT_BTN_LINK"), view.link, view.lang)
@@ -334,12 +316,11 @@ def client_screen(view: FtView, name: str) -> Any:
             blocks.append(link_block)
     if view.conf:
         blocks.append(long_block(t("FT_BTN_CONF"), view.conf))
-        blocks.append(f"<p>{muted(t('FT_CLIENT_CONF_NOTE'))}</p>")
     buttons.append(row(button(t("FT_BTN_REFRESH_TRAFFIC"), "ft:cl:%s:t" % name, icon="refresh")))
     if client is None or not client.owner:
         buttons.append(row(button(t("FT_BTN_REMOVE"), "ft:rm:%s" % name, icon="delete")))
     buttons.append(row(button(t("FT_BTN_CLIENTS"), "ft:clients:%d" % (view.page + 1), icon="users"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home", icon="tunnel")))
-    return screen(t("FT_CLIENT_TITLE", name=name), t("FT_CLIENTS_SUBTITLE"), blocks, buttons, icon="user")
+    return screen(t("FT_CLIENT_TITLE", name=name), client.ip if client and client.ip else "", blocks, buttons, icon="user")
 
 
 def traffic_screen(view: FtView) -> Any:
@@ -384,12 +365,9 @@ def share_screen(view: FtView) -> Any:
         return screen(t("FT_SHARE_TITLE"), "", blocks, [back_row(view.lang)], icon="gift")
     pairs = [
         ("link", t("FT_SHARE_PEER"), code(view.share.peer())),
-        ("settings", t("FT_SHARE_MODE"), code(view.share.mode or "-")),
-        ("link", t("FT_SHARE_OBF"), code(view.share.obf_profile or "-")),
-        ("key", t("FT_SHARE_KEY"), code(t("FT_SHARE_KEY_HIDDEN") if view.share.key_present else t("FT_STATE_KEY_MISSING"))),
+        ("settings", t("FT_SHARE_MODE"), code("%s / %s" % (view.share.mode or "-", view.share.obf_profile or "-"))),
     ]
     blocks.append(table(pairs, (t("FT_SHARE_TITLE"), t("UI_VALUE"))))
-    blocks.append(f"<p>{muted(t('FT_CLIENT_LINK_NOTE'))}</p>")
     buttons = []
     if view.link:
         link_button, link_block = fitted(t("FT_BTN_LINK"), view.link, view.lang)
@@ -400,7 +378,7 @@ def share_screen(view: FtView) -> Any:
     if view.conf:
         blocks.append(long_block(t("FT_BTN_CONF"), view.conf))
     buttons.append(back_row(view.lang))
-    return screen(t("FT_SHARE_TITLE"), t("FT_SHARE_KEY_HIDDEN"), blocks, buttons, icon="gift")
+    return screen(t("FT_SHARE_TITLE"), view.share.peer(), blocks, buttons, icon="gift")
 
 
 def logs_screen(view: FtView) -> Any:
