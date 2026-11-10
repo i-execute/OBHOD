@@ -142,10 +142,12 @@ def test_the_home_screen_survives_an_empty_state() -> None:
     assert i18n.t("CORE_STATE_MISSING") in html
 
 
-def test_the_home_screen_marks_the_active_core() -> None:
+def test_the_home_screen_keeps_core_labels_clean() -> None:
     state = State(xray=XrayState(), core="freeturn")
     html = screens.home(screens.View(state=state, core={})).build()
-    assert i18n.t("UI_ACTIVE_MARK") in html
+    assert i18n.t("UI_ACTIVE_MARK") not in html
+    assert i18n.t("CORE_NAME_XRAY") in html
+    assert i18n.t("CORE_NAME_FREETURN") in html
 
 
 def test_the_core_count_survives_a_reload(tmp_path: Path) -> None:
@@ -179,10 +181,11 @@ def test_the_card_detail_lists_the_state_version_ports_and_clients() -> None:
     assert card.state_text(lambda key: i18n.t(key, "en")) in detail
 
 
-def test_the_card_label_marks_the_active_core() -> None:
+def test_the_card_label_stays_clean_without_active_mark() -> None:
     card = cores.freeturn_card(None, 0, "freeturn")
     assert card.active is True
-    assert i18n.t("UI_ACTIVE_MARK") in card.label(lambda key: i18n.t(key, "en"))
+    assert card.label(lambda key: i18n.t(key, "en")) == i18n.t("CORE_NAME_FREETURN", "en")
+    assert i18n.t("UI_ACTIVE_MARK") not in card.label(lambda key: i18n.t(key, "en"))
 
 
 def test_the_home_buttons_stack_one_core_per_row() -> None:

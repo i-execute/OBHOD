@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from . import ftscreens, fwguard, i18n, traffic
+from . import ftscreens, fwguard, i18n, portguard, traffic
 from .freeturn import (
     BACKENDS,
     DEFAULT_LISTEN_PORT,
@@ -258,13 +258,22 @@ class FtPanel:
         if not isinstance(self.control, FtControl) and "vk" not in fwguard.CACHE:
             return
         try:
-            found, _reason = await asyncio.to_thread(fwguard.vk_cidrs)
+            extra = [int(getattr(getattr(self.bot.state, "panel", None), "port", 0) or 0)]
+            keep = portguard.protected_ports(self.bot.state, extra)
+            portguard.check(port, keep, "vk")
         except Exception:
-            found = []
+            return
+        try:
+            found, reason = await asyncio.to_thread(fwguard.vk_cidrs)
+        except Exception:
+            found, reason = [], "unreachable"
         if not found:
             return
         try:
-            res = await self.control.firewall("vk", port, fwguard.join_cidrs(found), proto=self.guard_proto())
+            if isinstance(self.control, FtControl):
+                res = await self.control.firewall("vk", port, fwguard.join_cidrs(found), proto=self.guard_proto(), keep=portguard.join(keep))
+            else:
+                res = await self.control.firewall("vk", port, fwguard.join_cidrs(found), proto=self.guard_proto())
             self.guard = {
                 "port": res.port,
                 "proto": res.proto,
@@ -273,6 +282,19 @@ class FtPanel:
                 "rules": res.rules,
                 "cidrs": res.cidrs,
             }
+            dbg_panel = getattr(self.bot, "debug", None)
+            if dbg_panel is not None and isinstance(getattr(dbg_panel, "vk", None), dict):
+                dbg_panel.vk = {
+                    "cidrs": list(found),
+                    "applied": list(found),
+                    "guard": dict(self.guard),
+                    "reason": reason or "ok",
+                    "domains": [holder for _asn, holder in fwguard.ASNS],
+                    "asns": fwguard.holders(),
+                    "added": [],
+                    "removed": [],
+                    "changed": False,
+                }
             self.note("fw", "auto_vk", "%s %s" % (res.mode, res.backend))
         except Exception:
             return

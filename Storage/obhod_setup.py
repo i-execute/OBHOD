@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import re
 import select
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 OK = "ok"
@@ -23,6 +25,28 @@ DEFAULT_PREFIX = "/opt/obhod"
 DEFAULT_STATE = "/var/lib/obhod"
 DEFAULT_ENV = "/etc/obhod/obhod.env"
 MAX_WIDTH = 90
+INLINE_WARN_TEXT = "THE BOT IS ALIVE AND WILL BE CONFIGURED, BUT ENABLE INLINE MODE"
+
+
+def probe_bot_inline(token: str, timeout: float = 5.0) -> tuple[bool, bool | None, str]:
+    tok = str(token or "").strip()
+    if not tok or ":" not in tok or "dry-run-sample" in tok:
+        return False, None, ""
+    url = "https://api.telegram.org/bot%s/getMe" % tok
+    req = urllib.request.Request(url, headers={"User-Agent": "obhod-setup/2"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read(32768).decode("utf-8", "replace"))
+    except Exception:
+        return False, None, ""
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return False, None, ""
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return True, None, ""
+    uname = str(result.get("username") or "")
+    supports = result.get("supports_inline_queries")
+    return True, (bool(supports) if isinstance(supports, bool) else None), uname
 MIN_WIDTH = 44
 ESC_TIMEOUT = 0.15
 SEQ_TIMEOUT = 0.25
@@ -1811,8 +1835,25 @@ class Setup:
             values[name.strip()] = value.strip().strip('"').strip("'")
         return values
 
+    def warn_if_inline_disabled(self, token: str) -> None:
+        if self.dry_run:
+            return
+        alive, supports, uname = probe_bot_inline(token)
+        if alive and supports is False:
+            handle = ("@" + uname) if uname else "@your_bot"
+            red_line = "\033[1;31m" + INLINE_WARN_TEXT + "\033[0m"
+            rows = [
+                mark(BAD) + " " + paint(INLINE_WARN_TEXT, theme.bad, theme.bold),
+                paint("BotFather -> /setinline -> " + handle, theme.warn, theme.bold),
+            ]
+            panel("inline warning", rows, width(), theme.bad)
+            write("  " + red_line)
+
     def read_credentials(self) -> bool:
         if self.action not in ("install", "reinstall"):
+            saved_tok = self.read_env_file().get("BOT_TOKEN", "")
+            if saved_tok:
+                self.warn_if_inline_disabled(saved_tok)
             return True
         existing = {} if self.purge_all else self.read_env_file()
         for name in ("BOT_TOKEN", "API_ID", "API_HASH", "ADMIN_ID"):
@@ -1840,6 +1881,7 @@ class Setup:
                 mark(OK) + " " + fact("admin id", self.credentials["ADMIN_ID"]),
             ]
             section(5, "Telegram Credentials", rows, theme.good, "reused")
+            self.warn_if_inline_disabled(self.credentials["BOT_TOKEN"])
             return True
         if not has_tty() and not all_valid:
             self.notes.append("interactive terminal is required to enter Telegram credentials")
@@ -1857,6 +1899,7 @@ class Setup:
             return False
         for field in fields:
             self.credentials[field.name] = field.value
+        self.warn_if_inline_disabled(self.credentials["BOT_TOKEN"])
         return True
 
     def write_env_file(self) -> bool:

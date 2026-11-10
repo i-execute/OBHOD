@@ -228,7 +228,8 @@ def test_the_field_is_registered_for_the_inline_input() -> None:
     results = inline.results_for("%s 89.125.48.221" % token, lang="en")
     assert results
     body = results[0]["input_message_content"]["message_text"]
-    token_out, kind, index, payload = inline.parse_payload(body)
+    assert body == inline.MARKER
+    token_out, kind, index, payload = inline.consume_pending()
     assert inline.value_from_payload(token_out, kind, index, payload, "en") == "89.125.48.221"
 
 

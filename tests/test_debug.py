@@ -199,14 +199,16 @@ def test_the_emoji_switch_is_live_and_survives_a_restart(tmp_path: Path) -> None
     assert bot.state.emoji is False
 
 
-def test_the_emoji_button_is_on_the_home_screen(tmp_path: Path) -> None:
+def test_the_emoji_button_is_in_settings_and_not_home(tmp_path: Path) -> None:
     from BOT import screens
     from BOT.store import State
 
     ui.use_icons(False)
-    html = screens.home(screens.View(state=State())).to_html()
-    assert 'data="nav:emoji"' in html
-    assert i18n.t("NAV_EMOJI_OFF") in html
+    home_html = screens.home(screens.View(state=State())).to_html()
+    assert 'data="nav:emoji"' not in home_html
+    settings_html = screens.settings(screens.View(state=State())).to_html()
+    assert 'data="nav:emoji"' in settings_html
+    assert i18n.t("NAV_EMOJI_OFF") in settings_html
 
 
 def test_the_info_screen_shows_the_cores(tmp_path: Path) -> None:

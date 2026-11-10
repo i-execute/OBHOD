@@ -725,7 +725,49 @@ heal_state_files() {
   fi
 }
 
+auto_tune_sysctl() {
+  [ "$DEV" = "0" ] || return 0
+  [ "$(id -u)" = "0" ] || return 0
+  mkdir -p /etc/sysctl.d 2>/dev/null || return 0
+  cat > /etc/sysctl.d/99-obhod-auto.conf <<'EOF'
+net.ipv4.ip_forward = 1
+net.mptcp.enabled = 0
+net.ipv4.tcp_migrate_req = 0
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+  chmod 644 /etc/sysctl.d/99-obhod-auto.conf 2>/dev/null || true
+  sysctl --system >/dev/null 2>&1 || true
+}
+
+check_bot_inline_mode() {
+  local tok="$1"
+  [ -n "$tok" ] || return 0
+  local py="${PYTHON_BIN:-python3}"
+  command -v "$py" >/dev/null 2>&1 || py="python3"
+  command -v "$py" >/dev/null 2>&1 || return 0
+  OBHOD_PROBE_TOKEN="$tok" "$py" -c '
+import json, os, sys, urllib.request
+tok = os.environ.get("OBHOD_PROBE_TOKEN", "").strip()
+if not tok or ":" not in tok:
+    raise SystemExit(0)
+try:
+    req = urllib.request.Request("https://api.telegram.org/bot%s/getMe" % tok, headers={"User-Agent": "obhod-install/1"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        data = json.loads(r.read(32768).decode("utf-8", "replace"))
+except Exception:
+    raise SystemExit(0)
+res = data.get("result") if isinstance(data, dict) and data.get("ok") else None
+if isinstance(res, dict) and res.get("supports_inline_queries") is False:
+    uname = str(res.get("username") or "").strip()
+    handle = ("@" + uname) if uname else "@your_bot"
+    msg = "THE BOT IS ALIVE AND WILL BE CONFIGURED, BUT ENABLE INLINE MODE (BotFather -> /setinline -> %s)" % handle
+    sys.stderr.write("\n  \033[1;31m%s\033[0m\n\n" % msg)
+' || true
+}
+
 heal_system() {
+    auto_tune_sysctl || true
   heal_state_files
   [ "$DEV" = "0" ] || return 0
   mkdir -p -m 700 /root/.goygram /root/.ssh /var/tmp/obhod-stage
@@ -990,6 +1032,7 @@ cmd_install() {
   esac
   [ "${#api_hash}" = "32" ] || { fail_line "api_hash must be 32 hex characters"; die "api_hash must be 32 hex characters"; }
   ok_line "token ${token%%:*}:***, admin $admin_id"
+  check_bot_inline_mode "$token"
 
   step "checking for a previous install"
   REBUILD=0

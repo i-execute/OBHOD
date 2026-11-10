@@ -354,6 +354,17 @@ class XrayPanel:
         index = values.index(current) if current in values else 0
         self.draft[key] = values[(index + 1) % len(values)]
 
+    async def auto_apply_live(self) -> None:
+        if not isinstance(self.control, XrayControl) or os.geteuid() != 0:
+            return
+        try:
+            config = self.state.to_config()
+            applied = await self.control.apply(self.bot.state.ssh, config, version=self.state.install_version())
+            self.core = state_report(applied)
+            self.save()
+        except Exception as exc:
+            log.debug("auto apply skipped: %s", exc)
+
     async def create_quick(self, chat_id: int, msg_id: int, security: str, network: str, port: str = "") -> None:
         if network not in NETWORKS:
             raise PanelError(f"the network {network} is not supported")
@@ -370,6 +381,7 @@ class XrayPanel:
         self.state.add(inbound)
         inbound.make_client("owner")
         self.save()
+        await self.auto_apply_live()
         notice = self.tr()("NOTICE_INBOUND_CREATED")
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
 
@@ -389,6 +401,7 @@ class XrayPanel:
         inbound.make_client("owner")
         self.draft = {}
         self.save()
+        await self.auto_apply_live()
         notice = self.tr()("NOTICE_INBOUND_CREATED")
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
 

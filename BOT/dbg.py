@@ -316,6 +316,8 @@ class DebugPanel:
             return
         self.vk["applied"] = list(cidrs)
         self.vk["guard"] = guard.to_dict() if hasattr(guard, "to_dict") else {}
+        if hasattr(self.bot, "freeturn"):
+            self.bot.freeturn.guard = dict(self.vk["guard"])
         self.note("vk", "applied", str(len(cidrs)))
         await self.render(chat_id, msg_id, dscreens.vk_screen(self.view(notice=t("DBG_VK_CHANGED"))))
 
@@ -422,6 +424,7 @@ class DebugPanel:
         t = self.tr()
         self.honey_busy = False
         if action in ("", "open", "refresh"):
+            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
             await self.honey_refresh()
             await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view()))
             return
@@ -469,6 +472,7 @@ class DebugPanel:
         t = self.tr()
         self.ddos_busy = False
         if action in ("", "open", "refresh"):
+            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
             await self.ddos_refresh(probe=action == "open")
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
             return
@@ -479,6 +483,7 @@ class DebugPanel:
             if not self.cooled("dd:probe", DDOS_COOLDOWN):
                 await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DBG_LIMIT"))))
                 return
+            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
             await self.ddos_refresh(probe=True)
             self.note("dd", "probe", "ok")
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
@@ -593,12 +598,15 @@ class DebugPanel:
         if action not in ("check", "probe", "both", "net"):
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
             return
-        if not self.cooled("chk:" + action, CHK_COOLDOWN):
+        if action != "net" and not self.cooled("chk:" + action, CHK_COOLDOWN):
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("CHK_TOO_FAST"))))
             return
         if action == "net":
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=t("CHK_RUNNING_NET"))))
-            probe = await asyncio.to_thread(chebur.reach)
+            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("CHK_RUNNING_NET")))
+            try:
+                probe = await asyncio.wait_for(asyncio.to_thread(chebur.reach), REACH_LIMIT)
+            except (chebur.CheburError, OSError, asyncio.TimeoutError):
+                probe = chebur.Reach(host=chebur.HOST, error="timeout")
             answer = self.chebur if self.chebur is not None else chebur.Answer(target=target, at=0.0)
             answer.reach = probe
             if not probe.reachable():
@@ -621,6 +629,7 @@ class DebugPanel:
         if _kind in ("ip", "subnet"):
             self.target = host
         wants_live = action in ("probe", "both")
+        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
         answer = chebur.Answer(target=host, at=0.0)
         try:
             answer.registry = await asyncio.to_thread(chebur.check, host)
@@ -648,7 +657,7 @@ class DebugPanel:
             self.remember("chk %s %s" % (host, answer.verdict()))
             await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
             return
-        await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=t("CHK_RUNNING", value=answer.registry.geo.label()))))
+        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("CHK_RUNNING", value=answer.registry.geo.label())))
         try:
             live = await asyncio.wait_for(asyncio.to_thread(chebur.probe, answer.registry.context, chebur.PROBE_DEADLINE, None), CHEBUR_LIMIT)
         except (chebur.CheburError, OSError, asyncio.TimeoutError) as exc:

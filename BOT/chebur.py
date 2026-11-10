@@ -28,8 +28,8 @@ DOMAIN_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(\.(?!-)[a-z0-9-]{1,63})+$")
 CIDR_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$")
 ASN_RE = re.compile(r"^(?:as)?(\d{1,10})$")
 COMPLAINT_DAYS = 14
-REACH_TIMEOUT = 8.0
-REACH_ATTEMPTS = 2
+REACH_TIMEOUT = 3.5
+REACH_ATTEMPTS = 1
 STREAM_DONE = ("done", "completed", "finished", "ended")
 STREAM_FAIL = ("error", "failed")
 PROBE_KINDS = ("ip", "domain")
@@ -248,24 +248,24 @@ def reach(timeout: float = REACH_TIMEOUT) -> Reach:
     out = Reach(at=time.time())
     started = time.time()
     infos: list[Any] = []
-    for family in (socket.AF_INET, socket.AF_UNSPEC, socket.AF_INET):
-        for _attempt in range(REACH_ATTEMPTS):
-            try:
-                infos = socket.getaddrinfo(HOST, PORT, family, socket.SOCK_STREAM)
-            except (socket.gaierror, OSError) as exc:
-                out.error = str(exc)[:120]
-                continue
-            break
+    for family in (socket.AF_INET, socket.AF_UNSPEC):
+        try:
+            infos = socket.getaddrinfo(HOST, PORT, family, socket.SOCK_STREAM)
+        except (socket.gaierror, OSError) as exc:
+            out.error = str(exc)[:120]
+            continue
         if infos:
             break
     if infos:
-        out.addresses = sorted({str(item[4][0]) for item in infos if item[4]})[:4]
+        v4 = sorted({str(item[4][0]) for item in infos if item[4] and ":" not in str(item[4][0])})
+        v6 = sorted({str(item[4][0]) for item in infos if item[4] and ":" in str(item[4][0])})
+        out.addresses = (v4 + v6)[:4]
         out.dns_ok = bool(out.addresses)
     if not out.dns_ok:
         out.latency = time.time() - started
         out.error = out.error or "the name does not resolve"
         return out
-    for address in out.addresses[:REACH_ATTEMPTS]:
+    for address in out.addresses[:2]:
         handle = None
         try:
             handle = socket.create_connection((address, PORT), timeout=timeout)

@@ -57,8 +57,7 @@ class Card:
         return " ".join(parts)
 
     def label(self, t: Any) -> str:
-        mark = t("UI_ACTIVE_MARK") if self.active else ""
-        return ("%s%s" % (t(self.name), mark)).strip()
+        return str(t(self.name)).strip()
 
 
 REGISTRY: tuple[Core, ...] = (

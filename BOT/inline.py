@@ -125,6 +125,7 @@ OPTIONS: dict[str, tuple[str, ...]] = {
 
 _SECRET: bytes = os.urandom(32)
 _REGISTRY: dict[str, tuple[str, str, str]] = {}
+_PENDING: list[tuple[str, str, int, str]] = []
 
 
 def configure(secret: str = "") -> None:
@@ -137,6 +138,18 @@ def configure(secret: str = "") -> None:
     else:
         _SECRET = os.urandom(32)
     _REGISTRY.clear()
+    _PENDING.clear()
+
+
+def remember_pending(token: str, kind: str, index: int, value: str) -> None:
+    _PENDING.clear()
+    _PENDING.append((str(token or ""), str(kind or KIND_INPUT), int(index), str(value or "")))
+
+
+def consume_pending() -> tuple[str, str, int, str]:
+    if not _PENDING:
+        return "", "", -1, ""
+    return _PENDING.pop(0)
 
 
 def field(ident: str) -> Field:
@@ -239,6 +252,36 @@ def article(rid: str, title: str, description: str, text: str, src: str) -> dict
     }
 
 
+def html_article(rid: str, title: str, description: str, html_text: str, src: str) -> dict:
+    ident = rid if len(rid) <= 64 else rid[:64]
+    if src == "mt":
+        from goygram.sugar import html_to_entities
+
+        plain, ents = html_to_entities(html_text)
+        msg: dict[str, object] = {"_": "inputBotInlineMessageText", "no_webpage": True, "message": plain}
+        if ents:
+            msg["entities"] = ents
+        return {
+            "_": "inputBotInlineResult",
+            "id": ident,
+            "type": "article",
+            "title": title[:120],
+            "description": description[:240],
+            "send_message": msg,
+        }
+    return {
+        "type": "article",
+        "id": ident,
+        "title": title[:120],
+        "description": description[:240],
+        "input_message_content": {
+            "message_text": html_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+    }
+
+
 def parse_query(query: str) -> tuple[str, str]:
     raw = CONTROL.sub("", str(query or "")).strip()
     if not raw:
@@ -338,14 +381,15 @@ def input_article(token: str, item: Field, value: str, current: str, lang: str, 
         description = item.hint(lang)
         if item.example:
             description = i18n.t("INL_HINT_EXAMPLE", lang, hint=description, example=item.example)
-    return article("%s:%s" % (KIND_INPUT, token), title, description, payload_text(token, KIND_INPUT, -1, value), src)
+    remember_pending(token, KIND_INPUT, -1, value)
+    return article("%s:%s" % (KIND_INPUT, token), title, description, MARKER, src)
 
 
 def pick_article(token: str, item: Field, current: str, lang: str, src: str = "bot") -> dict:
     description = item.hint(lang)
     if current:
         description = i18n.t("INL_CURRENT", lang, value=current)
-    return article("%s:%s" % (KIND_INPUT, token), item.label(lang), description, payload_text(token, KIND_INPUT, -1, ""), src)
+    return article("%s:%s" % (KIND_INPUT, token), item.label(lang), description, MARKER, src)
 
 
 def option_article(token: str, index: int, value: str, item: Field, lang: str, src: str = "bot") -> dict:
@@ -354,7 +398,7 @@ def option_article(token: str, index: int, value: str, item: Field, lang: str, s
         "%s:%s:%d" % (KIND_OPTION, token, index),
         shown,
         i18n.t("INL_OPTION_DESC", lang, label=item.label(lang)),
-        payload_text(token, KIND_OPTION, index, ""),
+        MARKER,
         src,
     )
 

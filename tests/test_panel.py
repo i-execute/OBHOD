@@ -1004,8 +1004,9 @@ def test_the_key_arrives_through_the_inline_button_and_never_through_a_message(t
     assert key not in entry["title"]
     assert entry["description"] == i18n.t("INL_SAVE_DESC", bot.state.language)
     body = entry["input_message_content"]["message_text"]
+    assert body == inline.MARKER
     assert key not in body
-    _, kind, index, payload = inline.parse_payload(body)
+    _, kind, index, payload = inline.consume_pending()
     value = inline.value_from_payload(token, kind, index, payload, bot.state.language)
     assert value == key
 

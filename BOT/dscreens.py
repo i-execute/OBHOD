@@ -153,25 +153,28 @@ def trace_screen_view(view: DbgView) -> Any:
 
 
 def vk_screen(view: DbgView) -> Any:
+    from . import fwguard
+
     t = view.tr()
     blocks = banner(view, t)
     data = view.vk or {}
     cidrs = data.get("cidrs") or []
+    asn_list = ", ".join("AS%d" % asn for asn, _label in fwguard.ASNS)
     blocks.append(
         table(
             [
-                ("world", t("DBG_VK_DOMAINS"), code(data.get("asns") or t("UI_NONE"))),
+                ("world", t("DBG_VK_DOMAINS"), code(asn_list)),
                 ("module", t("DBG_VK_PREFIXES"), code(len(cidrs))),
-                ("add", t("DBG_VK_ADDED"), code(len(data.get("added") or []))),
-                ("clock", t("TOOLS_STATUS"), code(str(data.get("reason") or "-")[:24])),
+                ("clock", t("TOOLS_STATUS"), code(str(data.get("reason") or "ok")[:24] if cidrs or data.get("reason") else "-")),
             ],
             (t("DBG_VK_TITLE"), t("UI_VALUE")),
         )
     )
     if cidrs:
-        blocks.append(pre("\n".join(cidrs[:40])))
+        blocks.append(details("%s (%d)" % (t("DBG_VK_PREFIXES"), len(cidrs)), pre("\n".join(cidrs[:60]))))
     else:
         blocks.append(quote(muted(t("DBG_SCAN_NONE"))))
+    blocks.append(quote(muted(t("DBG_PORTS_NOTE"))))
     buttons = [
         row(button(t("DBG_VK_BTN"), "dbg:vk:go", icon="refresh"), button(t("DBG_VK_APPLY"), "dbg:vk:apply", icon="shield")),
         row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
@@ -250,7 +253,7 @@ def busy(view: DbgView, text: str) -> Any:
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(muted(text or t("LOADING_BODY"))))
-    return screen(t("LOADING_TITLE"), t("BUSY_SUBTITLE"), blocks, [row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home"))], icon="loading")
+    return screen(t("LOADING_TITLE"), t("BUSY_SUBTITLE"), blocks, [], icon="loading")
 
 
 def stub_screen(view: DbgView, name: str, reason: str, host: str, retry: str = "") -> Any:
@@ -262,10 +265,10 @@ def stub_screen(view: DbgView, name: str, reason: str, host: str, retry: str = "
         blocks.append(quote(muted_html(t("DBG_STUB_HINT", host=bold(host[:64])))))
     buttons = []
     if retry:
-        buttons.append(row(button(t("DBG_STUB_RETRY"), retry, icon="refresh"), button(t("UI_HOME"), "nav:home", icon="home")))
-    else:
+        buttons.append(row(button(t("DBG_STUB_RETRY"), retry, icon="refresh"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools")))
         buttons.append(row(button(t("UI_HOME"), "nav:home", icon="home")))
-    buttons.append(row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug")))
+    else:
+        buttons.append(row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")))
     return screen(t("DBG_STUB_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="warn")
 
 
@@ -279,7 +282,7 @@ def crash_screen(view: DbgView, route: str, trace: str) -> Any:
     blocks.append(pre((trace or t("UI_NONE"))[-600:]))
     blocks.append(quote(muted(t("DBG_CRASH_HINT"))))
     buttons = [
-        row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
+        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("DBG_ERR_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="fail")
 
@@ -287,7 +290,7 @@ def crash_screen(view: DbgView, route: str, trace: str) -> Any:
 def trace_screen(view: DbgView, route: str, trace: str) -> Any:
     t = view.tr()
     blocks = [quote(bold(view.error or t("DBG_ERR_TITLE"))), f"<p>{code(route[:48])}</p>", pre((trace or t("UI_NONE"))[-3400:])]
-    buttons = [row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home"))]
+    buttons = [row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home"))]
     return screen(t("DBG_ERR_TITLE"), t("DBG_ERR_TRACE"), blocks, buttons, icon="fail")
 
 
@@ -358,8 +361,6 @@ def chebur_screen(view: "DbgView") -> Any:
         ("target", t("CHK_TARGET"), code(target)),
         ("shield", t("CHK_VERDICT"), code(t(status_key))),
     ]
-    if answer is not None and answer.registry is not None:
-        head_pairs.append(("world", t("CHK_SOURCE"), code(t("CHK_SOURCE_API"))))
     blocks.append(table(head_pairs, (t("CHK_TITLE"), t("UI_VALUE"))))
     blocks.append(quote(bold(chebur_quote(t, answer, target))))
     if answer is None:
@@ -380,19 +381,14 @@ def chebur_screen(view: "DbgView") -> Any:
             shown = "%s %s" % (shown, t("CHK_IPS_MORE", count=registry.ip_count - len(registry.ips[:4])))
         rows_data = [
             ("file", t("CHK_REGISTRY"), code(t("CHK_BLOCKED") if registry.blocked else t("CHK_CLEAN"))),
-            ("tag", t("CHK_KIND"), code(t("CHK_KIND_" + (registry.kind or "ip").upper()))),
             ("world", t("CHK_GEO"), code(registry.geo.label())),
             ("target", t("CHK_IPS"), code(shown or "-")),
             ("module", t("CHK_SUBNETS"), code(", ".join(registry.subnets[:4]) or t("UI_NONE"))),
-            ("link", t("CHK_REVERSE"), code(", ".join(registry.reverse[:3]) or t("UI_NONE"))),
             ("bell", t("CHK_COMPLAINTS"), code(registry.complaint_total())),
         ]
         if registry.cdn:
             rows_data.append(("world", t("CHK_CDN"), code(", ".join(sorted(registry.cdn)[:4]))))
         blocks.append(table(rows_data, (t("CHK_REGISTRY_TITLE"), t("UI_VALUE"))))
-        spark = registry.complaint_spark()
-        if spark and registry.complaint_total():
-            blocks.append(pre(t("CHK_SPARK") + "  " + " ".join(spark)))
     live = answer.live if answer is not None else None
     if live is not None:
         counts = live.counts()
@@ -423,11 +419,10 @@ def chebur_screen(view: "DbgView") -> Any:
             blocks.append(details(t("CHK_DETAILS", count=len(live.results)), pre("\n".join(lines[:40]))))
     blocks.append(quote(muted(t("CHK_NOTE"))))
     buttons = [
-        row(button(t("CHK_BTN_CHECK"), "dbg:chk:check", icon="file")),
+        row(button(t("CHK_BTN_CHECK"), "dbg:chk:check", icon="file"), button(t("CHK_BTN_NET"), "dbg:chk:net", icon="plug")),
         row(button(t("CHK_BTN_PROBE"), "dbg:chk:probe", icon="radar"), button(t("CHK_BTN_BOTH"), "dbg:chk:both", icon="scan")),
-        row(button(t("CHK_BTN_NET"), "dbg:chk:net", icon="plug")),
         input_row(t("CHK_INPUT"), "dbg_chk_target", "-", view.lang),
-        row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
+        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("CHK_TITLE"), t("CHK_SUBTITLE"), blocks, buttons, icon="shield")
 
@@ -501,7 +496,7 @@ def dpi_screen(view: "DbgView") -> Any:
                 (t("DPI_KERNEL_TITLE"), t("UI_VALUE")),
             )
         )
-        blocks.append(
+        extra_tables = [
             table(
                 [
                     ("module", t("DPI_CORE"), code(report.core or "-")),
@@ -511,19 +506,17 @@ def dpi_screen(view: "DbgView") -> Any:
                     ("route", t("DPI_NETWORKS"), code(", ".join(report.networks) or t("DPI_NONE"))),
                 ],
                 (t("DPI_CORE_TITLE"), t("UI_VALUE")),
-            )
-        )
-        owner = " ".join(part for part in (report.asn, report.organisation) if part) or "-"
-        blocks.append(
+            ),
             table(
                 [
-                    ("world", t("DPI_ORG"), code(owner)),
+                    ("world", t("DPI_ORG"), code(" ".join(part for part in (report.asn, report.organisation) if part) or "-")),
                     ("warn" if report.hoster else "ok", t("DPI_HOSTER"), code(report.hoster or t("DPI_NONE"))),
                     ("world", t("DPI_COUNTRY"), code(report.country or "-")),
                 ],
                 (t("DPI_HOST_TITLE"), t("UI_VALUE")),
-            )
-        )
+            ),
+        ]
+        blocks.append(details(t("HOME_DETAILS"), "\n".join(extra_tables)))
         found = [item for item in report.findings if item.level != "ok"]
         if found:
             blocks.append(
@@ -536,7 +529,6 @@ def dpi_screen(view: "DbgView") -> Any:
                 )
             )
         blocks.append(details(t("DPI_FIX_TITLE"), pre(dpi.fix_text())))
-        blocks.append(quote(muted(t("DPI_FIX_NOTE"))))
     blocks.append(quote(muted(t("DPI_NOTE"))))
     buttons = [
         row(button(t("DPI_BTN_RUN"), "dbg:dpi:scan", icon="scan"), button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield")),
@@ -574,7 +566,7 @@ def ddos_screen(view: DbgView) -> Any:
             blocks.append(table([("scan", t("DDOS_EXPOSURE"), ddos_exposure_text(t, view.ddos_exposure))], (t("DDOS_EXPOSURE"), t("UI_VALUE"))))
         buttons = [
             row(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"), button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan")),
-            row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
+            row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
         ]
         return screen(t("DDOS_TITLE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
     level = "ok"
@@ -618,7 +610,7 @@ def ddos_screen(view: DbgView) -> Any:
     buttons = [
         row(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"), button(t("DDOS_BTN_REMOVE"), "dbg:dd:remove", icon="delete")),
         row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:refresh", icon="refresh"), button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan")),
-        row(button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"), button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home")),
+        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("DDOS_TITLE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
 
@@ -675,7 +667,7 @@ def notify_message(event: Any, t: Any) -> Any:
         table([(mark, notify_kind_label(t, kind), code(body))], (t("NTF_MSG_TITLE"), notify_kind_label(t, kind))),
         quote(muted(t("NTF_MSG_FOOT"))),
     ]
-    return screen(t("NTF_MSG_TITLE"), t("NTF_TITLE"), blocks, [row(button(i18n.t("NAV_DEBUG", t.language), "dbg:home", icon="bug"))], icon="bell")
+    return screen(t("NTF_MSG_TITLE"), t("NTF_TITLE"), blocks, [row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"))], icon="bell")
 
 
 def notify_screen(view: "DbgView") -> Any:
@@ -760,7 +752,7 @@ def honeypot_screen(view: "DbgView") -> Any:
         row(button(t("HP_BTN_SELFCHECK"), "dbg:hp:check", icon="ok"), button(t("HP_BTN_REMOVE"), "dbg:hp:remove", icon="delete")),
         row(
             button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell"),
-            button(i18n.t("NAV_DEBUG", view.lang), "dbg:home", icon="bug"),
+            button(t("TOOLS_TITLE"), "dbg:home", icon="tools"),
         ),
     ]
     return screen(t("HP_TITLE"), t("HP_SUBTITLE"), blocks, buttons, icon="target")

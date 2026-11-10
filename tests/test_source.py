@@ -157,7 +157,7 @@ def test_raise_messages_are_english() -> None:
     assert offenders == []
 
 
-FREE_TURN_FILES = {"freeturn.py", "freeturn_agent.py", "ftpanel.py", "ftscreens.py", "traffic.py"}
+FREE_TURN_FILES = {"freeturn.py", "freeturn_agent.py", "ftpanel.py", "ftscreens.py", "traffic.py", "commands.py", "app.py", "test_commands.py", "test_round17.py"}
 FREE_TURN_PREFIXES = ("FT_", "FLD_FT_", "FLH_FT_", "CORE_", "NAV_FREETURN")
 
 

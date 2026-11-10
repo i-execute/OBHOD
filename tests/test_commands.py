@@ -36,18 +36,20 @@ def test_the_menu_names_fit_the_telegram_limit() -> None:
 def test_the_long_command_keeps_a_menu_alias() -> None:
     item = commands.known("wg")
     assert item is not None
-    assert item.menu_name() == "wg"
+    assert item.name == "wireguard_whitelist_bypass_raskur"
+    assert item.menu_name() == "wg_whitelist_bypass_raskur"
     assert len(item.menu_name()) <= 32
     assert commands.known("whitelist_bypass_wg_vk_call_raskur") is not None
-    assert commands.known("whitelist_bypass_wg_vk_call_raskur").name == "wg"
+    assert commands.known("whitelist_bypass_wg_vk_call_raskur").name == "wireguard_whitelist_bypass_raskur"
 
 
 def test_the_alias_points_to_the_same_command() -> None:
-    assert commands.canonical("whitelist_bypass_wg_vk_call") == "wg"
-    assert commands.canonical("/whitelist_bypass_wg_vk_call_raskur") == "wg"
+    assert commands.canonical("whitelist_bypass_wg_vk_call") == "wireguard_whitelist_bypass_raskur"
+    assert commands.canonical("/whitelist_bypass_wg_vk_call_raskur") == "wireguard_whitelist_bypass_raskur"
+    assert commands.canonical("/wg_whitelist_bypass_raskur") == "wireguard_whitelist_bypass_raskur"
     assert commands.canonical("/start@obhod_bot") == "start"
-    assert commands.canonical("/wg") == "wg"
-    assert commands.canonical("/vless") == "vless"
+    assert commands.canonical("/wg") == "wireguard_whitelist_bypass_raskur"
+    assert commands.canonical("/vless") == "vless_raw_xhttp_reality_raskur"
 
 
 def test_an_unknown_command_is_not_claimed() -> None:
@@ -206,8 +208,8 @@ def test_the_old_vless_name_still_opens_the_screen(tmp_path: Path) -> None:
 
 def test_both_command_names_are_canonical(tmp_path: Path) -> None:
     names = [item.name for item in commands.COMMANDS]
-    assert "wg" in names
-    assert "vless" in names
+    assert "wireguard_whitelist_bypass_raskur" in names
+    assert "vless_raw_xhttp_reality_raskur" in names
     assert "start" in names
 
 
@@ -260,6 +262,11 @@ def test_the_clients_table_keys_are_gone(tmp_path: Path) -> None:
 
 def test_every_command_screen_shows_its_own_name(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    for name in ("wg", "vless"):
+    for name, shown in (
+        ("wg", "/wireguard_whitelist_bypass_raskur"),
+        ("wireguard_whitelist_bypass_raskur", "/wireguard_whitelist_bypass_raskur"),
+        ("vless", "/vless_raw_xhttp_reality_raskur"),
+        ("vless_raw_xhttp_reality_raskur", "/vless_raw_xhttp_reality_raskur"),
+    ):
         run(bot.on_command(FakeEvt("/" + name)))
-        assert ("/%s" % name) in last(bot) or "/wg" in last(bot) or "/vless" in last(bot)
+        assert shown in last(bot)

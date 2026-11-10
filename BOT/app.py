@@ -8,12 +8,13 @@ import logging
 import os
 import re
 import socket
+import sys
 import time
 from typing import Any
 
 from goygram import GoyGram
 
-from . import commands, cores, dscreens, ftscreens, i18n, inline, notify, screens, tools, ui, xscreens
+from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, tools, ui, xscreens
 from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
@@ -38,8 +39,8 @@ INLINE_DUPLICATE_WINDOW = 8.0
 BUSY_QUIET = 5.0
 BUSY_TTL = 900.0
 RENDER_QUIET = 5.0
-LOADING_MARKS = ("xr:", "ft:", "dbg:", "upd:", "fb:", "sshd:", "ssh:")
-LOADING_SKIP = ("nav:", "lang:", "set:", "dbg:home", "dbg:emoji", "dbg:info", "ft:home", "xr:home")
+LOADING_MARKS = ("xr:", "ft:", "dbg:", "upd:", "fb:", "sshd:", "ssh:", "tools:")
+LOADING_SKIP = ("nav:", "lang:", "set:", "dbg:home", "dbg:emoji", "dbg:info", "ft:home", "xr:home", "tools:home", "tools:fortress", "tools:pentest")
 RENDER_CACHE = 64
 DENY_LIMIT = 1
 DENY_WINDOW = 60.0
@@ -466,7 +467,88 @@ class Bot:
             self.freeturn.name = "owner"
         if state.installed and (not isinstance(self.freeturn.control, FtControl) or os.path.isfile("/opt/free-turn-proxy/clients.list")):
             self.freeturn.clients, self.freeturn.share = await self.freeturn._safe_list()
+        if state.installed and state.running:
+            await self.freeturn._auto_guard_vk(int(state.config.listen_port or 0))
         self.freeturn.save()
+
+    async def auto_protect(self) -> dict[str, str]:
+        outcomes: dict[str, str] = {}
+        detected_ip = public_address()
+        if detected_ip:
+            changed_addr = False
+            if not self.state.xray.sub_address:
+                self.state.xray.sub_address = detected_ip
+                changed_addr = True
+            if not self.freeturn.draft.host:
+                self.freeturn.draft.host = detected_ip
+                self.freeturn.state.config.host = detected_ip
+                changed_addr = True
+            if changed_addr:
+                self.save()
+        ft_state = getattr(self.freeturn, "state", None)
+        if ft_state is not None and ft_state.installed and ft_state.running:
+            await self.freeturn._auto_guard_vk(int(ft_state.config.listen_port or 0))
+            outcomes["vk_fw"] = str(self.freeturn.guard.get("mode") or "skip")
+        try:
+            status = await ddos_call(self.guard, self.state.ssh, ddos_argv("status"), 60)
+            if not status.enabled:
+                policy = antiddos.Policy.from_dict(self.state.ddos)
+                status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
+            self.ddos_state = status
+            self.debug.ddos = status
+            outcomes["ddos"] = "on" if status.enabled else "off"
+        except Exception as exc:
+            log.debug("auto ddos skipped: %s", exc)
+            outcomes["ddos"] = "skip"
+        try:
+            sub_port = int(getattr(self.state.xray, "sub_port", 0) or 0)
+            ban = await self.guard.status(self.state.ssh, port=sub_port)
+            if not ban.active:
+                ban = await self.guard.install(
+                    self.state.ssh,
+                    port=sub_port,
+                    bantime=int(self.state.xray.fail2ban_bantime or DEFAULT_BANTIME),
+                    ssh_bantime=self.state.xray.fail2ban_ssh_bantime,
+                    ssh_maxretry=int(self.state.xray.fail2ban_ssh_maxretry),
+                    ignoreip=self.state.xray.fail2ban_ignoreip,
+                )
+            self.ban = ban
+            self.state.xray.fail2ban_enabled = bool(ban.active)
+            self.save()
+            outcomes["fail2ban"] = "on" if ban.active else "off"
+        except Exception as exc:
+            log.debug("auto fail2ban skipped: %s", exc)
+            outcomes["fail2ban"] = "skip"
+        return outcomes
+
+    async def check_inline_mode(self) -> bool:
+        if self.app is None:
+            return True
+        get_me = getattr(self.app, "get_me", None)
+        if not callable(get_me):
+            return True
+        try:
+            me = await get_me(refresh=True)
+        except TypeError:
+            try:
+                me = await get_me()
+            except Exception:
+                return True
+        except Exception:
+            return True
+        if not isinstance(me, dict):
+            return True
+        supports = me.get("supports_inline_queries")
+        if supports is None and "bot_inline_placeholder" in me:
+            supports = me.get("bot_inline_placeholder") is not None
+        if supports is False:
+            banner = i18n.t("TUI_INLINE_WARN", "en")
+            print("\033[1;31m%s\033[0m" % banner, file=sys.stderr, flush=True)
+            log.warning("%s", banner)
+            self.inline_enabled = False
+            return False
+        self.inline_enabled = True
+        return True
 
     async def ensure_cores_warm(self) -> None:
         if self.cores_warmed:
@@ -490,6 +572,7 @@ class Bot:
 
     async def run(self) -> None:
         app = await self.boot()
+        await self.check_inline_mode()
         await self.verify_update()
         try:
             await self.register_commands()
@@ -502,6 +585,7 @@ class Bot:
         if os.geteuid() == 0:
             try:
                 await self.track(self.ensure_cores_warm(), "cores_warmup")
+                await self.track(self.auto_protect(), "auto_protect")
             except Exception as exc:
                 log.debug("cores warmup not scheduled: %s", exc)
         await app.run()
@@ -762,26 +846,48 @@ class Bot:
         results: list[dict] = []
         allowed = who > 0 and who == self.admin_id and self.allowed(who, "inline", self.inline_limit, 60.0)
         if allowed:
-            results = inline.results_for(query, src=src, current=self.input_values(), lang=self.language)
+            stripped = query.strip()
+            if not stripped:
+                hint_cards = await ipscan.inline_results("ip", src=src, lang=self.language)
+                field_cards = inline.results_for(query, src=src, current=self.input_values(), lang=self.language)
+                results = (hint_cards + field_cards)[: inline.MAX_RESULTS]
+            else:
+                token, _rest = inline.parse_query(stripped)
+                if token:
+                    results = inline.results_for(query, src=src, current=self.input_values(), lang=self.language)
+                else:
+                    results = await ipscan.inline_results(stripped, src=src, lang=self.language)
         try:
             await evt.answer(results=results, cache_time=0, is_personal=True)
         except Exception as exc:
             log.warning("inline answer failed: %s", exc)
 
     async def on_chosen(self, evt: object) -> None:
-        if str(getattr(evt, "update_type", "") or "") != "chosen_inline_result":
+        utype = str(getattr(evt, "update_type", "") or "")
+        if utype not in ("chosen_inline_result", "updateBotInlineSend"):
             return
         raw = getattr(evt, "raw", None)
-        payload = raw.get("chosen_inline_result") if isinstance(raw, dict) else None
-        payload = payload if isinstance(payload, dict) else {}
-        who = int(((payload.get("from") or {}).get("id")) or getattr(evt, "from_id", 0) or 0)
+        raw_dict = raw if isinstance(raw, dict) else {}
+        payload = raw_dict.get("chosen_inline_result")
+        payload = payload if isinstance(payload, dict) else raw_dict
+        raw_upd = raw_dict.get("raw_update")
+        raw_upd = raw_upd if isinstance(raw_upd, dict) else {}
+        who = int(
+            ((payload.get("from") or {}).get("id") if isinstance(payload.get("from"), dict) else 0)
+            or payload.get("from_id")
+            or raw_upd.get("user_id")
+            or getattr(evt, "from_id", 0)
+            or 0
+        )
         if not self.admin_id or who != self.admin_id:
             log.warning("a foreign user picked an inline result: %s", who)
             return
         if not self.allowed(who, "inline", self.inline_limit, 60.0):
             return
-        rid = str(payload.get("result_id", "") or "")
-        query = str(payload.get("query", "") or "")
+        rid = str(payload.get("result_id") or raw_upd.get("id") or "")
+        if rid.startswith("ipscan:"):
+            return
+        query = str(payload.get("query") or raw_upd.get("query") or "")
         kind, token, index = inline.parse_option_id(rid)
         if not kind:
             kind, token, index = inline.parse_result_id(rid)
@@ -793,7 +899,13 @@ class Bot:
         except inline.InlineError as exc:
             log.warning("the inline value was rejected: %s", exc)
             return
-        await self.apply_inline_value(token, kind, value, index, "chosen")
+        inline.consume_pending()
+        done = asyncio.Event()
+        self._marker_event = done
+        try:
+            await self.apply_inline_value(token, kind, value, index, "chosen")
+        finally:
+            done.set()
 
     async def apply_inline_value(self, token: str, kind: str, value: str, index: int, source: str) -> None:
         ident, ctx, _mode = inline.resolve(token)
@@ -861,10 +973,10 @@ class Bot:
         if found.name == "start":
             await self.send(chat_id, commands.start_screen(t, cards, self.language))
             return
-        if found.name == "wg":
+        if found.name in ("wg", "wireguard_whitelist_bypass_raskur"):
             await self.send(chat_id, commands.whitelist_screen(t, cards))
             return
-        if found.name == "vless":
+        if found.name in ("vless", "vless_raw_xhttp_reality_raskur"):
             await self.send(chat_id, commands.vless_screen(t, cards))
             return
         await self.send(chat_id, commands.whitelist_screen(t, cards))
@@ -885,9 +997,18 @@ class Bot:
 
     async def on_marker(self, evt: object, text: str) -> None:
         chat_id = int(getattr(evt, "chat_id", 0) or 0)
-        msg_id = int(getattr(evt, "msg_id", 0) or 0)
-        token, kind, index, body = inline.parse_payload(text)
+        msg_id = int(getattr(evt, "msg_id", 0) or getattr(evt, "id", 0) or 0)
+        has_legacy = inline.SEPARATOR in str(text or "")
+        token, kind, index, body = inline.parse_payload(text) if has_legacy else ("", "", -1, "")
+        pending_evt = getattr(self, "_marker_event", None)
+        if not has_legacy and isinstance(pending_evt, asyncio.Event):
+            try:
+                await asyncio.wait_for(pending_evt.wait(), 0.4)
+            except asyncio.TimeoutError:
+                pass
         await self.drop_marker(chat_id, msg_id)
+        if not has_legacy:
+            token, kind, index, body = inline.consume_pending()
         if not token:
             return
         if self.is_busy():
@@ -928,12 +1049,19 @@ class Bot:
         if not msg_id or self.app is None:
             return
         delete = getattr(self.app, "delete_msg", None) or getattr(self.app, "delete", None)
-        if delete is None:
-            return
-        try:
-            await delete(chat_id, msg_id)
-        except Exception as exc:
-            log.debug("marker delete failed: %s", exc)
+        deleted = False
+        if delete is not None:
+            try:
+                await delete(chat_id, msg_id)
+                deleted = True
+            except Exception as exc:
+                log.debug("marker delete failed: %s", exc)
+        bot_req = getattr(self.app, "bot_req", None)
+        if not deleted and callable(bot_req) and getattr(self.app, "bot", None) is not None:
+            try:
+                await bot_req("deleteMessage", chat_id=chat_id, message_id=int(msg_id))
+            except Exception as exc:
+                log.debug("bot api marker delete failed: %s", exc)
 
     async def ssh_input(self, chat_id: int, ident: str, value: str) -> None:
         text = (value or "").strip()
@@ -968,7 +1096,7 @@ class Bot:
                     await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
                 return
         if is_expensive(data):
-            if not self.audit.first_time(int(getattr(evt, "from_id", 0) or 0), data, time.monotonic()):
+            if data != "dbg:chk:net" and not self.audit.first_time(int(getattr(evt, "from_id", 0) or 0), data, time.monotonic()):
                 await self.toast(evt, self.tr()("TOAST_REPEAT"), alert=True)
                 return
             if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "expensive", self.expensive_limit, 120.0):
@@ -1189,7 +1317,7 @@ class Bot:
         if page == "emoji":
             value = self.toggle_emoji()
             notice = self.tr()("NAV_EMOJI_ON" if value else "NAV_EMOJI_OFF")
-            await self.render(chat_id, msg_id, screens.home(self.view(notice=notice)))
+            await self.render(chat_id, msg_id, screens.settings(self.view(notice=notice)))
             return
         if page == "quick":
             await self.render(chat_id, msg_id, screens.settings(self.view()))
