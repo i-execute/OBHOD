@@ -415,7 +415,7 @@ def update_screen(view: View, info: dict[str, Any]) -> Any:
         ("info", t("UPD_LABEL_CHANGES"), code(info.get("dirty", 0))),
         ("info", t("UPD_LABEL_BEHIND"), behind_text),
         ("info", t("UPD_LABEL_RELEASE"), release_cell),
-        ("info", t("UPD_LABEL_SERVICE"), code(info.get("unit_state") or t("UI_NONE"))),
+        ("info", t("UPD_LABEL_SERVICE"), code(service_state_label(info.get("unit_state"), view.lang))),
     ]
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     buttons = [
@@ -498,6 +498,49 @@ def update_result_screen(view: View, info: dict[str, Any], result: dict[str, Any
         row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("UPD_DONE_TITLE") if ok else t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, footer=t("HOME_FOOTER"), icon="ok")
+
+
+def service_state_label(raw_state: object, lang: str = i18n.DEFAULT_LANGUAGE) -> str:
+    value = str(raw_state or "").strip().lower()
+    if value in {"active", "running", "activating"}:
+        return i18n.t("SVC_STATE_ACTIVE", lang)
+    if value in {"failed", "error"}:
+        return i18n.t("SVC_STATE_FAILED", lang)
+    if value in {"inactive", "stopped", "dead", "deactivating"}:
+        return i18n.t("SVC_STATE_INACTIVE", lang)
+    return i18n.t("UI_NONE", lang)
+
+
+def update_verified_screen(view: View, notice: dict[str, Any]) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    repo = str(notice.get("repo") or DEFAULT_REPO)
+    healthy = bool(notice.get("healthy", True))
+    commit = str(notice.get("commit") or notice.get("to") or "")[:12]
+    linked = ref_link(commit, repo) if commit else code(t("UI_NOT_SET"))
+    state_label = service_state_label(notice.get("state") or "active", view.lang)
+    if healthy:
+        blocks.append(quote(bold_html(t("UPD_NOTICE_VERIFIED", commit=linked, state=code(state_label)))))
+    else:
+        blocks.append(quote(bold_html(t("UPD_NOTICE_BROKEN", commit=linked))))
+    rows = [
+        ("info", t("UPD_LABEL_COMMIT"), linked),
+        ("info", t("UPD_LABEL_SERVICE"), code(state_label)),
+    ]
+    branch = str(notice.get("branch") or "").strip()
+    if branch:
+        rows.append(("tag", t("UPD_LABEL_BRANCH"), code(branch)))
+    blocks.append(table(rows, (t("UI_PARAM"), t("UI_VALUE"))))
+    subject = str(notice.get("subject") or "").strip()
+    if subject:
+        blocks.append(quote(muted(subject)))
+    output = str(notice.get("output") or "").strip()
+    if not healthy and output:
+        blocks.append(pre(output[:1200]))
+    buttons = [
+        row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
+    ]
+    return screen(t("UPD_DONE_TITLE") if healthy else t("UPD_TITLE"), t("UPD_SUBTITLE"), blocks, buttons, icon="ok" if healthy else "warn")
 
 
 def body_text(value: object) -> str:

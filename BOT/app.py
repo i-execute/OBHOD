@@ -599,12 +599,13 @@ class Bot:
         owner = int(getattr(self, "admin_id", 0) or 0)
         if not owner or self.app is None:
             return
-        saved = dict(self.update_notice)
-        text = self.update_notice_html()
-        if not text:
+        saved = dict(self.update_notice or notice or {})
+        if not saved:
             return
+        self.update_notice = {}
+        card = screens.update_verified_screen(self.view(), saved)
         try:
-            await self.app.send_msg(owner, text, via="mt", parse_mode="html")
+            await self.send(owner, card)
         except Exception as exc:
             self.update_notice = saved
             log.debug("the update notice did not reach the owner: %s", exc)
@@ -619,8 +620,9 @@ class Bot:
         t = self.tr()
         commit = str(data.get("commit") or data.get("to") or "")[:12]
         linked = ref_link(commit)
+        state = screens.service_state_label(data.get("state") or "active", self.language)
         if data.get("healthy"):
-            return t("UPD_NOTICE_VERIFIED", commit=linked, state=esc(str(data.get("state") or "active")))
+            return t("UPD_NOTICE_VERIFIED", commit=linked, state=esc(state))
         return t("UPD_NOTICE_BROKEN", commit=linked)
 
     def update_notice_text(self) -> str:
@@ -630,8 +632,9 @@ class Bot:
         self.update_notice = {}
         t = self.tr()
         commit = str(data.get("commit") or data.get("to") or "")[:12]
+        state = screens.service_state_label(data.get("state") or "active", self.language)
         if data.get("healthy"):
-            return t("UPD_NOTICE_VERIFIED", commit=commit, state=str(data.get("state") or "active"))
+            return t("UPD_NOTICE_VERIFIED", commit=commit, state=state)
         return t("UPD_NOTICE_BROKEN", commit=commit)
 
     async def send(self, chat_id: int, rich: object) -> None:
@@ -941,6 +944,15 @@ class Bot:
             return
         if text.strip().startswith("/"):
             await self.on_command(evt)
+            return
+        from .xray import parse_tailnet_input
+
+        extracted_key, _ = parse_tailnet_input(text)
+        if extracted_key:
+            chat_id = int(getattr(evt, "chat_id", 0) or 0)
+            msg_id = int(getattr(evt, "msg_id", 0) or getattr(evt, "id", 0) or 0)
+            await self.drop_marker(chat_id, msg_id)
+            await self.dispatch_input(chat_id, "xr_tunnel_key", "subs", text)
             return
         return
 

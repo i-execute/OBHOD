@@ -137,15 +137,21 @@ class TunnelState:
     hostname: str = ""
     url: str = ""
     funnel: bool = False
+    key_expiry: str = ""
+    expired: bool = False
+    have_node_key: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "installed": bool(self.installed),
             "version": self.version[:32],
             "backend": self.backend[:24],
-            "hostname": self.hostname[:64],
+            "hostname": self.hostname[:96],
             "url": self.url[:128],
             "funnel": bool(self.funnel),
+            "key_expiry": self.key_expiry[:32],
+            "expired": bool(self.expired),
+            "have_node_key": bool(self.have_node_key),
         }
 
     @staticmethod
@@ -155,13 +161,16 @@ class TunnelState:
             installed=bool(data.get("installed", False)),
             version=str(data.get("version", "") or "")[:32],
             backend=str(data.get("backend", "") or "absent")[:24],
-            hostname=str(data.get("hostname", "") or "")[:64],
+            hostname=str(data.get("hostname", "") or "")[:96],
             url=str(data.get("url", "") or "")[:128],
             funnel=bool(data.get("funnel", False)),
+            key_expiry=str(data.get("key_expiry", "") or "")[:32],
+            expired=bool(data.get("expired", False)),
+            have_node_key=bool(data.get("have_node_key", False)),
         )
 
     def healthy(self) -> bool:
-        return bool(self.installed and self.funnel and self.url.startswith("https://"))
+        return bool(self.installed and self.funnel and not self.expired and self.url.startswith("https://"))
 
 
 @dataclass
@@ -418,17 +427,20 @@ class XrayControl:
     async def tunnel_up(
         self,
         cfg: SshSettings,
-        key: str,
+        key: str = "",
         hostname: str = "",
         port: int = SUB_PORT,
         https_port: int = 0,
         auto_install: bool = False,
+        exit_node: bool = False,
     ) -> "TunnelState":
-        argv = ["tunnel-up", "--key=" + str(key)[:128], "--hostname=" + str(hostname)[:64], "--port=%d" % int(port)]
+        argv = ["tunnel-up", "--key=" + str(key)[:256], "--hostname=" + str(hostname)[:96], "--port=%d" % int(port)]
         if https_port:
             argv.append("--https-port=%d" % int(https_port))
         if auto_install:
             argv.append("--auto-install=1")
+        if exit_node:
+            argv.append("--exit-node=1")
         response = await self.call(cfg, argv, timeout=900 if auto_install else 600)
         response.raise_for_status()
         return TunnelState.from_dict(response.data)

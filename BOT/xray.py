@@ -8,6 +8,7 @@ import secrets
 import string
 import uuid as uuidlib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from . import portguard
@@ -99,6 +100,42 @@ def random_port(exclude: Any = ()) -> int:
 
 def random_funnel_port() -> int:
     return secrets.choice(FUNNEL_PORTS)
+
+
+TSKEY_EXTRACT_RE = re.compile(r"(tskey-[a-z]{2,10}-[A-Za-z0-9_]{4,96}(?:-[A-Za-z0-9_]{2,96}){0,6})")
+
+
+def parse_tailnet_input(raw: object) -> tuple[str, bool]:
+    text = str(raw or "").strip()
+    if not text:
+        return "", False
+    match = TSKEY_EXTRACT_RE.search(text)
+    if not match:
+        return "", False
+    return match.group(1), ("--advertise-exit-node" in text)
+
+
+def tailnet_expiry_label(expiry: object, expired: bool = False, lang: str = i18n.DEFAULT_LANGUAGE) -> str:
+    if expired:
+        return i18n.t("TAILNET_EXPIRED", lang)
+    raw = str(expiry or "").strip()
+    if not raw:
+        return i18n.t("UI_NONE", lang)
+    if raw == "never":
+        return i18n.t("TAILNET_EXPIRY_NEVER", lang)
+    cleaned = raw.replace("Z", "+00:00")
+    try:
+        target = datetime.fromisoformat(cleaned)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        delta_sec = (target - now).total_seconds()
+        if delta_sec <= 0:
+            return i18n.t("TAILNET_EXPIRED", lang)
+        days = max(0, int(delta_sec // 86400))
+        return i18n.t("TAILNET_EXPIRY_DAYS", lang, date=raw[:10], days=days)
+    except ValueError:
+        return raw[:19]
 XRAY_VERSION = "v26.10.31"
 LATEST_CHOICE = "latest"
 VERSION_CHOICES = (XRAY_VERSION, LATEST_CHOICE)
@@ -1190,6 +1227,8 @@ class XrayState:
     tunnel_host: str = ""
     tunnel_enabled: bool = False
     tunnel_backend: str = ""
+    tunnel_key_expiry: str = ""
+    tunnel_expired: bool = False
     api_enabled: bool = True
     api_port: int = API_PORT
     metrics: str = DEFAULT_METRICS
@@ -1226,6 +1265,8 @@ class XrayState:
             "tunnel_host": self.tunnel_host,
             "tunnel_enabled": bool(self.tunnel_enabled),
             "tunnel_backend": self.tunnel_backend,
+            "tunnel_key_expiry": self.tunnel_key_expiry,
+            "tunnel_expired": bool(self.tunnel_expired),
             "api_enabled": bool(self.api_enabled),
             "api_port": int(self.api_port),
             "metrics": self.metrics,
@@ -1263,9 +1304,11 @@ class XrayState:
             traffic=traffic_map(data.get("traffic")),
             sub_support_url=str(data.get("sub_support_url", "") or "")[:200],
             sub_announce=str(data.get("sub_announce", "") or "")[:200],
-            tunnel_host=str(data.get("tunnel_host", "") or "")[:64],
+            tunnel_host=str(data.get("tunnel_host", "") or "")[:128],
             tunnel_enabled=bool(data.get("tunnel_enabled", False)),
             tunnel_backend=str(data.get("tunnel_backend", "") or "")[:24],
+            tunnel_key_expiry=str(data.get("tunnel_key_expiry", "") or "")[:32],
+            tunnel_expired=bool(data.get("tunnel_expired", False)),
             api_enabled=bool(data.get("api_enabled", True)),
             api_port=int(data.get("api_port", API_PORT) or API_PORT),
             metrics=str(data.get("metrics", DEFAULT_METRICS) or ""),

@@ -1296,28 +1296,21 @@ def cmd_sub_stop(flags, rest):
     return sub_state(int(str(flags.get("port", "2096")))), None
 
 
-TUNNEL_KEY_RE = re.compile(r"^tskey-[a-z]{2,6}-[A-Za-z0-9]{4,64}(-[A-Za-z0-9]{4,64}){0,4}$")
+TUNNEL_KEY_RE = re.compile(r"(tskey-[a-z]{2,10}-[A-Za-z0-9_]{4,96}(?:-[A-Za-z0-9_]{2,96}){0,6})")
 TUNNEL_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-TUNNEL_FQDN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){1,4}$")
+TUNNEL_FQDN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){1,4}(?::[0-9]{2,5})?$")
 TUNNEL_CODENAME_RE = re.compile(r"^[a-z]{2,16}$")
 TUNNEL_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+\.ts\.net(?::[0-9]{2,5})?")
 TUNNEL_FUNNEL_PORTS = (8443, 10000)
-TUNNEL_PKG_KEY = "/usr/share/keyrings/tailscale-archive-keyring.gpg"
+TAILSCALE_INSTALL_URL = "https://tailscale.com/install.sh"
 
 
-def tunnel_codename():
-    release = ""
-    if os.path.isfile("/etc/os-release"):
-        with open("/etc/os-release", "r") as handle:
-            for line in handle:
-                token = line.strip()
-                if token.startswith("VERSION_CODENAME="):
-                    release = token.split("=", 1)[1].strip().strip('"')
-    if not release:
-        release = "bookworm"
-    if not TUNNEL_CODENAME_RE.match(release):
-        raise ScriptError("bad_arg", "the distribution codename is not usable", "tunnel")
-    return release
+def extract_tailnet_key(raw):
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    match = TUNNEL_KEY_RE.search(text)
+    return match.group(1) if match else ""
 
 
 def tunnel_binary():
@@ -1333,6 +1326,9 @@ def tunnel_state():
         "hostname": "",
         "url": "",
         "funnel": False,
+        "key_expiry": "",
+        "expired": False,
+        "have_node_key": False,
     }
     if not found:
         return out
@@ -1347,9 +1343,21 @@ def tunnel_state():
             data = {}
         if isinstance(data, dict):
             out["backend"] = str(data.get("BackendState", "unknown"))[:24]
-            name = str((data.get("Self") or {}).get("DNSName", "") or "").rstrip(".")
-            if name:
-                out["hostname"] = name[:64]
+            out["have_node_key"] = bool(data.get("HaveNodeKey", False))
+            self_node = data.get("Self") or {}
+            if isinstance(self_node, dict):
+                name = str(self_node.get("DNSName", "") or "").rstrip(".")
+                if name:
+                    out["hostname"] = name[:96]
+                raw_exp = str(self_node.get("KeyExpiry", "") or "").strip()
+                if raw_exp.startswith("0001-"):
+                    raw_exp = ""
+                expired = bool(self_node.get("Expired", False)) or (out["have_node_key"] and out["backend"] == "NeedsLogin")
+                out["expired"] = expired
+                if out["backend"] == "Running" and not raw_exp and not expired:
+                    out["key_expiry"] = "never"
+                else:
+                    out["key_expiry"] = raw_exp[:32]
     code, text = run([found, "funnel", "status"], timeout=30)
     if code == 0 and text:
         match = TUNNEL_URL_RE.search(text)
@@ -1363,76 +1371,111 @@ def cmd_tunnel_status(flags, rest):
     return tunnel_state(), None
 
 
+def fetch_tailscale_installer():
+    handler = urllib.request.build_opener()
+    try:
+        with handler.open(TAILSCALE_INSTALL_URL, timeout=90) as answer:
+            return answer.read()
+    except (urllib.error.URLError, OSError) as exc:
+        if shutil.which("curl"):
+            code, text = run(["curl", "-fsSL", TAILSCALE_INSTALL_URL], timeout=90)
+            if code == 0 and text:
+                return text.encode("utf-8")
+        raise ScriptError("internal", "tailscale install.sh could not be fetched: " + str(exc)[:200], "tunnel")
+
+
 def cmd_tunnel_install(flags, rest):
     found = tunnel_binary()
     if found:
+        if has_systemd():
+            run(["systemctl", "enable", "--now", "tailscaled"], timeout=60)
         return tunnel_state(), None
     if not has_systemd():
-        raise ScriptError("unsupported", "the tunnel needs systemd", "tunnel")
-    release = tunnel_codename()
-    base = "https://pkgs.tailscale.com/stable/debian"
-    code, text = run(["apt-get", "install", "-y", "curl", "ca-certificates"], timeout=300)
-    if code != 0:
-        raise ScriptError("internal", "apt-get could not install curl: " + text[:300], "tunnel")
-    handler = urllib.request.build_opener()
+        raise ScriptError("unsupported", "tailnet needs systemd", "tunnel")
+    if not shutil.which("curl") and shutil.which("apt-get"):
+        run(["apt-get", "update"], timeout=300)
+        run(["apt-get", "install", "-y", "curl", "ca-certificates"], timeout=300)
+    script = fetch_tailscale_installer()
+    if len(script) < 200 or not script.lstrip().startswith(b"#!/bin/sh"):
+        raise ScriptError("internal", "tailscale install.sh looks broken", "tunnel")
+    fd, script_path = tempfile.mkstemp(prefix="obhod-tailscale-", suffix=".sh")
     try:
-        with handler.open(base + "/" + release + ".noarmor.gpg", timeout=60) as answer:
-            key = answer.read()
-    except (urllib.error.URLError, OSError) as exc:
-        raise ScriptError("internal", "the tailscale key could not be fetched: " + str(exc)[:200], "tunnel")
-    if len(key) < 100 or not key.startswith(b"-----BEGIN PGP PUBLIC KEY BLOCK-----"):
-        raise ScriptError("internal", "the tailscale key looks broken", "tunnel")
-    with open(TUNNEL_PKG_KEY, "wb") as handle:
-        handle.write(key)
-    os.chmod(TUNNEL_PKG_KEY, 0o644)
-    line = "deb [signed-by=%s] %s %s main\n" % (TUNNEL_PKG_KEY, base, release)
-    with open("/etc/apt/sources.list.d/tailscale.list", "w") as handle:
-        handle.write(line)
-    code, text = run(["apt-get", "update"], timeout=600)
-    if code != 0:
-        raise ScriptError("internal", "apt-get update failed: " + text[:300], "tunnel")
-    code, text = run(["apt-get", "install", "-y", "tailscale"], timeout=900)
-    if code != 0:
-        raise ScriptError("internal", "the tailscale package did not install: " + text[:300], "tunnel")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(script)
+        os.chmod(script_path, 0o700)
+        code, text = run(["sh", script_path], timeout=900)
+        if code != 0:
+            raise ScriptError("internal", "tailscale install.sh failed: " + text[:300], "tunnel")
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+    if has_systemd():
+        run(["systemctl", "enable", "--now", "tailscaled"], timeout=60)
     if not tunnel_binary():
-        raise ScriptError("internal", "tailscale is still missing after the install", "tunnel")
+        raise ScriptError("internal", "tailscale is still missing after install.sh", "tunnel")
     return tunnel_state(), None
 
 
 def cmd_tunnel_up(flags, rest):
-    key = str(flags.get("key", "") or "").strip()
+    raw_key = str(flags.get("key", "") or "").strip()
+    key = extract_tailnet_key(raw_key)
+    if raw_key and not key:
+        raise ScriptError("bad_arg", "the tailscale auth key is not valid", "tunnel")
     raw_host = str(flags.get("hostname", "") or "").strip().lower()
     if not raw_host:
-        hostname = "obhod-" + os.urandom(2).hex()
+        hostname = ""
     elif TUNNEL_HOST_RE.match(raw_host):
         hostname = raw_host
     elif TUNNEL_FQDN_RE.match(raw_host):
         hostname = raw_host.split(".", 1)[0]
     else:
-        hostname = ""
+        raise ScriptError("bad_arg", "the tunnel hostname is not valid", "tunnel")
     port = int(str(flags.get("port", "2096")))
+    if not 1 <= port <= 65535 or port == 443:
+        raise ScriptError("bad_arg", "the tunnel port is out of range", "tunnel")
     https_port = int(str(flags.get("https_port", "0") or "0"))
     if https_port not in TUNNEL_FUNNEL_PORTS:
         https_port = TUNNEL_FUNNEL_PORTS[os.urandom(1)[0] % len(TUNNEL_FUNNEL_PORTS)]
-    if not TUNNEL_KEY_RE.match(key):
-        raise ScriptError("bad_arg", "the tailscale auth key is not valid", "tunnel")
-    if not hostname or not TUNNEL_HOST_RE.match(hostname):
-        raise ScriptError("bad_arg", "the tunnel hostname is not valid", "tunnel")
-    if not 1 <= port <= 65535 or port == 443:
-        raise ScriptError("bad_arg", "the tunnel port is out of range", "tunnel")
     found = tunnel_binary()
     if not found and str(flags.get("auto_install", "")) == "1":
         cmd_tunnel_install(flags, rest)
         found = tunnel_binary()
     if not found:
         raise ScriptError("not_installed", "tailscale is not installed", "tunnel")
-    code, text = run([found, "up", "--authkey=" + key, "--hostname=" + hostname, "--accept-dns=false", "--accept-routes=false", "--reset"], timeout=180)
-    if code != 0:
-        raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
+    exit_node = str(flags.get("exit_node", "")) == "1" or "--advertise-exit-node" in raw_key
+    if key:
+        up_cmd = [found, "up", "--authkey=" + key, "--accept-dns=false", "--accept-routes=false"]
+        if hostname:
+            up_cmd.append("--hostname=" + hostname)
+        if exit_node:
+            up_cmd.append("--advertise-exit-node")
+        code, text = run(up_cmd, timeout=180)
+        if code != 0 and "--reset" in (text or ""):
+            code, text = run(up_cmd + ["--reset"], timeout=180)
+        if code != 0:
+            raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
+    else:
+        before = tunnel_state()
+        if before.get("expired") or before.get("backend") in {"NeedsLogin", "NoState", "absent"}:
+            raise ScriptError("key_expired", "the tailnet node key expired, paste a new tskey-auth key", "tunnel")
+        if before.get("backend") != "Running":
+            code, text = run([found, "up", "--accept-dns=false"], timeout=120)
+            if code != 0:
+                raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
     code, text = run([found, "funnel", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port], timeout=180)
     if code != 0:
         raise ScriptError("internal", "the funnel did not start: " + text[:300] + " enable funnel in the tailnet policy and turn on https certificates", "tunnel")
     state = tunnel_state()
+    for _ in range(3):
+        if state["url"]:
+            break
+        time.sleep(0.5)
+        state = tunnel_state()
+    if not state["url"] and state["hostname"].endswith(".ts.net"):
+        state["url"] = "https://%s:%d" % (state["hostname"], https_port)
+        state["funnel"] = True
     if not state["url"]:
         raise ScriptError("internal", "the funnel is not answering with a ts.net name yet, dns may still be propagating", "tunnel")
     return state, None

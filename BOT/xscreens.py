@@ -34,6 +34,7 @@ from .xray import (
     XrayState,
     relevant_fields,
     summary,
+    tailnet_expiry_label,
 )
 
 LINK_PREVIEW = 10
@@ -385,8 +386,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     t = view.tr()
     state = view.state
     blocks = banner(view, t)
-    domain_ok = bool(state.tunnel_enabled and state.public_base())
-    ready = bool(domain_ok or view.key_mask)
+    domain_ok = bool(state.tunnel_enabled and not state.tunnel_expired and state.public_base())
+    ready = bool(domain_ok or view.key_mask or state.tunnel_expired)
     if not ready:
         blocks.append(quote(muted(t("XR_SUBS_NO_DOMAIN"))))
         buttons = [
@@ -394,13 +395,17 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
             back_row("xr:home", view.lang),
         ]
         return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
+    if state.tunnel_expired:
+        blocks.append(quote(bold(t("TAILNET_EXPIRED_NOTE"))))
     bundle = view.bundle
     links = [item for item in (bundle.links if bundle is not None else []) if str(item).startswith("vless://")]
     pairs = [
         ("link", t("XR_SUBS_ENABLED"), code(i18n.t("UI_YES" if state.sub_enabled else "UI_NO", view.lang))),
         ("world", t("DOM_TITLE"), code(state.public_base() or t("UI_NOT_SET"))),
-        ("users", t("XR_HOME_CLIENTS"), code(len(links))),
     ]
+    if state.tunnel_key_expiry or state.tunnel_expired:
+        pairs.append(("clock", t("TAILNET_EXPIRY"), code(tailnet_expiry_label(state.tunnel_key_expiry, state.tunnel_expired, view.lang))))
+    pairs.append(("users", t("XR_HOME_CLIENTS"), code(len(links))))
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     copy_btn = ""
     if bundle is not None and links and domain_ok:
@@ -417,7 +422,7 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     if domain_ok:
         buttons.append(row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")))
         buttons.append(row(button(t("DOM_OFF"), "xr:dom:off", icon="stop")))
-    else:
+    elif not state.tunnel_expired:
         buttons.append(row(button(t("DOM_UP"), "xr:dom:up", icon="world")))
     buttons.append(input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang))
     buttons.append(back_row("xr:home", view.lang))
@@ -601,15 +606,21 @@ def domain_screen(view: XrayView, tunnel: Any = None, key_mask: str = "") -> Any
     t = view.tr()
     state = view.state
     mask = key_mask or view.key_mask
-    if not mask and not state.tunnel_enabled and tunnel is None:
+    if not mask and not state.tunnel_enabled and not state.tunnel_expired and tunnel is None:
         return subs_screen(view, [])
     blocks = banner(view, t)
-    state_name = t("DOM_STATE_ON") if state.tunnel_enabled and state.tunnel_host else t("DOM_STATE_OFF")
+    expired = bool(getattr(tunnel, "expired", False)) if tunnel is not None else bool(state.tunnel_expired)
+    expiry_raw = str(getattr(tunnel, "key_expiry", "") or state.tunnel_key_expiry)
+    if expired:
+        blocks.append(quote(bold(t("TAILNET_EXPIRED_NOTE"))))
+    state_name = t("DOM_STATE_ON") if state.tunnel_enabled and not expired and state.tunnel_host else t("DOM_STATE_OFF")
     pairs = [
         ("world", t("DOM_STATE"), code(state_name)),
         ("link", t("DOM_HOST"), code(state.public_base() or state.tunnel_host or t("UI_NONE"))),
         ("key", t("DOM_KEY_SET"), code(mask or t("UI_NOT_SET"))),
     ]
+    if expiry_raw or expired:
+        pairs.append(("clock", t("TAILNET_EXPIRY"), code(tailnet_expiry_label(expiry_raw, expired, view.lang))))
     if tunnel is not None and getattr(tunnel, "url", ""):
         pairs.append(("world", t("DOM_URL"), code(tunnel.url)))
     blocks.append(table(pairs, (t("DOM_TITLE"), t("UI_VALUE"))))

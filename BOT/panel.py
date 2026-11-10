@@ -33,6 +33,7 @@ from .xray import (
     gen_short_id,
     link_for,
     new_inbound,
+    parse_tailnet_input,
     random_funnel_port,
     random_port,
     sanitize_remark,
@@ -99,6 +100,7 @@ class XrayPanel:
         self.draft: dict[str, str] = {}
         self.results: list[ScanResult] = [ScanResult.from_dict(item) for item in bot.state.xray.scan_results]
         self.sub_state: dict[str, Any] = {}
+        self.tunnel_exit_node: bool = False
         self.tunnel_key = self.load_tunnel_key()
 
     @property
@@ -112,8 +114,9 @@ class XrayPanel:
         try:
             text = self.key_path().read_text(encoding="utf-8").strip()
         except OSError:
-            return str(getattr(self.bot, "tunnel_key", "") or "")
-        return text if TUNNEL_KEY_RE.match(text) else ""
+            text = str(getattr(self.bot, "tunnel_key", "") or "")
+        key, _ = parse_tailnet_input(text)
+        return key
 
     def store_tunnel_key(self, value: str) -> None:
         path = self.key_path()
@@ -476,6 +479,30 @@ class XrayPanel:
         await self.auto_apply_live()
         return inbound
 
+    def sync_tunnel_meta(self, tunnel: Any) -> None:
+        if tunnel is None:
+            return
+        backend = str(getattr(tunnel, "backend", "") or "").strip()
+        if backend:
+            self.state.tunnel_backend = backend[:24]
+        expiry = str(getattr(tunnel, "key_expiry", "") or "").strip()
+        if expiry:
+            self.state.tunnel_key_expiry = expiry[:32]
+        expired = bool(getattr(tunnel, "expired", False))
+        self.state.tunnel_expired = expired
+        if expired:
+            self.state.tunnel_enabled = False
+
+    async def refresh_tunnel_meta(self) -> None:
+        if not self.state.tunnel_enabled and not self.state.tunnel_host:
+            return
+        try:
+            tunnel = await self.control.tunnel_status(self.bot.state.ssh)
+        except (RpcError, OSError):
+            return
+        self.sync_tunnel_meta(tunnel)
+        self.save()
+
     async def setup_domain_subs(self) -> tuple[str, str]:
         t = self.tr()
         port = self.ensure_random_sub_port()
@@ -493,6 +520,7 @@ class XrayPanel:
                 port,
                 https_port=funnel_port,
                 auto_install=True,
+                exit_node=self.tunnel_exit_node,
             )
         except RpcError as exc:
             return "", exc.message
@@ -507,7 +535,9 @@ class XrayPanel:
             return "", t("DOM_REQUIRED")
         self.state.tunnel_host = domain
         self.state.tunnel_enabled = True
-        self.state.tunnel_backend = getattr(tunnel, "backend", "") or "Running"
+        self.sync_tunnel_meta(tunnel)
+        if not self.state.tunnel_backend:
+            self.state.tunnel_backend = "Running"
         self.state.ensure_sub_all()
         try:
             await self.control.sub_install(self.bot.state.ssh, port, domain)
@@ -535,7 +565,8 @@ class XrayPanel:
             if raw_host and not TUNNEL_HOST_RE.match(raw_host):
                 await self.render(chat_id, msg_id, self.dom_screen(self.view(error=t("DOM_HOST_BAD")), None))
                 return
-            if not self.tunnel_key:
+            has_live_node = bool(self.state.tunnel_key_expiry and not self.state.tunnel_expired)
+            if not self.tunnel_key and not has_live_node:
                 await self.render(chat_id, msg_id, self.dom_screen(self.view(error=t("DOM_KEY_MISSING")), None))
                 return
             await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_UP"), self.bot.state.language))
@@ -543,16 +574,22 @@ class XrayPanel:
             if port in {0, 80, 443}:
                 port = self.ensure_random_sub_port()
             self.bot.state.sub_port = port
+            key_arg = "" if has_live_node else self.tunnel_key
             try:
                 tunnel = await self.control.tunnel_up(
                     self.bot.state.ssh,
-                    self.tunnel_key,
+                    key_arg,
                     raw_host,
                     port,
                     https_port=random_funnel_port(),
                     auto_install=True,
+                    exit_node=self.tunnel_exit_node,
                 )
             except RpcError as exc:
+                if exc.code == "key_expired":
+                    self.state.tunnel_expired = True
+                    self.state.tunnel_enabled = False
+                    self.save()
                 await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
                 return
             if getattr(tunnel, "url", ""):
@@ -560,7 +597,7 @@ class XrayPanel:
                 if TUNNEL_HOST_RE.match(parsed):
                     self.state.tunnel_host = parsed
             self.state.tunnel_enabled = True
-            self.state.tunnel_backend = tunnel.backend
+            self.sync_tunnel_meta(tunnel)
             self.save()
             await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=t("DOM_READY")), self.sub_rows()))
             return
@@ -571,6 +608,7 @@ class XrayPanel:
                 await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
                 return
             self.state.tunnel_enabled = False
+            self.sync_tunnel_meta(tunnel)
             if self.state.sub_enabled:
                 self.state.sub_enabled = False
                 try:
@@ -587,6 +625,8 @@ class XrayPanel:
             except RpcError as exc:
                 await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
                 return
+            self.sync_tunnel_meta(tunnel)
+            self.save()
         notice = t("DOM_READY") if tunnel is not None and tunnel.healthy() else ""
         await self.render(chat_id, msg_id, self.dom_screen(self.view(notice=notice), tunnel))
 
@@ -726,6 +766,7 @@ class XrayPanel:
     async def subs_action(self, chat_id: int, msg_id: int, action: str) -> None:
         if not action:
             await self.refresh_traffic()
+            await self.refresh_tunnel_meta()
             await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
             return
         if action == "apply":
@@ -1358,13 +1399,19 @@ class XrayPanel:
                 self.state.tunnel_enabled = False
             return t("NOTICE_TUNNEL_HOST", value=host or t("UI_NONE"))
         if ident == "xr_tunnel_key":
-            if text and not TUNNEL_KEY_RE.match(text):
-                raise PanelError(t("DOM_KEY_BAD"))
-            self.tunnel_key = text
-            self.bot.tunnel_key = text
-            self.store_tunnel_key(text)
             if not text:
+                self.tunnel_key = ""
+                self.tunnel_exit_node = False
+                self.bot.tunnel_key = ""
+                self.store_tunnel_key("")
                 return t("NOTICE_TUNNEL_KEY_CLEARED")
+            key, exit_node = parse_tailnet_input(text)
+            if not key:
+                raise PanelError(t("DOM_KEY_BAD"))
+            self.tunnel_key = key
+            self.tunnel_exit_node = exit_node
+            self.bot.tunnel_key = key
+            self.store_tunnel_key(key)
             return t("NOTICE_TUNNEL_KEY", value=self.key_mask())
         if ident == "xr_access_log":
             if not text.startswith("/") or "\n" in text or "\r" in text:

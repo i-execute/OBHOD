@@ -996,6 +996,9 @@ class Updater:
                 "state": state,
                 "verified": time.time(),
                 "commit": info.commit,
+                "subject": info.subject,
+                "branch": info.branch,
+                "repo": self.repo,
                 "output": "" if healthy else output,
             }
         )

@@ -42,11 +42,19 @@ class FakeEvent:
 class FakeApp:
     def __init__(self) -> None:
         self.deleted: list[tuple[int, int]] = []
+        self.messages: list[dict[str, Any]] = []
+        self.sent_rich: list[dict[str, Any]] = []
 
     async def delete_msg(self, chat_id: int, msg_ids: int | list[int], **kw: Any) -> None:
         items = msg_ids if isinstance(msg_ids, list) else [msg_ids]
         for item in items:
             self.deleted.append((int(chat_id), int(item)))
+
+    async def send_msg(self, chat_id: int, text: str, **kw: Any) -> None:
+        self.messages.append({"chat_id": int(chat_id), "text": text, **kw})
+
+    async def send_rich(self, chat_id: int, rich: Any, **kw: Any) -> None:
+        self.sent_rich.append({"chat_id": int(chat_id), "rich": rich, **kw})
 
 
 class FakeControl:
@@ -127,7 +135,17 @@ class FakeControl:
         from BOT.xrayrpc import TunnelState
 
         self.calls.append(["tunnel-status"])
-        return TunnelState(installed=True, version="1.80.2", backend="Running", hostname="obhod.tail1234.ts.net", url="https://obhod.tail1234.ts.net", funnel=True)
+        return TunnelState(
+            installed=True,
+            version="1.80.2",
+            backend="Running",
+            hostname="obhod.tail1234.ts.net",
+            url="https://obhod.tail1234.ts.net:8443",
+            funnel=True,
+            key_expiry="2027-05-03T00:00:00Z",
+            expired=False,
+            have_node_key=True,
+        )
 
     async def tunnel_install(self, cfg: Any) -> Any:
         from BOT.xrayrpc import TunnelState
@@ -138,18 +156,29 @@ class FakeControl:
     async def tunnel_up(
         self,
         cfg: Any,
-        key: str,
+        key: str = "",
         hostname: str = "",
         port: int = 2096,
         https_port: int = 0,
         auto_install: bool = False,
+        exit_node: bool = False,
     ) -> Any:
         from BOT.xrayrpc import TunnelState
 
         self.calls.append(["tunnel-up", key, hostname, str(port)])
         fqdn = hostname if "." in hostname else ((hostname or "obhod") + ".tail1234.ts.net")
         suffix = (":%d" % int(https_port)) if https_port and int(https_port) != 443 and ":" not in fqdn else ""
-        return TunnelState(installed=True, version="1.80.2", backend="Running", hostname=fqdn.split(":", 1)[0], url="https://" + fqdn + suffix, funnel=True)
+        return TunnelState(
+            installed=True,
+            version="1.80.2",
+            backend="Running",
+            hostname=fqdn.split(":", 1)[0],
+            url="https://" + fqdn + suffix,
+            funnel=True,
+            key_expiry="2027-05-03T00:00:00Z",
+            expired=False,
+            have_node_key=True,
+        )
 
     async def tunnel_down(self, cfg: Any) -> Any:
         from BOT.xrayrpc import TunnelState
