@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime
 import hashlib
 import inspect
 import ipaddress
@@ -33,7 +34,7 @@ from .shell import LocalShell, ShellError
 from .store import State, Store
 from .update import UpdateError, Updater
 from .xrayrpc import XrayControl, XrayError as RpcError
-from .xray import API_PORT, SUB_PORT
+from .xray import API_PORT, SUB_PORT, tailnet_expiry_stage
 
 log = logging.getLogger("obhod.app")
 
@@ -58,6 +59,7 @@ LOADING_SKIP = (
     "tools:pentest",
     "upd:commit:go",
     "upd:release:go",
+    "upd:reinstall:go",
 )
 RENDER_CACHE = 64
 DENY_LIMIT = 1
@@ -223,7 +225,7 @@ class Bot:
     def seed_ports(self) -> None:
         sub = int(getattr(self.cfg, "sub_port", 0) or 0)
         api = int(getattr(self.cfg, "api_port", 0) or 0)
-        changed = False
+        changed = bool(getattr(self.state.xray, "purged_auto_raw", False))
         if 1 <= sub <= 65535 and int(self.state.sub_port) == SUB_PORT and sub != SUB_PORT:
             self.state.sub_port = sub
             self.state.xray.sub_port = sub
@@ -455,7 +457,38 @@ class Bot:
         for event in raised:
             await self.notify_send(event)
         self.notify.drain()
+        await self.check_tailscale_expiry_notify()
         return raised
+
+    async def check_tailscale_expiry_notify(self, now: datetime | None = None, refresh: bool = True) -> str:
+        xr = self.state.xray
+        if not (xr.tunnel_enabled or xr.tunnel_host or xr.tunnel_key_expiry or xr.tunnel_expired):
+            return ""
+        if refresh and self.quiet("ts_expiry_probe", 21600.0):
+            try:
+                await self.xray.refresh_tunnel_meta()
+            except Exception as exc:
+                log.debug("tailscale expiry probe skipped: %s", exc)
+        stage, days = tailnet_expiry_stage(xr.tunnel_key_expiry, xr.tunnel_expired, now=now)
+        if not stage:
+            if xr.tunnel_key_expiry == "never" and xr.tunnel_expiry_notified:
+                xr.tunnel_expiry_notified = ""
+                self.save()
+            return ""
+        stamp = "expired" if stage == "expired" else f"{stage}:{str(xr.tunnel_key_expiry)[:10]}"
+        if xr.tunnel_expiry_notified == stamp:
+            return ""
+        target = notify.delivery_target(self) or int(self.admin_id or 0)
+        if not target:
+            return ""
+        try:
+            await self.send(target, xscreens.tailscale_expiry_alert(self.xray.view(), stage, days))
+        except Exception as exc:
+            log.debug("tailscale expiry alert skipped: %s", exc)
+            return ""
+        xr.tunnel_expiry_notified = stamp
+        self.save()
+        return stage
 
     async def freeturn_warmup(self) -> None:
         probe_fn = getattr(self.freeturn.control, "probe", None)
@@ -603,6 +636,12 @@ class Bot:
         await app.run()
 
     async def verify_update(self) -> None:
+        if getattr(self.state.xray, "purged_auto_raw", False):
+            self.state.xray.purged_auto_raw = False
+            try:
+                await self.xray.sync_live_and_subs()
+            except Exception as exc:
+                log.debug("auto raw migration sync skipped: %s", exc)
         try:
             found = await self.updater.verify()
         except (UpdateError, ShellError) as exc:
@@ -614,6 +653,10 @@ class Bot:
         self.update_notice = found
         if found:
             await self.report_update(found)
+        try:
+            await self.check_tailscale_expiry_notify()
+        except Exception as exc:
+            log.debug("startup tailscale expiry check skipped: %s", exc)
 
     async def probe_update_daemons(self, bot_state: str = "active") -> list[dict[str, str]]:
         daemons: list[dict[str, str]] = [
@@ -1709,8 +1752,23 @@ class Bot:
     async def update_action(self, chat_id: int, msg_id: int, action: str, stage: str) -> None:
         t = self.tr()
         if action in {"", "show", "refresh"}:
-            steps = [t("UPD_STEP_FETCH"), t("UPD_STEP_RESET"), t("UPD_STEP_CHECK"), t("UPD_STEP_DEPS"), t("UPD_STEP_RESTART")]
-            await self.render(chat_id, msg_id, screens.busy_screen(t("UPD_BUSY"), self.language, steps))
+            probe_stages = ["probe_sys"]
+            base_blocks = list(screens.banner(self.view(), t))
+            if msg_id > 0:
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    screens.update_cumulative_screen(self.view(), base_blocks + screens.update_live_blocks(self.view(), self.update_info, probe_stages)),
+                )
+            if not self.update_system or action == "refresh":
+                await self.refresh_system()
+            probe_stages.append("probe_git")
+            if msg_id > 0:
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    screens.update_cumulative_screen(self.view(), base_blocks + screens.update_live_blocks(self.view(), self.update_info, probe_stages)),
+                )
             await self.refresh_update()
             await self.render(chat_id, msg_id, screens.update_screen(self.view(error=self.update_error), self.update_doc()))
             return
@@ -1796,8 +1854,14 @@ class Bot:
         self.audit.note(self.admin_id, "upd:%s" % mode, "start")
         try:
             if mode == "reinstall":
-                steps = [t("UPD_STEP_FETCH"), t("UPD_STEP_RESET"), t("UPD_STEP_CHECK"), t("UPD_STEP_DEPS"), t("UPD_STEP_RESTART")]
-                await self.render(chat_id, msg_id, screens.busy_screen(t("UPD_BUSY"), self.language, steps))
+                reinstall_stages: list[str] = ["reinstall_check"]
+                base_blocks = list(screens.banner(self.view(), t))
+                if msg_id > 0:
+                    await self.render(
+                        chat_id,
+                        msg_id,
+                        screens.update_cumulative_screen(self.view(), base_blocks + screens.update_live_blocks(self.view(), self.update_info, reinstall_stages)),
+                    )
                 await self.refresh_system()
                 probe_ok, probe_reason = True, ""
                 try:
@@ -1806,7 +1870,24 @@ class Bot:
                     probe_ok, probe_reason = False, exc.message
                 if not probe_ok:
                     raise UpdateError(probe_reason or "the reinstall cannot start", "blocked")
-                tail = await self.updater.reinstall()
+
+                async def on_reinstall_step(stage: str, _payload: dict[str, Any] | None = None) -> None:
+                    if stage not in reinstall_stages:
+                        reinstall_stages.append(stage)
+                    if msg_id > 0:
+                        await self.render(
+                            chat_id,
+                            msg_id,
+                            screens.update_cumulative_screen(self.view(), base_blocks + screens.update_live_blocks(self.view(), self.update_info, reinstall_stages)),
+                        )
+
+                accepts_reinstall_step = False
+                try:
+                    r_params = inspect.signature(self.updater.reinstall).parameters
+                    accepts_reinstall_step = "on_step" in r_params or any(item.kind == inspect.Parameter.VAR_KEYWORD for item in r_params.values())
+                except (TypeError, ValueError):
+                    accepts_reinstall_step = False
+                tail = await self.updater.reinstall(on_step=on_reinstall_step) if accepts_reinstall_step else await self.updater.reinstall()
                 self.update_info = {"git": False}
                 self.update_error = ""
                 self.update_result = {"ok": True, "mode": "reinstall", "message": tail.splitlines()[-1] if tail.strip() else "", "log": tail.splitlines()[-12:]}
@@ -1816,13 +1897,17 @@ class Bot:
             step_meta: dict[str, Any] = {}
             handoff_rendered = False
             delay = max(0.0, float(getattr(self, "update_step_delay", UPDATE_STEP_DELAY) or 0.0))
-            log_blocks: list[str] = list(screens.banner(self.view(), t))
+            base_blocks: list[str] = list(screens.banner(self.view(), t))
+            seen_stages: list[str] = []
+            log_blocks: list[str] = list(base_blocks)
 
             async def on_step(stage: str, payload: dict[str, Any] | None = None) -> None:
-                nonlocal handoff_rendered
+                nonlocal handoff_rendered, log_blocks
                 if payload:
                     step_meta.update(payload)
-                log_blocks.append(screens.update_step_block(self.view(), self.update_info, stage, step_meta))
+                if stage not in seen_stages:
+                    seen_stages.append(stage)
+                log_blocks = base_blocks + screens.update_live_blocks(self.view(), self.update_info, seen_stages, step_meta)
                 if stage == "restarting":
                     handoff_rendered = True
                     patch_fn = getattr(self.updater, "patch_marker", None)
@@ -1845,7 +1930,8 @@ class Bot:
             if accepts_step:
                 result = await self.updater.apply(mode, on_step=on_step)
             else:
-                log_blocks.append(screens.update_step_block(self.view(), self.update_info, "fetch", step_meta))
+                seen_stages.append("fetch")
+                log_blocks = base_blocks + screens.update_live_blocks(self.view(), self.update_info, seen_stages, step_meta)
                 await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks))
                 result = await self.updater.apply(mode)
         except UpdateError as exc:
@@ -1887,11 +1973,13 @@ class Bot:
         self.update_result = result.to_dict() if hasattr(result, "to_dict") else {"ok": ok_flag}
         self.update_error = ""
         if not ok_flag:
+            log_blocks = base_blocks + screens.update_live_blocks(self.view(), self.update_info, seen_stages, step_meta, all_done=False)
             fin_block, fin_btns = screens.update_final_block(self.view(), self.update_info, "failed", self.update_result)
             log_blocks.append(fin_block)
             await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks, fin_btns))
             return
         if msg_text == "already up to date":
+            log_blocks = base_blocks + screens.update_live_blocks(self.view(), self.update_info, seen_stages, step_meta, all_done=True)
             fin_block, fin_btns = screens.update_final_block(self.view(), self.update_info, "already", self.update_result)
             log_blocks.append(fin_block)
             await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks, fin_btns))
@@ -1901,11 +1989,14 @@ class Bot:
         final_meta.setdefault("target", str(getattr(result, "target", "") or ""))
         final_meta.setdefault("subject", str(getattr(result, "subject", "") or ""))
         if not restarted_flag:
+            log_blocks = base_blocks + screens.update_live_blocks(self.view(), self.update_info, seen_stages, final_meta, all_done=True)
             fin_block, fin_btns = screens.update_final_block(self.view(), self.update_info, "manual", final_meta)
             log_blocks.append(fin_block)
             await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks, fin_btns))
         elif not handoff_rendered:
-            log_blocks.append(screens.update_step_block(self.view(), self.update_info, "restarting", final_meta))
+            if "restarting" not in seen_stages:
+                seen_stages.append("restarting")
+            log_blocks = base_blocks + screens.update_live_blocks(self.view(), self.update_info, seen_stages, final_meta)
             patch_fn = getattr(self.updater, "patch_marker", None)
             if callable(patch_fn):
                 patch_fn({"chat_id": int(chat_id), "msg_id": int(msg_id), "log_blocks": list(log_blocks)})

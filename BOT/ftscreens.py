@@ -393,6 +393,8 @@ def share_screen(view: FtView) -> Any:
     else:
         if not view.notice:
             blocks.append(quote(muted(t("FT_OWNER_REVOKED"))))
+        blocks.append(quote(muted(t("FT_SHARE_MANUAL_NOTE"))))
+        buttons.append(row(button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")))
         buttons.append(
             row(
                 button(t("FT_BTN_REISSUE_OWNER"), "ft:owner:issue", icon="add"),

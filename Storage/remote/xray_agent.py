@@ -1944,6 +1944,11 @@ def cmd_tunnel_up(flags, rest):
     if not found:
         raise ScriptError("not_installed", "tailscale is not installed", "tunnel")
     stop_funnel_autofinish()
+    before = tunnel_state(https_port)
+    if not hostname and before.get("hostname"):
+        prev_short = str(before["hostname"]).split(".", 1)[0].strip().lower()
+        if TUNNEL_HOST_RE.match(prev_short):
+            hostname = prev_short
     exit_node = str(flags.get("exit_node", "")) == "1" or "--advertise-exit-node" in raw_key
     if exit_node:
         enable_exit_node_forwarding()
@@ -1956,7 +1961,10 @@ def cmd_tunnel_up(flags, rest):
     if exit_node:
         extra_flags.append("--advertise-exit-node")
     if key:
-        up_cmd = [found, "up", "--authkey=" + key] + extra_flags
+        up_cmd = [found, "up", "--authkey=" + key]
+        if before.get("have_node_key"):
+            up_cmd.append("--force-reauth")
+        up_cmd.extend(extra_flags)
         code, text = run_host(up_cmd, timeout=180)
         if code != 0 and "--reset" in (text or ""):
             code, text = run_host(up_cmd + ["--reset"], timeout=180)
@@ -1970,7 +1978,6 @@ def cmd_tunnel_up(flags, rest):
             else:
                 raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
     else:
-        before = tunnel_state(https_port)
         if before.get("expired") or before.get("backend") in {"NeedsLogin", "NoState", "absent"}:
             raise ScriptError("key_expired", "the tailscale node key expired, paste a new tskey-auth key", "tunnel")
         if before.get("backend") != "Running":
@@ -1980,8 +1987,12 @@ def cmd_tunnel_up(flags, rest):
                 code, text = run_host(reconf + ["--reset"], timeout=120)
             if code != 0:
                 raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
-        elif before.get("url"):
+        elif before.get("url") and str(before["url"]).endswith(":%d" % https_port):
             return before, None
+    for other_port in TUNNEL_FUNNEL_PORTS:
+        if other_port != https_port and str(before.get("url") or "").endswith(":%d" % other_port):
+            run_host([found, "funnel", "--https=%d" % other_port, "off"], timeout=20)
+            run_host([found, "serve", "--https=%d" % other_port, "off"], timeout=20)
     code, text = run_funnel([found, "funnel", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port], timeout=65)
     if code != 0:
         approval = APPROVAL_URL_RE.search(text or "")

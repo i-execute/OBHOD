@@ -33,9 +33,12 @@ from .xray import (
     VLESS_COMBOS,
     XrayInbound,
     XrayState,
+    current_funnel_port,
+    other_funnel_port,
     relevant_fields,
     summary,
     tailnet_expiry_label,
+    tailnet_expiry_stage,
 )
 
 LINK_PREVIEW = 10
@@ -141,6 +144,8 @@ def home(view: XrayView) -> Any:
     state = view.state
     blocks = banner(view, t)
     blocks.append(f"<p>{core_line(view, t)}</p>")
+    if view.core and not view.installed:
+        blocks.append(quote(bold(t("XR_SUBS_NO_XRAY_NOTE"))))
     pairs = [
         ("info", t("XR_HOME_INBOUNDS"), code(len(state.inbounds))),
         ("users", t("XR_HOME_CLIENTS"), code(sum(len(item.clients) for item in state.inbounds))),
@@ -391,11 +396,33 @@ def size_text(value: int) -> str:
 
 
 TAILSCALE_NEW_LINUX_URL = "https://login.tailscale.com/admin/machines/new-linux"
+TAILSCALE_MACHINES_URL = "https://login.tailscale.com/admin/machines"
 
 
 def tailscale_guide_block(t: i18n.Translator, open_: bool = False) -> str:
     body = f"<p>{t('TS_GUIDE_INTRO')}</p>"
     return details(t("TS_GUIDE_TITLE"), body, open_=open_)
+
+
+def tailscale_expiry_alert(view: XrayView, stage: str, days: int) -> Any:
+    t = view.tr()
+    state = view.state
+    if stage == "expired":
+        title = t("TS_EXPIRY_ALERT_TITLE_EXPIRED")
+    elif stage == "7d":
+        title = t("TS_EXPIRY_ALERT_TITLE_7D", days=days)
+    else:
+        title = t("TS_EXPIRY_ALERT_TITLE_30D", days=days)
+    host = state.tunnel_host.split(":", 1)[0] or state.public_base() or "-"
+    date_label = str(state.tunnel_key_expiry or "")[:10] or "-"
+    body_text = t("TS_EXPIRY_ALERT_BODY", host=host, date=date_label)
+    blocks = [quote(bold(title)), f"<p>{muted(body_text)}</p>"]
+    buttons = [
+        row(link_button(t("TS_MACHINES_BTN"), TAILSCALE_MACHINES_URL, icon="shield")),
+        row(link_button(t("TS_ROTATE_KEY_BTN"), TAILSCALE_NEW_LINUX_URL, icon="key")),
+        row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("UI_HOME"), "nav:home", icon="home")),
+    ]
+    return screen(title, "", blocks, buttons, icon="clock")
 
 
 def approval_prompt_text(t: i18n.Translator, approval_url: str) -> str:
@@ -411,55 +438,105 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     t = view.tr()
     state = view.state
     blocks = banner(view, t)
+    core_known = bool(view.core)
+    xray_missing = bool(core_known and not view.installed)
+    enabled_inbounds = [item for item in state.inbounds if item.enable]
+    no_inbounds = len(enabled_inbounds) == 0
+    live_unapplied = bool(
+        core_known
+        and view.installed
+        and "inbounds" in view.core
+        and int(view.core.get("inbounds") or 0) == 0
+        and len(enabled_inbounds) > 0
+    )
     approval_url = str(getattr(state, "tunnel_approval_url", "") or "").strip()
     domain_ok = bool(state.tunnel_enabled and not state.tunnel_expired and state.public_base())
     has_live_node = bool(state.tunnel_key_expiry and not state.tunnel_expired)
     ready = bool(domain_ok or view.key_mask or state.tunnel_expired or state.tunnel_key_expiry or approval_url)
     if not ready:
+        if xray_missing:
+            blocks.append(quote(bold(t("XR_SUBS_NO_XRAY_NOTE"))))
         blocks.append(quote(muted(t("XR_SUBS_NO_DOMAIN"))))
         blocks.append(tailscale_guide_block(t, open_=True))
-        buttons = [
-            row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")),
-            input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
-            back_row("xr:home", view.lang),
-        ]
+        buttons = []
+        if xray_missing:
+            buttons.append(row(button(t("XR_SUBS_INSTALL_XRAY"), "xr:core:install", icon="box")))
+        buttons.extend(
+            [
+                row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")),
+                input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
+                back_row("xr:home", view.lang),
+            ]
+        )
         return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
     if state.tunnel_expired and not view.error:
         blocks.append(quote(bold(t("TAILNET_EXPIRED_NOTE"))))
     elif approval_url and not domain_ok and not view.error:
         blocks.append(quote(bold(approval_prompt_text(t, approval_url))))
+    else:
+        exp_stage, exp_days = tailnet_expiry_stage(state.tunnel_key_expiry, state.tunnel_expired)
+        if exp_stage == "7d":
+            blocks.append(quote(bold(t("TS_EXPIRY_ALERT_TITLE_7D", days=exp_days))))
+        elif exp_stage == "30d":
+            blocks.append(quote(bold(t("TS_EXPIRY_ALERT_TITLE_30D", days=exp_days))))
     bundle = view.bundle
     links = [item for item in (bundle.links if bundle is not None else []) if str(item).startswith("vless://")]
     pairs = [
         ("link", t("XR_SUBS_ENABLED"), code(i18n.t("UI_YES" if state.sub_enabled else "UI_NO", view.lang))),
         ("world", t("DOM_TITLE"), code(state.public_base() or t("UI_NOT_SET"))),
+        ("plug", t("XR_SUBS_LOCAL_PORT"), code("127.0.0.1:%d" % int(state.sub_port or 0))),
     ]
     if state.tunnel_key_expiry or state.tunnel_expired:
         pairs.append(("clock", t("TAILNET_EXPIRY"), code(tailnet_expiry_label(state.tunnel_key_expiry, state.tunnel_expired, view.lang))))
     if getattr(state, "tunnel_tags", ""):
         pairs.append(("tag", t("TAILSCALE_TAGS_ROW"), code(state.tunnel_tags)))
+    pairs.append(("info", t("XR_HOME_INBOUNDS"), code(len(enabled_inbounds))))
     pairs.append(("users", t("XR_HOME_CLIENTS"), code(len(links))))
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
+    if domain_ok:
+        blocks.append(quote(muted(t("XR_SUBS_FUNNEL_NOTE", port=int(state.sub_port or 0)))))
     copy_btn = ""
-    if bundle is not None and links and domain_ok:
+    setup_btn = ""
+    sub_link_ready = bool(
+        bundle is not None
+        and links
+        and domain_ok
+        and not xray_missing
+        and not no_inbounds
+        and not live_unapplied
+    )
+    if xray_missing:
+        blocks.append(quote(bold(t("XR_SUBS_NO_XRAY_NOTE"))))
+        setup_btn = row(button(t("XR_SUBS_INSTALL_XRAY"), "xr:core:install", icon="box"))
+    elif no_inbounds:
+        blocks.append(quote(bold(t("XR_SUBS_NO_INBOUNDS_NOTE"))))
+        setup_btn = row(button(t("XR_SUBS_CREATE_INBOUND"), "xr:new", icon="add"))
+    elif not links:
+        blocks.append(quote(bold(t("XR_SUBS_NO_CLIENTS_NOTE"))))
+        setup_btn = row(button(t("XR_SUBS_OPEN_INBOUND"), f"xr:in:{enabled_inbounds[0].id}", icon="module"))
+    elif live_unapplied:
+        blocks.append(quote(bold(t("XR_SUBS_UNAPPLIED_NOTE"))))
+        setup_btn = row(button(t("XR_SUBS_APPLY_XRAY"), "xr:core:apply", icon="save"))
+    elif sub_link_ready:
         host = state.address(view.address)
-        url = subs.url_of(bundle, host, state.sub_port, state.public_base())
-        blocks.append(long_block(t("XR_SUBS_ONE"), url))
+        url = subs.json_url_of(bundle, host, state.sub_port, state.public_base())
+        blocks.append(long_block(t("XR_SUBS_JSON_TITLE"), url))
         blocks.append(long_block(t("XR_SUBS_LINKS_TITLE"), "\n".join(links[:LINK_PREVIEW])))
         copy_btn = copy_row(t("SUB_COPY"), url, icon="copy")
-    elif not links:
-        blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
     if not domain_ok and not has_live_node:
         blocks.append(tailscale_guide_block(t, open_=bool(state.tunnel_expired)))
     buttons = []
+    if setup_btn:
+        buttons.append(setup_btn)
     if copy_btn:
         buttons.append(copy_btn)
     has_approve_btn = bool(approval_url and approval_url.startswith("https://") and not domain_ok)
     if has_approve_btn:
         buttons.append(row(link_button(t("TAILSCALE_APPROVE_BTN"), approval_url, icon="ok")))
     if domain_ok:
+        alt_port = other_funnel_port(current_funnel_port(state.tunnel_host))
         buttons.append(row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")))
-        buttons.append(row(button(t("DOM_OFF"), "xr:dom:off", icon="stop")))
+        buttons.append(row(button(t("DOM_SWITCH_PORT", port=alt_port), "xr:dom:port", icon="plug"), button(t("DOM_OFF"), "xr:dom:off", icon="stop")))
     elif not state.tunnel_expired:
         buttons.append(row(button(t("DOM_UP"), "xr:dom:up", icon="world")))
     if not has_approve_btn and not domain_ok:

@@ -721,7 +721,8 @@ class Updater:
             log.warning("the detached unit %s did not start: %s", unit, clean_output(out.text)[:200])
         return int(out.code or 0) == 0
 
-    async def reinstall(self, on_log: Any = None) -> str:
+    async def reinstall(self, on_log: Any = None, on_step: Any = None) -> str:
+        await self._emit_step(on_step, "reinstall_check")
         writable, reason = await self.preflight()
         if not writable:
             raise UpdateError(
@@ -729,6 +730,7 @@ class Updater:
                 % (self.root, reason or "the unit keeps the tree read-only"),
                 "readonly",
             )
+        await self._emit_step(on_step, "reinstall_fetch")
         body = await self.fetch_get()
         try:
             script = self._write_staged_script(body)
@@ -738,6 +740,7 @@ class Updater:
         args = ["bash", str(script), "install", "--yes"]
         if env_file.is_file():
             args.append("--env-file=%s" % env_file)
+        await self._emit_step(on_step, "reinstall_exec")
         detached = await self.detached(args, REINSTALL_UNIT, self.unit)
         if detached:
             return "the reinstall is running in the background as %s, the output goes to the journal under that unit name, the service restarts itself when it is done" % REINSTALL_UNIT

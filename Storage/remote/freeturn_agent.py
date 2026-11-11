@@ -1507,6 +1507,41 @@ def revoke_owner_client(root=INSTALL_ROOT, wg_conf="/etc/wireguard/ft-wg0.conf")
     return {"removed": True, "name": "owner"}
 
 
+def has_owner_client(root=INSTALL_ROOT):
+    if os.path.isdir(os.path.join(root, "clients", "owner")):
+        return True
+    meta_path = os.path.join(root, "clients.list")
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8", errors="replace") as handle:
+                for raw in handle:
+                    parts = raw.strip().split("|")
+                    if parts and parts[0] == "owner":
+                        return True
+        except OSError:
+            pass
+    return False
+
+
+def strip_auto_owner(data, root=INSTALL_ROOT, wg_conf="/etc/wireguard/ft-wg0.conf"):
+    try:
+        revoke_owner_client(root=root, wg_conf=wg_conf)
+    except AgentError:
+        pass
+    if not isinstance(data, dict):
+        return data
+    links = data.get("links")
+    if isinstance(links, dict):
+        links.pop("owner", None)
+    clients = data.get("clients")
+    if isinstance(clients, list):
+        data["clients"] = [item for item in clients if not (isinstance(item, dict) and item.get("name") == "owner")]
+    if str(data.get("name") or "") == "owner" or "owner" not in (links or {}):
+        data.pop("link", None)
+        data.pop("conf", None)
+    return data
+
+
 def main(argv):
     command, flags = parse_argv(argv)
     stage = command.replace("-", "_")
@@ -1560,6 +1595,7 @@ def main(argv):
             emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
             return 1
     try:
+        had_owner = has_owner_client(INSTALL_ROOT) if command == "apply" else True
         script = script_source(flags)
         plan = command_argv(command, flags)
         timeout = TIMEOUTS.get(command, 300)
@@ -1571,6 +1607,8 @@ def main(argv):
         body = sanitize(payload)
         if body["result"] == "ok" and os.geteuid() == 0:
             heal_runtime(script, command, flags, body)
+        if command == "apply" and body["result"] == "ok" and not had_owner:
+            strip_auto_owner(body["data"], INSTALL_ROOT)
         emit(body["result"], body["data"], body.get("code", ""), body.get("msg", ""), body.get("stage", stage), body["logs"])
         return 0 if body["result"] == "ok" else 1
     except AgentError as exc:

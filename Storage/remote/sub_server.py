@@ -497,8 +497,12 @@ class Handler(BaseHTTPRequestHandler):
         base = base_url(self.headers.get("Host"))
         if want_json:
             count = len(xray_only(entry.get("links")))
+            configs = entry.get("configs")
             if want_info:
                 document = info_body(entry, count, base)
+                body = json.dumps(document, ensure_ascii=True, sort_keys=True)
+            elif isinstance(configs, list) and configs:
+                body = json.dumps(configs, ensure_ascii=False, indent=2)
             else:
                 document = {
                     "title": str(entry.get("title") or "OBHOD")[:64],
@@ -507,7 +511,7 @@ class Handler(BaseHTTPRequestHandler):
                     "userinfo": userinfo(entry),
                     "payload": payload,
                 }
-            body = json.dumps(document, ensure_ascii=True, sort_keys=True)
+                body = json.dumps(document, ensure_ascii=True, sort_keys=True)
             self.send_plain(
                 200,
                 body + "\n",

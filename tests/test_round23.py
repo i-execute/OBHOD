@@ -139,8 +139,9 @@ def test_task6_cumulative_update_edits_and_minimal_boot_rich_with_summary(
     assert len(edits) == 6
     assert sleeps == [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     for prev, curr in zip(edits, edits[1:]):
-        assert curr.startswith(prev)
         assert len(curr) > len(prev)
+        assert "<p>\n</p>" not in curr
+        assert "</p><br><p>" not in curr
 
     after_answers = dict(BASE)
     after_answers["rev-parse --short HEAD"] = (0, "2222bbb")

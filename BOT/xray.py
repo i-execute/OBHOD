@@ -102,6 +102,22 @@ def random_funnel_port() -> int:
     return secrets.choice(FUNNEL_PORTS)
 
 
+def current_funnel_port(host: object) -> int:
+    text = str(host or "").strip().lower().removeprefix("https://").removeprefix("http://").strip("/")
+    if ":" in text:
+        tail = text.rsplit(":", 1)[-1]
+        if tail.isdigit() and int(tail) in FUNNEL_PORTS:
+            return int(tail)
+    return 0
+
+
+def other_funnel_port(current: int) -> int:
+    for item in FUNNEL_PORTS:
+        if int(item) != int(current or 0):
+            return int(item)
+    return FUNNEL_PORTS[0]
+
+
 TSKEY_EXTRACT_RE = re.compile(
     r"(tskey-(?:auth|client)-[A-Za-z0-9_]{4,96}(?:-[A-Za-z0-9_]{2,96}){0,6}(?:\?[A-Za-z0-9_=&%-]{1,96})?)"
 )
@@ -169,6 +185,39 @@ def compact_tailscale_input(raw: object) -> str:
 def parse_tailnet_input(raw: object) -> tuple[str, bool]:
     parsed = parse_tailscale_input(raw)
     return parsed.key, parsed.exit_node
+
+
+def tailnet_expiry_days(expiry: object, expired: bool = False, now: datetime | None = None) -> int | None:
+    if expired:
+        return -1
+    raw = str(expiry or "").strip()
+    if not raw or raw == "never":
+        return None
+    cleaned = raw.replace("Z", "+00:00")
+    try:
+        target = datetime.fromisoformat(cleaned)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        ref = now or datetime.now(timezone.utc)
+        delta_sec = (target - ref).total_seconds()
+        if delta_sec <= 0:
+            return -1
+        return max(0, int(delta_sec // 86400))
+    except ValueError:
+        return None
+
+
+def tailnet_expiry_stage(expiry: object, expired: bool = False, now: datetime | None = None) -> tuple[str, int]:
+    days = tailnet_expiry_days(expiry, expired=expired, now=now)
+    if days is None:
+        return "", 0
+    if days < 0:
+        return "expired", 0
+    if days <= 7:
+        return "7d", days
+    if days <= 30:
+        return "30d", days
+    return "", days
 
 
 def tailnet_expiry_label(expiry: object, expired: bool = False, lang: str = i18n.DEFAULT_LANGUAGE) -> str:
@@ -900,14 +949,29 @@ def mux_ignored(flow: str = "") -> bool:
 def client_stream(inbound: XrayInbound) -> dict[str, Any]:
     network = "tcp" if inbound.network == "raw" else inbound.network
     stream: dict[str, Any] = {"network": network, "security": inbound.security, "sockopt": sockopt_block()}
+    if inbound.network == "raw":
+        stream["tcpSettings"] = {"acceptProxyProtocol": False, "header": {"type": "none"}}
+    elif inbound.network == "grpc":
+        stream["grpcSettings"] = {
+            "serviceName": inbound.service_name or inbound.tag or inbound.remark,
+            "multiMode": bool(inbound.multi_mode),
+        }
+    elif inbound.network == "xhttp":
+        xhttp: dict[str, Any] = {"path": inbound.path or "/", "mode": inbound.xhttp_mode or "auto"}
+        if inbound.host_header:
+            xhttp["host"] = inbound.host_header
+        stream["xhttpSettings"] = xhttp
     if inbound.security == "reality":
-        stream["realitySettings"] = {
+        reality: dict[str, Any] = {
             "serverName": inbound.sni or DEFAULT_SNI,
             "fingerprint": inbound.fingerprint or DEFAULT_FINGERPRINT,
             "publicKey": inbound.reality_public,
             "shortId": (inbound.short_ids or [""])[0],
             "spiderX": inbound.spider_x or "/",
         }
+        if inbound.mldsa65_verify:
+            reality["mldsa65Verify"] = inbound.mldsa65_verify
+        stream["realitySettings"] = reality
     elif inbound.security == "tls":
         stream["tlsSettings"] = {
             "serverName": inbound.sni,
@@ -920,6 +984,8 @@ def client_stream(inbound: XrayInbound) -> dict[str, Any]:
 def client_config(inbound: XrayInbound, client: XrayClient, address: str, port: int | None = None) -> dict[str, Any]:
     if not inbound.post_quantum():
         raise XrayError("the inbound has no post quantum vless key pair")
+    remark_head = inbound.remark or inbound.network
+    remarks = "%s-%s" % (remark_head, client.email) if client.email else remark_head
     outbound: dict[str, Any] = {
         "protocol": "vless",
         "settings": {
@@ -944,6 +1010,7 @@ def client_config(inbound: XrayInbound, client: XrayClient, address: str, port: 
     if mux:
         outbound["mux"] = mux
     return {
+        "remarks": remarks,
         "log": {"loglevel": "warning"},
         "inbounds": [
             {
@@ -1197,6 +1264,9 @@ class Subscription:
     def path(self) -> str:
         return "/%s/%s" % (self.sub_id, self.sub_key)
 
+    def json_path(self) -> str:
+        return self.path() + "/json"
+
     def url(self, address: str, port: int) -> str:
         host = (address or "").strip()
         if not host:
@@ -1207,11 +1277,29 @@ class Subscription:
             host = "http://" + join_authority(host, port)
         return host.rstrip("/") + self.path()
 
+    def json_url(self, address: str, port: int) -> str:
+        base = self.url(address, port)
+        return (base + "/json") if base else ""
+
     def safe_url(self, address: str, port: int) -> str:
         try:
             return self.url(address, port)
         except (ValueError, XrayError):
             return ""
+
+    def safe_json_url(self, address: str, port: int) -> str:
+        try:
+            return self.json_url(address, port)
+        except (ValueError, XrayError):
+            return ""
+
+    def public_url(self, base: str) -> str:
+        clean = str(base or "").rstrip("/")
+        return (clean + self.path()) if clean else ""
+
+    def public_json_url(self, base: str) -> str:
+        clean = str(base or "").rstrip("/")
+        return (clean + self.json_path()) if clean else ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1288,10 +1376,13 @@ class XrayState:
     tunnel_exit_node: bool = False
     tunnel_tags: str = ""
     tunnel_approval_url: str = ""
+    tunnel_expiry_notified: str = ""
     api_enabled: bool = True
     api_port: int = API_PORT
     metrics: str = DEFAULT_METRICS
     dns_servers: list[str] = field(default_factory=list)
+    manual_schema: int = 1
+    purged_auto_raw: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1329,18 +1420,27 @@ class XrayState:
             "tunnel_exit_node": bool(self.tunnel_exit_node),
             "tunnel_tags": normalize_tailscale_tags(self.tunnel_tags),
             "tunnel_approval_url": self.tunnel_approval_url[:200],
+            "tunnel_expiry_notified": self.tunnel_expiry_notified[:64],
             "api_enabled": bool(self.api_enabled),
             "api_port": int(self.api_port),
             "metrics": self.metrics,
             "dns_servers": list(self.dns_servers),
+            "manual_schema": int(self.manual_schema or 1),
         }
 
     @staticmethod
     def from_dict(raw: dict[str, Any] | None) -> "XrayState":
         data = raw or {}
         targets = [str(item) for item in data.get("scan_targets") or []]
+        loaded = [XrayInbound.from_dict(item) for item in data.get("inbounds") or [] if isinstance(item, dict)]
+        schema = int(data.get("manual_schema", 0) or 0)
+        purged = False
+        if raw and schema < 1 and loaded:
+            kept = [item for item in loaded if not is_auto_default_raw(item)]
+            purged = len(kept) != len(loaded)
+            loaded = kept
         return XrayState(
-            inbounds=[XrayInbound.from_dict(item) for item in data.get("inbounds") or [] if isinstance(item, dict)],
+            inbounds=loaded,
             version=str(data.get("version", LATEST_CHOICE) or LATEST_CHOICE),
             log_level=str(data.get("log_level", "warning") or "warning"),
             scan_targets=targets,
@@ -1374,10 +1474,13 @@ class XrayState:
             tunnel_exit_node=bool(data.get("tunnel_exit_node", False)),
             tunnel_tags=normalize_tailscale_tags(data.get("tunnel_tags", "")),
             tunnel_approval_url=str(data.get("tunnel_approval_url", "") or "")[:200],
+            tunnel_expiry_notified=str(data.get("tunnel_expiry_notified", "") or "")[:64],
             api_enabled=bool(data.get("api_enabled", True)),
             api_port=int(data.get("api_port", API_PORT) or API_PORT),
             metrics=str(data.get("metrics", DEFAULT_METRICS) or ""),
             dns_servers=[str(item) for item in data.get("dns_servers") or []],
+            manual_schema=1,
+            purged_auto_raw=purged,
         )
 
     def inbound(self, ident: object) -> XrayInbound | None:
@@ -1701,6 +1804,21 @@ class XrayState:
     def announce(self) -> str:
         return " ".join((self.sub_announce or "").split())[:200]
 
+    def client_configs(self, address: str = "") -> list[dict[str, Any]]:
+        host = self.address(address)
+        if not host:
+            return []
+        out: list[dict[str, Any]] = []
+        for inbound in self.inbounds:
+            if not inbound.enable:
+                continue
+            for client in inbound.clients:
+                try:
+                    out.append(client_config(inbound, client, host, inbound.port))
+                except XrayError:
+                    continue
+        return out
+
     def aggregate_entry(self, address: str = "", extra_links: Any = None, refresh: int = 0) -> dict[str, Any]:
         bundle = subs.aggregate(self, extra_links, address, self.sub_port)
         quotas: list[dict[str, int]] = []
@@ -1711,6 +1829,7 @@ class XrayState:
             quotas.append(subs.quota_of(client, usage))
         bundle.quotas = quotas
         entry = subs.entry_of(bundle, refresh or self.sub_refresh)
+        entry["configs"] = self.client_configs(address)
         entry["support_url"] = self.support_url()
         entry["announce"] = self.announce()
         return entry
@@ -1731,3 +1850,22 @@ class XrayState:
             self.dns_servers,
             tuple(sorted({0})),
         )
+
+
+def is_auto_default_raw(inbound: XrayInbound) -> bool:
+    if inbound.network != "raw":
+        return False
+    remark = str(inbound.remark or "").strip()
+    emails = [item.email for item in inbound.clients]
+    if emails not in ([], ["owner"]):
+        return False
+    if remark.startswith("sub-"):
+        return True
+    if remark in {
+        "default",
+        "raw-%d" % inbound.port,
+        "%s-%d" % (inbound.security, inbound.port),
+        "%s-%d-raw" % (inbound.protocol, inbound.port),
+    }:
+        return True
+    return False

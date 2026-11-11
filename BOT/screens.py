@@ -528,6 +528,60 @@ def _update_stage_catalog(t: i18n.Translator, include_deps: bool = False) -> lis
     return items
 
 
+def update_stage_labels(t: i18n.Translator, stage: str) -> tuple[str, str]:
+    mapping = {
+        "fetch": (t("UPD_STAGE_FETCH_RUN"), t("UPD_STAGE_FETCH_DONE")),
+        "compare": (t("UPD_STAGE_COMPARE_RUN"), t("UPD_STAGE_COMPARE_DONE")),
+        "apply": (t("UPD_STAGE_APPLY_RUN"), t("UPD_STAGE_APPLY_DONE")),
+        "verify": (t("UPD_STAGE_VERIFY_RUN"), t("UPD_STAGE_VERIFY_DONE")),
+        "deps": (t("UPD_STAGE_DEPS_RUN"), t("UPD_STAGE_DEPS_DONE")),
+        "probe_sys": (t("UPD_PROBE_SYS_RUN"), t("UPD_PROBE_SYS_DONE")),
+        "probe_git": (t("UPD_PROBE_GIT_RUN"), t("UPD_PROBE_GIT_DONE")),
+        "reinstall_check": (t("UPD_REINSTALL_CHECK_RUN"), t("UPD_REINSTALL_CHECK_DONE")),
+        "reinstall_fetch": (t("UPD_REINSTALL_FETCH_RUN"), t("UPD_REINSTALL_FETCH_DONE")),
+        "reinstall_exec": (t("UPD_REINSTALL_EXEC_RUN"), t("UPD_REINSTALL_EXEC_DONE")),
+    }
+    return mapping.get(stage, (stage, stage))
+
+
+def update_live_blocks(
+    view: View,
+    info: dict[str, Any],
+    stages: list[str],
+    meta: dict[str, Any] | None = None,
+    all_done: bool = False,
+) -> list[str]:
+    t = view.tr()
+    data = dict(meta or {})
+    repo = str(info.get("repo") or DEFAULT_REPO)
+    target = str(data.get("target") or "")[:12]
+    linked = ref_link(target, repo) if target else code(t("UI_NOT_SET"))
+    subject = str(data.get("subject") or "").strip()
+    restarting = "restarting" in stages
+    work_stages = [item for item in stages if item != "restarting"]
+    lines: list[str] = []
+    for idx, name in enumerate(work_stages):
+        run_label, done_label = update_stage_labels(t, name)
+        tail = f" ({linked})" if name == "apply" and target else ""
+        is_done = restarting or all_done or idx < len(work_stages) - 1
+        if is_done:
+            lines.append(f"{ico('ok')}{esc(done_label)}{tail}")
+        else:
+            lines.append(f"{ico('loading')}{bold(run_label)}{tail}")
+    blocks: list[str] = []
+    if lines:
+        blocks.append("<p>" + "\n".join(lines) + "</p>")
+    if restarting:
+        restart_lines = [
+            ico("restart") + bold(t("UPD_RESTARTING_TITLE")),
+            bold_html(t("UPD_RESTARTING_BODY", commit=linked)),
+        ]
+        if subject:
+            restart_lines.append(muted(subject))
+        blocks.append(quote("\n".join(restart_lines)))
+    return blocks
+
+
 def update_step_block(view: View, info: dict[str, Any], stage: str, meta: dict[str, Any] | None = None) -> str:
     t = view.tr()
     data = dict(meta or {})
@@ -538,24 +592,25 @@ def update_step_block(view: View, info: dict[str, Any], stage: str, meta: dict[s
     if stage == "fetch":
         return f"<p>{ico('loading')}{bold(t('UPD_STAGE_FETCH_RUN'))}</p>"
     if stage == "compare":
-        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_FETCH_DONE'))} · {ico('loading')}{bold(t('UPD_STAGE_COMPARE_RUN'))}</p>"
+        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_FETCH_DONE'))}\n{ico('loading')}{bold(t('UPD_STAGE_COMPARE_RUN'))}</p>"
     if stage == "apply":
         tail = f" ({linked})" if target else ""
-        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_COMPARE_DONE'))} · {ico('loading')}{bold(t('UPD_STAGE_APPLY_RUN'))}{tail}</p>"
+        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_COMPARE_DONE'))}\n{ico('loading')}{bold(t('UPD_STAGE_APPLY_RUN'))}{tail}</p>"
     if stage == "verify":
-        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_APPLY_DONE'))} · {ico('loading')}{bold(t('UPD_STAGE_VERIFY_RUN'))}</p>"
+        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_APPLY_DONE'))}\n{ico('loading')}{bold(t('UPD_STAGE_VERIFY_RUN'))}</p>"
     if stage == "deps":
-        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_VERIFY_DONE'))} · {ico('loading')}{bold(t('UPD_STAGE_DEPS_RUN'))}</p>"
+        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_VERIFY_DONE'))}\n{ico('loading')}{bold(t('UPD_STAGE_DEPS_RUN'))}</p>"
     if stage == "restarting":
         prev_done = t("UPD_STAGE_DEPS_DONE") if data.get("deps") else t("UPD_STAGE_VERIFY_DONE")
-        parts = [
-            f"<p>{ico('ok')}{esc(prev_done)}</p>",
-            quote(ico("restart") + bold(t("UPD_RESTARTING_TITLE")) + " · " + bold_html(t("UPD_RESTARTING_BODY", commit=linked))),
+        restart_lines = [
+            ico("restart") + bold(t("UPD_RESTARTING_TITLE")),
+            bold_html(t("UPD_RESTARTING_BODY", commit=linked)),
         ]
         if subject:
-            parts.append(quote(muted(subject)))
-        return "\n".join(parts)
-    return f"<p>{ico('loading')}{bold(stage)}</p>"
+            restart_lines.append(muted(subject))
+        return f"<p>{ico('ok')}{esc(prev_done)}</p>" + quote("\n".join(restart_lines))
+    run_label, _ = update_stage_labels(t, stage)
+    return f"<p>{ico('loading')}{bold(run_label)}</p>"
 
 
 def update_final_block(view: View, info: dict[str, Any], kind: str, payload: dict[str, Any] | None = None) -> tuple[str, list[str]]:
@@ -566,37 +621,35 @@ def update_final_block(view: View, info: dict[str, Any], kind: str, payload: dic
     linked = ref_link(commit, repo) if commit else code(t("UI_NOT_SET"))
     subject = str(data.get("subject") or info.get("subject") or "").strip()
     if kind == "already":
-        parts = [
-            f"<p>{ico('ok')}{esc(t('UPD_STAGE_COMPARE_DONE'))}</p>",
-            quote(ico("ok") + bold(t("UPD_ALREADY_TITLE")) + " · " + bold_html(t("UPD_ALREADY", commit=linked))),
+        q_lines = [
+            ico("ok") + bold(t("UPD_ALREADY_TITLE")),
+            bold_html(t("UPD_ALREADY", commit=linked)),
         ]
         if subject:
-            parts.append(quote(muted(subject)))
+            q_lines.append(muted(subject))
         btns = [row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
-        return "\n".join(parts), btns
+        return quote("\n".join(q_lines)), btns
     if kind == "failed":
         message = str(data.get("message") or t("UPD_NOTHING_DONE")).strip()
         prefix = esc(str(t("UPD_FAILED", error="")).rstrip(": ").strip())
-        parts = [quote(ico("warn") + bold_html(f"{prefix}: {esc(message)}"))]
+        q_lines = [ico("warn") + bold_html(f"{prefix}: {esc(message)}")]
         if data.get("rollback"):
             source = str(data.get("source") or "")[:12]
             if source:
-                parts.append(quote(muted_html(t("UPD_ROLLBACK", commit=ref_link(source, repo)))))
+                q_lines.append(muted_html(t("UPD_ROLLBACK", commit=ref_link(source, repo))))
         btns = [row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
-        return "\n".join(parts), btns
+        return quote("\n".join(q_lines)), btns
     if kind == "manual":
-        prev_done = t("UPD_STAGE_DEPS_DONE") if data.get("deps") else t("UPD_STAGE_VERIFY_DONE")
-        parts = [
-            f"<p>{ico('ok')}{esc(prev_done)}</p>",
-            quote(ico("info") + bold(t("UPD_RESTART_MANUAL_TITLE")) + " · " + bold_html(t("UPD_RESTART_MANUAL_BODY", commit=linked))),
+        q_lines = [
+            ico("info") + bold(t("UPD_RESTART_MANUAL_TITLE")),
+            bold_html(t("UPD_RESTART_MANUAL_BODY", commit=linked)),
         ]
         if subject:
-            parts.append(quote(muted(subject)))
+            q_lines.append(muted(subject))
         btns = [row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
-        return "\n".join(parts), btns
-    parts = [quote(ico("ok") + bold_html(t("UPD_APPLIED_FINAL", commit=linked)))]
+        return quote("\n".join(q_lines)), btns
     btns = [row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
-    return "\n".join(parts), btns
+    return quote(ico("ok") + bold_html(t("UPD_APPLIED_FINAL", commit=linked))), btns
 
 
 def update_cumulative_screen(view: View, log_blocks: list[str], buttons: list[str] | None = None) -> Any:

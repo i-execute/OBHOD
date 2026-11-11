@@ -18,6 +18,7 @@ TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+[-A-Za-z0-9.]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 PRE_BLOCK = re.compile(r"(<pre(?:\s[^>]*)?>.*?</pre>)", re.S)
+INTER_BLOCK_NL = re.compile(r"(</(?:p|blockquote|details|table|ul|ol|h[1-6])>|<hr\s*/?>)\s*\n+\s*(?=<)")
 SEP = " · "
 _ICONS = False
 
@@ -31,7 +32,8 @@ class ScreenRich(Rich):
             if idx % 2 == 1:
                 out.append(chunk)
             else:
-                out.append(re.sub(r"\n(?![^<]*>)", "<br>", chunk))
+                cleaned = INTER_BLOCK_NL.sub(r"\1", chunk)
+                out.append(re.sub(r"\n(?![^<]*>)", "<br>", cleaned))
         return "".join(out)
 
 

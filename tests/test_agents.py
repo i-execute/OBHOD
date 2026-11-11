@@ -373,8 +373,8 @@ def test_the_tunnel_up_runs_tailscale_and_the_funnel(xray, monkeypatch) -> None:
     assert error is None
     assert state["url"] == "https://obhod.tail1234.ts.net"
     assert state["funnel"] is True
-    assert any("--authkey=tskey-auth-" in item for item in seen[0])
-    assert any("http://127.0.0.1:2096" in item for item in seen[1])
+    assert any(any("--authkey=tskey-auth-" in item for item in cmd) for cmd in seen)
+    assert any(any("http://127.0.0.1:2096" in item for item in cmd) for cmd in seen)
 
 
 def test_the_tunnel_status_without_tailscale(xray, monkeypatch) -> None:

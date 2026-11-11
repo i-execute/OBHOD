@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import ipaddress
 import logging
 import os
@@ -31,9 +32,11 @@ from .xray import (
     XrayInbound,
     VlessEncryption,
     XrayState,
+    current_funnel_port,
     gen_short_id,
     link_for,
     new_inbound,
+    other_funnel_port,
     parse_tailnet_input,
     parse_tailscale_input,
     random_funnel_port,
@@ -210,7 +213,7 @@ class XrayPanel:
         sub = self.state.subscription_of(email)
         if sub is None:
             return "", ""
-        return sub.path(), subs.url_of(sub, self.state.address(self.address()), self.state.sub_port, self.state.public_base())
+        return sub.json_path(), subs.json_url_of(sub, self.state.address(self.address()), self.state.sub_port, self.state.public_base())
 
     def next_port(self, extra: object = ()) -> int:
         used = set(self.state.ports()) | {int(item) for item in extra}
@@ -259,6 +262,7 @@ class XrayPanel:
         arg1 = parts[2] if len(parts) > 2 else ""
         arg2 = parts[3] if len(parts) > 3 else ""
         if head == "home":
+            await self.ensure_core_probed()
             await self.render(chat_id, msg_id, xscreens.home(self.view()))
             return
         if head == "check":
@@ -368,16 +372,43 @@ class XrayPanel:
         index = values.index(current) if current in values else 0
         self.draft[key] = values[(index + 1) % len(values)]
 
+    async def ensure_core_probed(self) -> None:
+        if self.core:
+            return
+        if not isinstance(self.control, XrayControl) or os.geteuid() != 0:
+            return
+        try:
+            probed = await self.control.probe(self.bot.state.ssh)
+        except (RpcError, OSError):
+            return
+        self.core = state_report(probed)
+        self.bot.state.last_probe = dict(self.core)
+        self.save()
+
     async def auto_apply_live(self) -> None:
         if not isinstance(self.control, XrayControl) or os.geteuid() != 0:
+            return
+        if self.core and not self.core.get("installed"):
             return
         try:
             config = self.state.to_config()
             applied = await self.control.apply(self.bot.state.ssh, config, version=self.state.install_version())
             self.core = state_report(applied)
+            self.bot.state.last_probe = dict(self.core)
             self.save()
         except Exception as exc:
             log.debug("auto apply skipped: %s", exc)
+
+    async def sync_live_and_subs(self) -> None:
+        await self.auto_apply_live()
+        subs_sync_fn = getattr(self.bot, "subs_sync", None)
+        if callable(subs_sync_fn):
+            try:
+                res = subs_sync_fn()
+                if inspect.isawaitable(res):
+                    await res
+            except Exception as exc:
+                log.debug("subs sync skipped: %s", exc)
 
     async def create_quick(self, chat_id: int, msg_id: int, security: str, network: str, port: str = "") -> None:
         if network not in NETWORKS:
@@ -393,9 +424,8 @@ class XrayPanel:
             raise PanelError(str(exc)) from None
         inbound.remark = f"{security}-{number}"
         self.state.add(inbound)
-        inbound.make_client("owner")
         self.save()
-        await self.auto_apply_live()
+        await self.sync_live_and_subs()
         notice = self.tr()("NOTICE_INBOUND_CREATED")
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
 
@@ -412,10 +442,9 @@ class XrayPanel:
             raise PanelError(str(exc)) from None
         inbound.remark = f"{security}-{port}"
         self.state.add(inbound)
-        inbound.make_client("owner")
         self.draft = {}
         self.save()
-        await self.auto_apply_live()
+        await self.sync_live_and_subs()
         notice = self.tr()("NOTICE_INBOUND_CREATED")
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
 
@@ -433,6 +462,7 @@ class XrayPanel:
         inbound = self.get(ident)
         inbound.enable = not inbound.enable
         self.save()
+        await self.sync_live_and_subs()
         t = self.tr()
         notice = t("NOTICE_INBOUND_ON") if inbound.enable else t("NOTICE_INBOUND_OFF")
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
@@ -454,6 +484,7 @@ class XrayPanel:
         self.state.set_reality_keys(inbound.id, private, public)
         inbound.short_ids = [gen_short_id()]
         self.save()
+        await self.sync_live_and_subs()
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_KEYS_REGEN")), inbound))
 
     def ensure_random_sub_port(self) -> int:
@@ -464,27 +495,6 @@ class XrayPanel:
         self.state.sub_port = current
         self.bot.state.sub_port = current
         return current
-
-    async def ensure_random_sub_inbound(self) -> XrayInbound:
-        non_443 = [item for item in self.state.inbounds if item.enable and int(item.port) != 443]
-        if non_443:
-            chosen = non_443[0]
-            if not chosen.clients:
-                chosen.make_client("owner")
-            return chosen
-        used = set(self.state.ports()) | {int(self.state.sub_port), int(self.state.api_port), 443}
-        port = random_port(used)
-        inbound = new_inbound("vless", port, "raw", "reality")
-        inbound.remark = f"sub-{port}"
-        private, public = x25519_keypair()
-        inbound.reality_private = private
-        inbound.reality_public = public
-        inbound.short_ids = [gen_short_id()]
-        inbound.make_client("owner")
-        self.state.add(inbound)
-        self.save()
-        await self.auto_apply_live()
-        return inbound
 
     def adopt_public_ip(self, candidate: object) -> None:
         raw = str(candidate or "").strip()
@@ -514,6 +524,8 @@ class XrayPanel:
             self.state.tunnel_backend = backend[:24]
         expiry = str(getattr(tunnel, "key_expiry", "") or "").strip()
         if expiry:
+            if expiry != self.state.tunnel_key_expiry:
+                self.state.tunnel_expiry_notified = ""
             self.state.tunnel_key_expiry = expiry[:32]
         expired = bool(getattr(tunnel, "expired", False))
         self.state.tunnel_expired = expired
@@ -632,7 +644,7 @@ class XrayPanel:
         self.sync_tunnel_meta(tunnel)
         if not self.state.tunnel_backend:
             self.state.tunnel_backend = "Running"
-        await self.ensure_random_sub_inbound()
+        await self.ensure_core_probed()
         self.state.ensure_sub_all()
         try:
             await self.control.sub_install(self.bot.state.ssh, port, domain)
@@ -670,12 +682,12 @@ class XrayPanel:
     async def setup_domain_subs(self) -> tuple[str, str]:
         t = self.tr()
         port = self.ensure_random_sub_port()
-        await self.ensure_random_sub_inbound()
+        await self.ensure_core_probed()
         raw_host = (self.state.tunnel_host or "").strip().lower()
         if raw_host and not TUNNEL_HOST_RE.match(raw_host):
             return "", t("DOM_HOST_BAD")
         host_hint = raw_host.split(":", 1)[0] if raw_host else self.tunnel_host_hint
-        funnel_port = self.pending_funnel_port or random_funnel_port()
+        funnel_port = self.pending_funnel_port or current_funnel_port(raw_host) or random_funnel_port()
         self.pending_funnel_port = funnel_port
         try:
             tunnel = await self.call_tunnel_up(self.tunnel_key, host_hint, port, funnel_port)
@@ -709,7 +721,7 @@ class XrayPanel:
             self.bot.state.sub_port = port
             key_arg = "" if has_live_node else self.tunnel_key
             host_arg = raw_host or self.tunnel_host_hint
-            funnel_port = self.pending_funnel_port or random_funnel_port()
+            funnel_port = self.pending_funnel_port or current_funnel_port(raw_host) or random_funnel_port()
             self.pending_funnel_port = funnel_port
             try:
                 tunnel = await self.call_tunnel_up(key_arg, host_arg, port, funnel_port)
@@ -721,6 +733,26 @@ class XrayPanel:
                 return
             ready_notice, err = await self.finalize_tunnel_subs(tunnel, port, raw_host)
             await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
+            return
+        elif action == "port":
+            raw_host = (self.state.tunnel_host or "").strip().lower()
+            target_port = other_funnel_port(current_funnel_port(raw_host))
+            port = int(self.state.sub_port or 0)
+            if port in {0, 80, 443}:
+                port = self.ensure_random_sub_port()
+            self.bot.state.sub_port = port
+            host_arg = raw_host.split(":", 1)[0] if raw_host else self.tunnel_host_hint
+            self.pending_funnel_port = target_port
+            await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_UP"), self.bot.state.language))
+            try:
+                tunnel = await self.call_tunnel_up("", host_arg, port, target_port)
+            except RpcError as exc:
+                err_msg = self.handle_tunnel_error(exc)
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=err_msg), self.sub_rows()))
+                return
+            ready_notice, err = await self.finalize_tunnel_subs(tunnel, port, raw_host)
+            shown = "" if err else t("NOTICE_FUNNEL_PORT", port=target_port)
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=shown or ready_notice, error=err), self.sub_rows()))
             return
         elif action == "off":
             self.stop_funnel_autopilot()
@@ -814,6 +846,7 @@ class XrayPanel:
         remark = inbound.remark
         self.state.remove(ident)
         self.save()
+        await self.sync_live_and_subs()
         await self.render(chat_id, msg_id, xscreens.home(self.view(notice=self.tr()("NOTICE_INBOUND_DELETED", remark=remark))))
 
     async def open_client(self, chat_id: int, msg_id: int, ident: str, email: str) -> None:
@@ -827,6 +860,7 @@ class XrayPanel:
         if not inbound.remove_client(email):
             raise PanelError(f"the client {email} was not found")
         self.save()
+        await self.sync_live_and_subs()
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_CLIENT_DELETED", email=email)), inbound))
 
     async def show_links(self, chat_id: int, msg_id: int, ident: str) -> None:
@@ -865,7 +899,7 @@ class XrayPanel:
         host = self.state.address(self.address())
         bundle = self.sub_bundle(host)
         if bundle is not None:
-            out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), subs.url_of(bundle, host, self.state.sub_port, self.state.public_base())))
+            out.append((self.tr()("XR_SUBS_ALL"), bundle.json_path(), subs.json_url_of(bundle, host, self.state.sub_port, self.state.public_base())))
         return out
 
     async def refresh_traffic(self) -> bool:
@@ -887,6 +921,7 @@ class XrayPanel:
 
     async def subs_action(self, chat_id: int, msg_id: int, action: str) -> None:
         if not action:
+            await self.ensure_core_probed()
             await self.refresh_traffic()
             await self.refresh_tunnel_meta()
             if not self.state.tunnel_enabled and self.state.tunnel_approval_url and not self.state.tunnel_expired:
@@ -1076,6 +1111,14 @@ class XrayPanel:
         self.core = state_report(state)
         self.bot.state.last_probe = dict(self.core)
         self.save()
+        subs_sync_fn = getattr(self.bot, "subs_sync", None)
+        if callable(subs_sync_fn):
+            try:
+                res = subs_sync_fn()
+                if inspect.isawaitable(res):
+                    await res
+            except Exception as exc:
+                log.debug("subs sync skipped: %s", exc)
         installed = str(self.core.get("version", version))
         if state.fallback:
             notice = t("NOTICE_CORE_FALLBACK", version=installed, fallback=state.fallback_version or DEFAULT_VERSION)
@@ -1111,7 +1154,16 @@ class XrayPanel:
             await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=exc.message)))
             return
         self.core = state_report(state)
+        self.bot.state.last_probe = dict(self.core)
         self.save()
+        subs_sync_fn = getattr(self.bot, "subs_sync", None)
+        if callable(subs_sync_fn):
+            try:
+                res = subs_sync_fn()
+                if inspect.isawaitable(res):
+                    await res
+            except Exception as exc:
+                log.debug("subs sync skipped: %s", exc)
         ports = ", ".join(str(item) for item in self.core.get("listening") or [])
         notice = t("NOTICE_CORE_APPLIED_PORTS", ports=ports) if ports else t("NOTICE_CORE_APPLIED")
         if moves:
@@ -1597,6 +1649,17 @@ class XrayPanel:
             await self.send(chat_id, self.error_screen(ident, ctx, str(exc)))
             return
         self.save()
+        if ident not in GLOBAL_FIELDS:
+            await self.sync_live_and_subs()
+        elif ident in {"xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
+            subs_sync_fn = getattr(self.bot, "subs_sync", None)
+            if callable(subs_sync_fn):
+                try:
+                    res = subs_sync_fn()
+                    if inspect.isawaitable(res):
+                        await res
+                except Exception as exc:
+                    log.debug("subs sync skipped: %s", exc)
         if ident == "xr_tunnel_key":
             if not (value or "").strip():
                 self.stop_funnel_autopilot()

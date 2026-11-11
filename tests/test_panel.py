@@ -38,7 +38,7 @@ def test_create_custom_inbound(tmp_path: Path) -> None:
     assert inbound.port == 8443
     assert inbound.network == "xhttp"
     assert inbound.security == "tls"
-    assert inbound.clients[0].email == "owner"
+    assert inbound.clients == []
     assert bot.rendered
 
 
@@ -227,7 +227,8 @@ def test_show_links_and_subscription(tmp_path: Path) -> None:
     run(item.show_links(1, 0, str(inbound.id)))
     run(item.show_subscription(1, 0, str(inbound.id), "owner"))
     path, url = item.sub_url("owner")
-    assert len(path) == 2 + SUB_SEGMENT_LEN * 2
+    assert path.endswith("/json")
+    assert len(path) == 7 + SUB_SEGMENT_LEN * 2
     assert url.endswith(path)
     assert url.startswith("http://203.0.113.10:2096/")
     before = path

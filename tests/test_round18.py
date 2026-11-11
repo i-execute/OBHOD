@@ -121,11 +121,8 @@ def test_pasting_tailnet_key_raises_random_port_inbound_and_permanent_domain_wit
     assert 20000 <= state.sub_port <= 59999
 
     non_443_inbounds = [item for item in state.inbounds if item.port != 443]
-    assert len(non_443_inbounds) == 1
-    sub_inbound = non_443_inbounds[0]
-    assert 20000 <= sub_inbound.port <= 59999
-    assert sub_inbound.port != state.sub_port
-    assert len(sub_inbound.clients) >= 1
+    assert len(non_443_inbounds) == 0
+    assert len(state.inbounds) == 1
 
     assert state.tunnel_enabled is True
     assert state.sub_enabled is True
@@ -135,7 +132,7 @@ def test_pasting_tailnet_key_raises_random_port_inbound_and_permanent_domain_wit
 
     html = bot.sent[-1].to_html()
     pattern = re.compile(
-        r"https://[a-z0-9.-]+\.ts\.net:(?:8443|10000)/([A-Za-z0-9_-]{%d})/([A-Za-z0-9_-]{%d})"
+        r"https://[a-z0-9.-]+\.ts\.net:(?:8443|10000)/([A-Za-z0-9_-]{%d})/([A-Za-z0-9_-]{%d})/json"
         % (SUB_SEGMENT_LEN, SUB_SEGMENT_LEN)
     )
     match = pattern.search(html)
