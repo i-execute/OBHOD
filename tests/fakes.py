@@ -178,12 +178,15 @@ class FakeControl:
         https_port: int = 0,
         auto_install: bool = False,
         exit_node: bool = False,
+        tags: str = "",
     ) -> Any:
         from BOT.xrayrpc import TunnelState
 
         self.calls.append(["tunnel-up", key, hostname, str(port)])
         fqdn = hostname if "." in hostname else ((hostname or "obhod") + ".tail1234.ts.net")
         suffix = (":%d" % int(https_port)) if https_port and int(https_port) != 443 and ":" not in fqdn else ""
+        tag_list = [part.strip() for part in str(tags or "").split(",") if part.strip()]
+        expiry = "never" if tag_list else "2027-05-03T00:00:00Z"
         return TunnelState(
             installed=True,
             version="1.80.2",
@@ -191,9 +194,10 @@ class FakeControl:
             hostname=fqdn.split(":", 1)[0],
             url="https://" + fqdn + suffix,
             funnel=True,
-            key_expiry="2027-05-03T00:00:00Z",
+            key_expiry=expiry,
             expired=False,
             have_node_key=True,
+            tags=tag_list,
         )
 
     async def tunnel_down(self, cfg: Any) -> Any:

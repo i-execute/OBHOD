@@ -99,7 +99,7 @@ def test_strings_never_call_tailnet_permanent_domain() -> None:
         "\u6c38\u4e45\u57df\u540d",
     )
     for cls in (strings.EN, strings.RU, strings.ZH):
-        assert cls.DOM_TITLE == "Tailnet"
+        assert cls.DOM_TITLE == "Tailscale"
         assert "443" not in cls.DOM_NOTE2
         for name, val in vars(cls).items():
             if isinstance(val, str):
@@ -244,7 +244,7 @@ def test_tailnet_expiry_rendering_in_subs_and_domain_screens(tmp_path: Path) -> 
     bot.state.language = "ru"
     run(panel.apply_input(1, "xr_tunnel_key", "subs", SAMPLE_KEY))
     active_html = xscreens.subs_screen(panel.view(), panel.sub_rows()).to_html()
-    assert "Tailnet" in active_html
+    assert "Tailscale" in active_html
     assert i18n.t("TAILNET_EXPIRY", "ru") in active_html
     assert "2027-05-03" in active_html
 

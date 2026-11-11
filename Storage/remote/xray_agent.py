@@ -1,8 +1,10 @@
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import select
 import shutil
 import socket
 import subprocess
@@ -91,11 +93,22 @@ def sha256_bytes(payload):
 
 
 def run(argv, timeout=180, check=False):
-    proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+    try:
+        proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raw_out = exc.stdout or b""
+        if isinstance(raw_out, str):
+            partial = raw_out.strip()
+        else:
+            partial = raw_out.decode("utf-8", "replace").strip()
+        raise ScriptError("timeout", "command timed out after %ss: %s" % (timeout, partial[:320]))
     text = proc.stdout.decode("utf-8", "replace").strip()
     if check and proc.returncode != 0:
         raise ScriptError("internal", "command exited with code %s: %s" % (proc.returncode, text[:400]))
     return proc.returncode, text
+
+
+_ORIG_RUN = run
 
 
 def has_systemd():
@@ -105,11 +118,12 @@ def has_systemd():
 
 
 class ScriptError(Exception):
-    def __init__(self, code, message, stage=""):
+    def __init__(self, code, message, stage="", data=None):
         Exception.__init__(self, message)
         self.code = code
         self.message = message
         self.stage = stage
+        self.data = dict(data) if isinstance(data, dict) else {}
 
 
 def core_version():
@@ -1296,13 +1310,28 @@ def cmd_sub_stop(flags, rest):
     return sub_state(int(str(flags.get("port", "2096")))), None
 
 
-TUNNEL_KEY_RE = re.compile(r"(tskey-[a-z]{2,10}-[A-Za-z0-9_]{4,96}(?:-[A-Za-z0-9_]{2,96}){0,6})")
+TUNNEL_KEY_RE = re.compile(
+    r"(tskey-(?:auth|client)-[A-Za-z0-9_]{4,96}(?:-[A-Za-z0-9_]{2,96}){0,6}(?:\?[A-Za-z0-9_=&%-]{1,96})?)"
+)
+TUNNEL_API_KEY_RE = re.compile(r"(tskey-api-[A-Za-z0-9_-]{6,160})")
+TUNNEL_TAGS_FLAG_RE = re.compile(r"--advertise-tags(?:=|\s+)['\"]?([A-Za-z0-9_:,.-]+)['\"]?")
+TUNNEL_TAG_ITEM_RE = re.compile(r"^tag:[A-Za-z0-9_-]{1,48}$")
+TUNNEL_HOST_FLAG_RE = re.compile(r"--hostname(?:=|\s+)['\"]?([A-Za-z0-9][A-Za-z0-9-]{0,61})['\"]?")
+APPROVAL_URL_RE = re.compile(r"https://login\.tailscale\.com/[^\s\"'<>]+")
 TUNNEL_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 TUNNEL_FQDN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){1,4}(?::[0-9]{2,5})?$")
 TUNNEL_CODENAME_RE = re.compile(r"^[a-z]{2,16}$")
 TUNNEL_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+\.ts\.net(?::[0-9]{2,5})?")
 TUNNEL_FUNNEL_PORTS = (8443, 10000)
 TAILSCALE_INSTALL_URL = "https://tailscale.com/install.sh"
+FUNNEL_PROMPT_HINTS = (
+    "funnel is not enabled",
+    "https must be enabled",
+    "funnel not available",
+    "enable https",
+    "enable funnel",
+    "nodeattrs",
+)
 
 
 def extract_tailnet_key(raw):
@@ -1313,11 +1342,140 @@ def extract_tailnet_key(raw):
     return match.group(1) if match else ""
 
 
+def clean_tunnel_tags(raw):
+    found = []
+    for part in str(raw or "").split(","):
+        token = part.strip()
+        if token and TUNNEL_TAG_ITEM_RE.match(token) and token not in found:
+            found.append(token)
+    return ",".join(found[:8])
+
+
+def extract_tunnel_tags(raw):
+    match = TUNNEL_TAGS_FLAG_RE.search(str(raw or ""))
+    if not match:
+        return ""
+    return clean_tunnel_tags(match.group(1))
+
+
+def extract_tunnel_host_flag(raw):
+    match = TUNNEL_HOST_FLAG_RE.search(str(raw or ""))
+    return match.group(1).lower() if match else ""
+
+
+def pick_funnel_url(text, prefer_port=0):
+    candidates = []
+    for line in str(text or "").splitlines():
+        low = line.lower()
+        if "tailnet only" in low and "funnel" not in low:
+            continue
+        for match in TUNNEL_URL_RE.finditer(line):
+            url = match.group(0)[:128]
+            if url not in candidates:
+                candidates.append(url)
+    if not candidates:
+        return ""
+    if prefer_port:
+        suffix = ":%d" % int(prefer_port)
+        for item in candidates:
+            if item.endswith(suffix):
+                return item
+    return candidates[0]
+
+
+def detect_netcheck_ip(found):
+    if run is not _ORIG_RUN:
+        return ""
+    try:
+        code, text = run([found, "netcheck", "--format=json"], timeout=6)
+    except ScriptError:
+        return ""
+    if code != 0 or not text:
+        return ""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    raw = str(data.get("GlobalV4", "") or "").strip()
+    if not raw:
+        return ""
+    host = raw.rsplit(":", 1)[0] if ":" in raw else raw
+    try:
+        parsed = ipaddress.ip_address(host)
+    except ValueError:
+        return ""
+    if parsed.is_private or parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified or parsed.is_multicast:
+        return ""
+    return str(parsed)
+
+
+def run_funnel(argv, timeout=30):
+    if run is not _ORIG_RUN:
+        return run(argv, timeout=timeout)
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+    )
+    chunks = []
+    deadline = time.time() + float(timeout)
+    drain_until = None
+    fd = proc.stdout.fileno() if proc.stdout is not None else -1
+    try:
+        while True:
+            now = time.time()
+            limit = drain_until if drain_until is not None else deadline
+            if now >= limit:
+                break
+            if fd >= 0:
+                ready, _, _ = select.select([fd], [], [], min(0.25, max(0.05, limit - now)))
+                if ready:
+                    piece = os.read(fd, 4096)
+                    if piece:
+                        chunks.append(piece)
+                        joined = b"".join(chunks).decode("utf-8", "replace")
+                        low = joined.lower()
+                        if drain_until is None and (
+                            APPROVAL_URL_RE.search(joined)
+                            or any(hint in low for hint in FUNNEL_PROMPT_HINTS)
+                        ):
+                            drain_until = min(deadline, time.time() + 0.5)
+                    elif proc.poll() is not None:
+                        break
+            if proc.poll() is not None:
+                if fd >= 0:
+                    while True:
+                        ready, _, _ = select.select([fd], [], [], 0.05)
+                        if not ready:
+                            break
+                        rest = os.read(fd, 4096)
+                        if not rest:
+                            break
+                        chunks.append(rest)
+                return proc.returncode, b"".join(chunks).decode("utf-8", "replace").strip()
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+        return 1, b"".join(chunks).decode("utf-8", "replace").strip()
+    finally:
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+
+
 def tunnel_binary():
     return shutil.which("tailscale")
 
 
-def tunnel_state():
+def tunnel_state(prefer_port=0):
     found = tunnel_binary()
     out = {
         "installed": bool(found),
@@ -1329,6 +1487,8 @@ def tunnel_state():
         "key_expiry": "",
         "expired": False,
         "have_node_key": False,
+        "tags": [],
+        "public_ip": "",
     }
     if not found:
         return out
@@ -1349,20 +1509,25 @@ def tunnel_state():
                 name = str(self_node.get("DNSName", "") or "").rstrip(".")
                 if name:
                     out["hostname"] = name[:96]
+                raw_tags = self_node.get("Tags") or []
+                if isinstance(raw_tags, list):
+                    out["tags"] = [str(item) for item in raw_tags if TUNNEL_TAG_ITEM_RE.match(str(item))][:8]
                 raw_exp = str(self_node.get("KeyExpiry", "") or "").strip()
                 if raw_exp.startswith("0001-"):
                     raw_exp = ""
                 expired = bool(self_node.get("Expired", False)) or (out["have_node_key"] and out["backend"] == "NeedsLogin")
                 out["expired"] = expired
-                if out["backend"] == "Running" and not raw_exp and not expired:
+                if out["backend"] == "Running" and not expired and (not raw_exp or out["tags"]):
                     out["key_expiry"] = "never"
                 else:
                     out["key_expiry"] = raw_exp[:32]
+    if out["backend"] == "Running":
+        out["public_ip"] = detect_netcheck_ip(found)
     code, text = run([found, "funnel", "status"], timeout=30)
     if code == 0 and text:
-        match = TUNNEL_URL_RE.search(text)
-        if match:
-            out["url"] = match.group(0)[:128]
+        chosen_url = pick_funnel_url(text, prefer_port)
+        if chosen_url:
+            out["url"] = chosen_url
             out["funnel"] = True
     return out
 
@@ -1391,7 +1556,7 @@ def cmd_tunnel_install(flags, rest):
             run(["systemctl", "enable", "--now", "tailscaled"], timeout=60)
         return tunnel_state(), None
     if not has_systemd():
-        raise ScriptError("unsupported", "tailnet needs systemd", "tunnel")
+        raise ScriptError("unsupported", "tailscale needs systemd", "tunnel")
     if not shutil.which("curl") and shutil.which("apt-get"):
         run(["apt-get", "update"], timeout=300)
         run(["apt-get", "install", "-y", "curl", "ca-certificates"], timeout=300)
@@ -1422,8 +1587,10 @@ def cmd_tunnel_up(flags, rest):
     raw_key = str(flags.get("key", "") or "").strip()
     key = extract_tailnet_key(raw_key)
     if raw_key and not key:
+        if TUNNEL_API_KEY_RE.search(raw_key):
+            raise ScriptError("api_key_wrong", "tskey-api is a REST API token, paste a tskey-auth auth key instead", "tunnel")
         raise ScriptError("bad_arg", "the tailscale auth key is not valid", "tunnel")
-    raw_host = str(flags.get("hostname", "") or "").strip().lower()
+    raw_host = str(flags.get("hostname", "") or "").strip().lower() or extract_tunnel_host_flag(raw_key)
     if not raw_host:
         hostname = ""
     elif TUNNEL_HOST_RE.match(raw_host):
@@ -1445,34 +1612,71 @@ def cmd_tunnel_up(flags, rest):
     if not found:
         raise ScriptError("not_installed", "tailscale is not installed", "tunnel")
     exit_node = str(flags.get("exit_node", "")) == "1" or "--advertise-exit-node" in raw_key
+    tags = clean_tunnel_tags(flags.get("tags", "")) or extract_tunnel_tags(raw_key)
+    extra_flags = ["--accept-dns=false", "--accept-routes=false"]
+    if hostname:
+        extra_flags.append("--hostname=" + hostname)
+    if tags:
+        extra_flags.append("--advertise-tags=" + tags)
+    if exit_node:
+        extra_flags.append("--advertise-exit-node")
     if key:
-        up_cmd = [found, "up", "--authkey=" + key, "--accept-dns=false", "--accept-routes=false"]
-        if hostname:
-            up_cmd.append("--hostname=" + hostname)
-        if exit_node:
-            up_cmd.append("--advertise-exit-node")
+        up_cmd = [found, "up", "--authkey=" + key] + extra_flags
         code, text = run(up_cmd, timeout=180)
         if code != 0 and "--reset" in (text or ""):
             code, text = run(up_cmd + ["--reset"], timeout=180)
         if code != 0:
-            raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
+            cur = tunnel_state(https_port)
+            if cur.get("backend") == "Running" and cur.get("have_node_key") and not cur.get("expired"):
+                reconf = [found, "up"] + extra_flags
+                rc2, txt2 = run(reconf, timeout=120)
+                if rc2 != 0 and "--reset" in (txt2 or ""):
+                    run(reconf + ["--reset"], timeout=120)
+            else:
+                raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
     else:
-        before = tunnel_state()
+        before = tunnel_state(https_port)
         if before.get("expired") or before.get("backend") in {"NeedsLogin", "NoState", "absent"}:
-            raise ScriptError("key_expired", "the tailnet node key expired, paste a new tskey-auth key", "tunnel")
+            raise ScriptError("key_expired", "the tailscale node key expired, paste a new tskey-auth key", "tunnel")
         if before.get("backend") != "Running":
-            code, text = run([found, "up", "--accept-dns=false"], timeout=120)
+            reconf = [found, "up"] + extra_flags
+            code, text = run(reconf, timeout=120)
+            if code != 0 and "--reset" in (text or ""):
+                code, text = run(reconf + ["--reset"], timeout=120)
             if code != 0:
                 raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
-    code, text = run([found, "funnel", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port], timeout=180)
+    if run is _ORIG_RUN:
+        run([found, "funnel", "reset"], timeout=30)
+    code, text = run_funnel([found, "funnel", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port], timeout=30)
     if code != 0:
-        raise ScriptError("internal", "the funnel did not start: " + text[:300] + " enable funnel in the tailnet policy and turn on https certificates", "tunnel")
-    state = tunnel_state()
+        cur = tunnel_state(https_port)
+        approval = APPROVAL_URL_RE.search(text or "")
+        low = (text or "").lower()
+        if approval or any(word in low for word in ("funnel", "https", "certificate", "policy", "nodeattrs", "enable")):
+            raise ScriptError(
+                "funnel_disabled",
+                (text or "tailscale funnel is not enabled in the admin console")[:320],
+                "tunnel",
+                data={
+                    "hostname": cur.get("hostname", ""),
+                    "key_expiry": cur.get("key_expiry", ""),
+                    "expired": bool(cur.get("expired", False)),
+                    "have_node_key": bool(cur.get("have_node_key", False)),
+                    "approval_url": approval.group(0)[:200] if approval else "",
+                    "public_ip": cur.get("public_ip", ""),
+                },
+            )
+        raise ScriptError(
+            "internal",
+            "the funnel did not start: " + (text or "")[:300] + " enable funnel in access controls and https certificates in dns",
+            "tunnel",
+        )
+    state = tunnel_state(https_port)
     for _ in range(3):
         if state["url"]:
             break
         time.sleep(0.5)
-        state = tunnel_state()
+        state = tunnel_state(https_port)
     if not state["url"] and state["hostname"].endswith(".ts.net"):
         state["url"] = "https://%s:%d" % (state["hostname"], https_port)
         state["funnel"] = True
@@ -1532,16 +1736,17 @@ def main(argv):
     try:
         data, _ = handler(flags, rest)
     except ScriptError as exc:
-        emit(
-            {
-                "proto": PROTO,
-                "result": "err",
-                "code": exc.code,
-                "msg": exc.message,
-                "stage": exc.stage,
-                "logs": LOGS,
-            }
-        )
+        err_payload = {
+            "proto": PROTO,
+            "result": "err",
+            "code": exc.code,
+            "msg": exc.message,
+            "stage": exc.stage,
+            "logs": LOGS,
+        }
+        if exc.data:
+            err_payload["data"] = exc.data
+        emit(err_payload)
         return 1
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         emit({"proto": PROTO, "result": "err", "code": "internal", "msg": str(exc)[:600], "stage": name, "logs": LOGS})

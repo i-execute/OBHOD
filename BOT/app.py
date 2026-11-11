@@ -801,6 +801,20 @@ class Bot:
             return
         await self.app.send_rich(chat_id, rich, via="mt")
 
+    async def send_progress(self, chat_id: int, rich: object) -> int:
+        if "send" in self.__dict__:
+            return 0
+        if self.app is None:
+            return 0
+        try:
+            res = await self.app.send_rich(chat_id, rich, via="mt")
+        except Exception as exc:
+            log.warning("progress send failed: %s", exc)
+            return 0
+        if isinstance(res, dict):
+            return int(res.get("id") or res.get("msg_id") or 0)
+        return int(getattr(res, "id", 0) or getattr(res, "msg_id", 0) or 0)
+
     async def render(self, chat_id: int, msg_id: int, rich: object) -> None:
         if self.app is None:
             return
@@ -1283,10 +1297,10 @@ class Bot:
         if text.strip().startswith("/"):
             await self.on_command(evt)
             return
-        from .xray import parse_tailnet_input
+        from .xray import parse_tailscale_input
 
-        extracted_key, _ = parse_tailnet_input(text)
-        if extracted_key:
+        parsed_ts = parse_tailscale_input(text)
+        if parsed_ts.key or parsed_ts.kind == "api_token":
             chat_id = int(getattr(evt, "chat_id", 0) or 0)
             msg_id = int(getattr(evt, "msg_id", 0) or getattr(evt, "id", 0) or 0)
             await self.drop_marker(chat_id, msg_id)

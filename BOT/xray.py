@@ -102,17 +102,73 @@ def random_funnel_port() -> int:
     return secrets.choice(FUNNEL_PORTS)
 
 
-TSKEY_EXTRACT_RE = re.compile(r"(tskey-[a-z]{2,10}-[A-Za-z0-9_]{4,96}(?:-[A-Za-z0-9_]{2,96}){0,6})")
+TSKEY_EXTRACT_RE = re.compile(
+    r"(tskey-(?:auth|client)-[A-Za-z0-9_]{4,96}(?:-[A-Za-z0-9_]{2,96}){0,6}(?:\?[A-Za-z0-9_=&%-]{1,96})?)"
+)
+TSKEY_API_RE = re.compile(r"(tskey-api-[A-Za-z0-9_-]{6,160})")
+TS_TAGS_FLAG_RE = re.compile(r"--advertise-tags(?:=|\s+)['\"]?([A-Za-z0-9_:,.-]+)['\"]?")
+TS_TAG_ITEM_RE = re.compile(r"^tag:[A-Za-z0-9_-]{1,48}$")
+TS_HOST_FLAG_RE = re.compile(r"--hostname(?:=|\s+)['\"]?([A-Za-z0-9][A-Za-z0-9-]{0,61})['\"]?")
+
+
+@dataclass
+class TailscaleInput:
+    key: str = ""
+    exit_node: bool = False
+    tags: str = ""
+    hostname: str = ""
+    kind: str = ""
+
+
+def normalize_tailscale_tags(raw: object) -> str:
+    found: list[str] = []
+    for part in str(raw or "").split(","):
+        token = part.strip()
+        if token and TS_TAG_ITEM_RE.match(token) and token not in found:
+            found.append(token)
+    return ",".join(found[:8])
+
+
+def parse_tailscale_input(raw: object) -> TailscaleInput:
+    text = str(raw or "").strip()
+    if not text:
+        return TailscaleInput()
+    match = TSKEY_EXTRACT_RE.search(text)
+    if not match:
+        if TSKEY_API_RE.search(text):
+            return TailscaleInput(kind="api_token")
+        return TailscaleInput()
+    key = match.group(1)
+    kind = "oauth" if key.startswith("tskey-client-") else "auth"
+    exit_node = "--advertise-exit-node" in text
+    tags = ""
+    tags_match = TS_TAGS_FLAG_RE.search(text)
+    if tags_match:
+        tags = normalize_tailscale_tags(tags_match.group(1))
+    hostname = ""
+    host_match = TS_HOST_FLAG_RE.search(text)
+    if host_match:
+        hostname = host_match.group(1).lower()
+    return TailscaleInput(key=key, exit_node=exit_node, tags=tags, hostname=hostname, kind=kind)
+
+
+def compact_tailscale_input(raw: object) -> str:
+    parsed = parse_tailscale_input(raw)
+    if not parsed.key:
+        return str(raw or "").strip()
+    parts = ["tailscale", "up", "--auth-key=" + parsed.key]
+    if parsed.tags:
+        parts.append("--advertise-tags=" + parsed.tags)
+    if parsed.exit_node:
+        parts.append("--advertise-exit-node")
+    if parsed.hostname:
+        parts.append("--hostname=" + parsed.hostname)
+    return " ".join(parts)
 
 
 def parse_tailnet_input(raw: object) -> tuple[str, bool]:
-    text = str(raw or "").strip()
-    if not text:
-        return "", False
-    match = TSKEY_EXTRACT_RE.search(text)
-    if not match:
-        return "", False
-    return match.group(1), ("--advertise-exit-node" in text)
+    parsed = parse_tailscale_input(raw)
+    return parsed.key, parsed.exit_node
 
 
 def tailnet_expiry_label(expiry: object, expired: bool = False, lang: str = i18n.DEFAULT_LANGUAGE) -> str:
@@ -1229,6 +1285,9 @@ class XrayState:
     tunnel_backend: str = ""
     tunnel_key_expiry: str = ""
     tunnel_expired: bool = False
+    tunnel_exit_node: bool = False
+    tunnel_tags: str = ""
+    tunnel_approval_url: str = ""
     api_enabled: bool = True
     api_port: int = API_PORT
     metrics: str = DEFAULT_METRICS
@@ -1267,6 +1326,9 @@ class XrayState:
             "tunnel_backend": self.tunnel_backend,
             "tunnel_key_expiry": self.tunnel_key_expiry,
             "tunnel_expired": bool(self.tunnel_expired),
+            "tunnel_exit_node": bool(self.tunnel_exit_node),
+            "tunnel_tags": normalize_tailscale_tags(self.tunnel_tags),
+            "tunnel_approval_url": self.tunnel_approval_url[:200],
             "api_enabled": bool(self.api_enabled),
             "api_port": int(self.api_port),
             "metrics": self.metrics,
@@ -1309,6 +1371,9 @@ class XrayState:
             tunnel_backend=str(data.get("tunnel_backend", "") or "")[:24],
             tunnel_key_expiry=str(data.get("tunnel_key_expiry", "") or "")[:32],
             tunnel_expired=bool(data.get("tunnel_expired", False)),
+            tunnel_exit_node=bool(data.get("tunnel_exit_node", False)),
+            tunnel_tags=normalize_tailscale_tags(data.get("tunnel_tags", "")),
+            tunnel_approval_url=str(data.get("tunnel_approval_url", "") or "")[:200],
             api_enabled=bool(data.get("api_enabled", True)),
             api_port=int(data.get("api_port", API_PORT) or API_PORT),
             metrics=str(data.get("metrics", DEFAULT_METRICS) or ""),

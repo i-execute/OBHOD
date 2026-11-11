@@ -11,12 +11,13 @@ from .ui import (
     bullet_list,
     button,
     code,
-    input_row,
-    details,
     copy_row,
+    details,
     heading,
-    long_block,
     inline_button,
+    input_row,
+    link_button,
+    long_block,
     muted,
     muted_html,
     pre,
@@ -389,21 +390,41 @@ def size_text(value: int) -> str:
     return "0 B"
 
 
+TAILSCALE_NEW_LINUX_URL = "https://console.tailscale.com/admin/machines/new-linux"
+
+
+def tailscale_guide_block(t: i18n.Translator, open_: bool = False) -> str:
+    body = f"<p>{t('TS_GUIDE_INTRO')}</p>" + bullet_list(
+        [
+            t("TS_GUIDE_TAGS"),
+            t("TS_GUIDE_DEVICE"),
+            t("TS_GUIDE_AUTH_KEY"),
+            t("TS_GUIDE_FUNNEL"),
+        ]
+    )
+    return details(t("TS_GUIDE_TITLE"), body, open_=open_)
+
+
 def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     t = view.tr()
     state = view.state
     blocks = banner(view, t)
+    approval_url = str(getattr(state, "tunnel_approval_url", "") or "").strip()
     domain_ok = bool(state.tunnel_enabled and not state.tunnel_expired and state.public_base())
-    ready = bool(domain_ok or view.key_mask or state.tunnel_expired)
+    ready = bool(domain_ok or view.key_mask or state.tunnel_expired or state.tunnel_key_expiry or approval_url)
     if not ready:
         blocks.append(quote(muted(t("XR_SUBS_NO_DOMAIN"))))
+        blocks.append(tailscale_guide_block(t, open_=True))
         buttons = [
+            row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")),
             input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
             back_row("xr:home", view.lang),
         ]
         return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
     if state.tunnel_expired:
         blocks.append(quote(bold(t("TAILNET_EXPIRED_NOTE"))))
+    elif approval_url and not domain_ok:
+        blocks.append(quote(bold(t("TAILSCALE_FUNNEL_ENABLE_NOTE"))))
     bundle = view.bundle
     links = [item for item in (bundle.links if bundle is not None else []) if str(item).startswith("vless://")]
     pairs = [
@@ -412,6 +433,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     ]
     if state.tunnel_key_expiry or state.tunnel_expired:
         pairs.append(("clock", t("TAILNET_EXPIRY"), code(tailnet_expiry_label(state.tunnel_key_expiry, state.tunnel_expired, view.lang))))
+    if getattr(state, "tunnel_tags", ""):
+        pairs.append(("tag", t("TAILSCALE_TAGS_ROW"), code(state.tunnel_tags)))
     pairs.append(("users", t("XR_HOME_CLIENTS"), code(len(links))))
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     copy_btn = ""
@@ -423,14 +446,19 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         copy_btn = copy_row(t("SUB_COPY"), url, icon="copy")
     elif not links:
         blocks.append(quote(muted(t("XR_SUBS_EMPTY"))))
+    if not domain_ok:
+        blocks.append(tailscale_guide_block(t, open_=bool(approval_url or state.tunnel_expired)))
     buttons = []
     if copy_btn:
         buttons.append(copy_btn)
+    if approval_url and approval_url.startswith("https://") and not domain_ok:
+        buttons.append(row(link_button(t("TAILSCALE_APPROVE_BTN"), approval_url, icon="ok")))
     if domain_ok:
         buttons.append(row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("XR_SUBS_ROTATE"), "xr:subs:rotate", icon="refresh")))
         buttons.append(row(button(t("DOM_OFF"), "xr:dom:off", icon="stop")))
     elif not state.tunnel_expired:
         buttons.append(row(button(t("DOM_UP"), "xr:dom:up", icon="world")))
+    buttons.append(row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")))
     buttons.append(input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang))
     buttons.append(back_row("xr:home", view.lang))
     return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
@@ -631,11 +659,19 @@ def domain_screen(view: XrayView, tunnel: Any = None, key_mask: str = "") -> Any
     if tunnel is not None and getattr(tunnel, "url", ""):
         pairs.append(("world", t("DOM_URL"), code(tunnel.url)))
     blocks.append(table(pairs, (t("DOM_TITLE"), t("UI_VALUE"))))
-    buttons = [
-        row(button(t("DOM_UP"), "xr:dom:up", icon="world"), button(t("DOM_OFF"), "xr:dom:off", icon="stop")),
-        input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
-        back_row("xr:home", view.lang),
-    ]
+    blocks.append(tailscale_guide_block(t, open_=False))
+    approval_url = str(getattr(state, "tunnel_approval_url", "") or "").strip()
+    buttons = []
+    if approval_url and approval_url.startswith("https://"):
+        buttons.append(row(link_button(t("TAILSCALE_APPROVE_BTN"), approval_url, icon="ok")))
+    buttons.extend(
+        [
+            row(button(t("DOM_UP"), "xr:dom:up", icon="world"), button(t("DOM_OFF"), "xr:dom:off", icon="stop")),
+            row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")),
+            input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
+            back_row("xr:home", view.lang),
+        ]
+    )
     return screen(t("DOM_TITLE"), t("DOM_SUBTITLE"), blocks, buttons, icon="world")
 
 

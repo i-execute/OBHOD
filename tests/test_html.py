@@ -91,11 +91,14 @@ def test_buttons_have_type_and_payload(name: str, html: str) -> None:
             'type="callback_data"' in tag
             or 'type="copy_text"' in tag
             or 'type="switch_inline_query_current_chat"' in tag
+            or 'type="url"' in tag
         )
         if 'type="callback_data"' in tag:
             assert "data=" in tag
         elif 'type="copy_text"' in tag:
             assert "text=" in tag
+        elif 'type="url"' in tag:
+            assert "url=" in tag
         else:
             assert "query=" in tag
 

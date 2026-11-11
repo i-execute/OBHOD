@@ -116,14 +116,15 @@ class XrayResponse:
         text = self.msg or XRAY_ERROR_CODES.get(self.code, self.code) or "unknown error"
         if self.stage and self.code != "bad_arg":
             text = f"{text} (stage {self.stage})"
-        raise XrayError(text, self.code or "internal")
+        raise XrayError(text, self.code or "internal", self.data)
 
 
 class XrayError(Exception):
-    def __init__(self, message: str, code: str = "internal") -> None:
+    def __init__(self, message: str, code: str = "internal", data: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
+        self.data: dict[str, Any] = dict(data) if isinstance(data, dict) else {}
 
 
 SUB_PORT = 2096
@@ -140,6 +141,9 @@ class TunnelState:
     key_expiry: str = ""
     expired: bool = False
     have_node_key: bool = False
+    tags: list[str] = field(default_factory=list)
+    public_ip: str = ""
+    approval_url: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -152,11 +156,15 @@ class TunnelState:
             "key_expiry": self.key_expiry[:32],
             "expired": bool(self.expired),
             "have_node_key": bool(self.have_node_key),
+            "tags": [str(item)[:56] for item in self.tags[:8]],
+            "public_ip": self.public_ip[:64],
+            "approval_url": self.approval_url[:200],
         }
 
     @staticmethod
     def from_dict(raw: dict[str, Any] | None) -> "TunnelState":
         data = raw or {}
+        raw_tags = data.get("tags") or []
         return TunnelState(
             installed=bool(data.get("installed", False)),
             version=str(data.get("version", "") or "")[:32],
@@ -167,6 +175,9 @@ class TunnelState:
             key_expiry=str(data.get("key_expiry", "") or "")[:32],
             expired=bool(data.get("expired", False)),
             have_node_key=bool(data.get("have_node_key", False)),
+            tags=[str(item)[:56] for item in raw_tags[:8]] if isinstance(raw_tags, list) else [],
+            public_ip=str(data.get("public_ip", "") or "")[:64],
+            approval_url=str(data.get("approval_url", "") or "")[:200],
         )
 
     def healthy(self) -> bool:
@@ -433,14 +444,17 @@ class XrayControl:
         https_port: int = 0,
         auto_install: bool = False,
         exit_node: bool = False,
+        tags: str = "",
     ) -> "TunnelState":
-        argv = ["tunnel-up", "--key=" + str(key)[:256], "--hostname=" + str(hostname)[:96], "--port=%d" % int(port)]
+        argv = ["tunnel-up", "--key=" + str(key)[:320], "--hostname=" + str(hostname)[:96], "--port=%d" % int(port)]
         if https_port:
             argv.append("--https-port=%d" % int(https_port))
         if auto_install:
             argv.append("--auto-install=1")
         if exit_node:
             argv.append("--exit-node=1")
+        if tags:
+            argv.append("--tags=" + str(tags)[:160])
         response = await self.call(cfg, argv, timeout=900 if auto_install else 600)
         response.raise_for_status()
         return TunnelState.from_dict(response.data)

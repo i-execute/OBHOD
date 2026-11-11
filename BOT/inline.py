@@ -236,6 +236,10 @@ def clean_value(ident: str, value: str, lang: str = i18n.DEFAULT_LANGUAGE) -> st
         text = raw.strip()
     if ident in {"xr_scan_targets", "xr_scan_manual", "xr_scan_candidates", "xr_dns_servers"}:
         text = ", ".join(part.strip() for part in raw.replace(";", ",").split(",") if part.strip())
+    if ident == "xr_tunnel_key" and len(text) > MAX_VALUE:
+        from .xray import compact_tailscale_input
+
+        text = compact_tailscale_input(text)
     if len(text) > MAX_VALUE:
         raise InlineError(i18n.t("INL_TOO_LONG", lang, label=item.label(lang), limit=MAX_VALUE))
     return text
