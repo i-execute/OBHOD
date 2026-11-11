@@ -13,7 +13,7 @@
     "Storage/remote/freeturn_agent.py": "a296eee78b0ad0b2ad4e2d469340e5a91db82ae3b94498d38bd3fe6d80354cae",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "cfe53f59ebb03597e8736075a634551e7ed6b2754c965c5f6e4bd50dfc52cb96",
-    "Storage/remote/xray_agent.py": "3b3f83363cdbf7f96a68dd6387d8d29147bc84d2db4d5cf337c89cafa6e8da30",
+    "Storage/remote/xray_agent.py": "4d351c4ac6bb70b6e8907156f3148d2cd26ba70663482a712b1361ad88015645",
     "tools/obhod_watchdog.py": "ccd3378bfe06c60a0b91ccd9e2b4e3ab19d7196647a935877143031b59d04cbe"
   },
   "policy": [

@@ -1521,7 +1521,8 @@ class XrayPanel:
                 drop = getattr(self.bot, "drop_marker", None)
                 if callable(drop):
                     await drop(chat_id, busy_id)
-            await self.send(chat_id, xscreens.subs_screen(self.view(notice=ready_notice or notice, error=err), self.sub_rows()))
+            shown_notice = "" if err else (ready_notice or notice)
+            await self.send(chat_id, xscreens.subs_screen(self.view(notice=shown_notice, error=err), self.sub_rows()))
             return
         await self.send(chat_id, await self.screen_for(ident, ctx, notice))
 

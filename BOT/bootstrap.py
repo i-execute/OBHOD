@@ -174,7 +174,7 @@ UNIT_TEMPLATE = (
     "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\n"
     "ReadWritePaths={state} /var/log /root/.goygram -/etc/fail2ban -/etc/ssh -/etc/systemd/system -/usr/local/bin -/usr/local/etc/xray -/usr/local/share/xray -/var/lib/xray-manager -/root/.ssh -/home -/opt -/var/tmp/obhod-stage -/etc/obhod -"
     + FT_TUN_DIR
-    + " -/etc/sysctl.d -/etc/ufw -/etc/firewalld\n"
+    + " -/etc/sysctl.d -/etc/ufw -/etc/firewalld -/var/lib/tailscale -/run/tailscale\n"
     "LogsDirectory=obhod\n"
     "LogsDirectoryMode=0700\n"
     "\n"

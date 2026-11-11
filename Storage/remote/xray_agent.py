@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -9,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -1084,6 +1086,7 @@ def write_sub_unit(server, registry, port):
     unit = sub_paths()[2]
     if not os.path.isdir(UNIT_DIR):
         os.makedirs(UNIT_DIR, exist_ok=True)
+    py_exec = (shutil.which("python3") or sys.executable) if run is _ORIG_RUN else sys.executable
     body = "\n".join(
         [
             "[Unit]",
@@ -1097,13 +1100,13 @@ def write_sub_unit(server, registry, port):
             "Environment=OBHOD_SUB_BIND=127.0.0.1",
             "Environment=OBHOD_SUB_ACCESS_LOG=" + os.path.join(path_of("/var/log/xray"), "sub.log"),
             "Environment=OBHOD_SECURITY_LOG=" + os.path.join(path_of("/var/log/obhod"), "security.log"),
-            "ExecStart=" + sys.executable + " " + server,
+            "ExecStart=" + py_exec + " " + server,
             "Restart=always",
             "RestartSec=3",
             "NoNewPrivileges=true",
             "PrivateTmp=true",
             "ProtectSystem=strict",
-            "ProtectHome=true",
+            "ProtectHome=read-only",
             "ReadWritePaths=-" + STATE + " -" + path_of("/var/log/xray") + " -" + path_of("/var/log/obhod"),
             "RestrictAddressFamilies=AF_INET AF_INET6",
             "MemoryDenyWriteExecute=true",
@@ -1383,11 +1386,140 @@ def pick_funnel_url(text, prefer_port=0):
     return candidates[0]
 
 
+TAILSCALE_STABLE_JSON_URL = "https://pkgs.tailscale.com/stable/?mode=json"
+TAILSCALE_STABLE_BASE_URL = "https://pkgs.tailscale.com/stable/"
+TAILSCALE_ARCH_MAP = {
+    "x86_64": "amd64",
+    "amd64": "amd64",
+    "aarch64": "arm64",
+    "arm64": "arm64",
+    "armv7l": "arm",
+    "armv7": "arm",
+    "armv6l": "arm",
+    "i686": "386",
+    "i386": "386",
+    "riscv64": "riscv64",
+}
+SYSTEMD_RUN_ERRORS = (
+    "Failed to start transient service unit",
+    "Failed to connect to bus",
+    "Access denied",
+)
+
+
+def ensure_standard_path():
+    cur = os.environ.get("PATH", "")
+    parts = [item for item in cur.split(":") if item]
+    for folder in ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"):
+        if folder not in parts:
+            parts.append(folder)
+    os.environ["PATH"] = ":".join(parts)
+
+
+def sandboxed_host():
+    if run is not _ORIG_RUN:
+        return False
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        return False
+    if not has_systemd() or not shutil.which("systemd-run"):
+        return False
+    for probe in ("/usr/share", "/usr", "/etc", "/proc/sys/net/ipv4"):
+        if os.path.exists(probe) and not os.access(probe, os.W_OK):
+            return True
+    return False
+
+
+def systemd_run_argv(argv, unit_name=""):
+    systemd_bin = shutil.which("systemd-run") or "systemd-run"
+    cmd = [
+        systemd_bin,
+        "--pipe",
+        "--wait",
+        "--quiet",
+        "--collect",
+    ]
+    if unit_name:
+        cmd.append("--unit=" + unit_name)
+    cmd.extend(
+        [
+            "-p",
+            "WorkingDirectory=/",
+            "-p",
+            "KillMode=control-group",
+            "-E",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "-E",
+            "HOME=/root",
+            "-E",
+            "LANG=C.UTF-8",
+            "-E",
+            "LC_ALL=C.UTF-8",
+            "-E",
+            "TERM=dumb",
+            "-E",
+            "DEBIAN_FRONTEND=noninteractive",
+            "--",
+        ]
+    )
+    cmd.extend([str(item) for item in argv])
+    return cmd
+
+
+def run_host(argv, timeout=180, stdin_bytes=None):
+    if run is not _ORIG_RUN:
+        return run(argv, timeout=timeout)
+    ensure_standard_path()
+    host_env = dict(os.environ)
+    host_env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    host_env["HOME"] = "/root"
+    host_env["DEBIAN_FRONTEND"] = "noninteractive"
+    if sandboxed_host():
+        cmd = systemd_run_argv(argv)
+        try:
+            escaped = subprocess.run(
+                cmd,
+                input=stdin_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                env=host_env,
+                cwd="/",
+                check=False,
+            )
+            out_text = (escaped.stdout or b"").decode("utf-8", "replace").strip()
+            rc = int(escaped.returncode or 0)
+            if rc == 0 or not any(marker in out_text for marker in SYSTEMD_RUN_ERRORS):
+                return rc, out_text
+        except subprocess.TimeoutExpired as exc:
+            raw_out = exc.stdout or b""
+            partial = raw_out.strip() if isinstance(raw_out, str) else raw_out.decode("utf-8", "replace").strip()
+            raise ScriptError("timeout", "command timed out after %ss: %s" % (timeout, partial[:320]))
+        except OSError:
+            pass
+    if stdin_bytes is not None:
+        try:
+            proc = subprocess.run(
+                argv,
+                input=stdin_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                env=host_env,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raw_out = exc.stdout or b""
+            partial = raw_out.strip() if isinstance(raw_out, str) else raw_out.decode("utf-8", "replace").strip()
+            raise ScriptError("timeout", "command timed out after %ss: %s" % (timeout, partial[:320]))
+        return int(proc.returncode or 0), (proc.stdout or b"").decode("utf-8", "replace").strip()
+    return run(argv, timeout=timeout)
+
+
 def detect_netcheck_ip(found):
     if run is not _ORIG_RUN:
         return ""
     try:
-        code, text = run([found, "netcheck", "--format=json"], timeout=6)
+        code, text = run_host([found, "netcheck", "--format=json"], timeout=6)
     except ScriptError:
         return ""
     if code != 0 or not text:
@@ -1414,8 +1546,14 @@ def detect_netcheck_ip(found):
 def run_funnel(argv, timeout=30):
     if run is not _ORIG_RUN:
         return run(argv, timeout=timeout)
+    ensure_standard_path()
+    unit_name = ""
+    spawn_argv = list(argv)
+    if sandboxed_host():
+        unit_name = "obhod-ts-funnel-%s" % os.urandom(4).hex()
+        spawn_argv = systemd_run_argv(argv, unit_name=unit_name)
     proc = subprocess.Popen(
-        argv,
+        spawn_argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
@@ -1456,6 +1594,14 @@ def run_funnel(argv, timeout=30):
                             break
                         chunks.append(rest)
                 return proc.returncode, b"".join(chunks).decode("utf-8", "replace").strip()
+        if unit_name and shutil.which("systemctl"):
+            subprocess.run(
+                ["systemctl", "stop", unit_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
         proc.terminate()
         try:
             proc.wait(timeout=2)
@@ -1472,6 +1618,8 @@ def run_funnel(argv, timeout=30):
 
 
 def tunnel_binary():
+    if run is _ORIG_RUN:
+        ensure_standard_path()
     return shutil.which("tailscale")
 
 
@@ -1492,10 +1640,10 @@ def tunnel_state(prefer_port=0):
     }
     if not found:
         return out
-    code, text = run([found, "version"], timeout=20)
+    code, text = run_host([found, "version"], timeout=20)
     if code == 0 and text:
         out["version"] = text.split()[0][:32]
-    code, text = run([found, "status", "--json"], timeout=30)
+    code, text = run_host([found, "status", "--json"], timeout=30)
     if code == 0 and text:
         try:
             data = json.loads(text)
@@ -1523,7 +1671,7 @@ def tunnel_state(prefer_port=0):
                     out["key_expiry"] = raw_exp[:32]
     if out["backend"] == "Running":
         out["public_ip"] = detect_netcheck_ip(found)
-    code, text = run([found, "funnel", "status"], timeout=30)
+    code, text = run_host([found, "funnel", "status"], timeout=30)
     if code == 0 and text:
         chosen_url = pick_funnel_url(text, prefer_port)
         if chosen_url:
@@ -1536,48 +1684,167 @@ def cmd_tunnel_status(flags, rest):
     return tunnel_state(), None
 
 
-def fetch_tailscale_installer():
+def fetch_url_bytes(url, timeout=120):
     handler = urllib.request.build_opener()
     try:
-        with handler.open(TAILSCALE_INSTALL_URL, timeout=90) as answer:
+        with handler.open(url, timeout=timeout) as answer:
             return answer.read()
     except (urllib.error.URLError, OSError) as exc:
         if shutil.which("curl"):
-            code, text = run(["curl", "-fsSL", TAILSCALE_INSTALL_URL], timeout=90)
-            if code == 0 and text:
-                return text.encode("utf-8")
-        raise ScriptError("internal", "tailscale install.sh could not be fetched: " + str(exc)[:200], "tunnel")
+            proc = subprocess.run(
+                ["curl", "-fsSL", url],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                return proc.stdout
+        raise ScriptError("internal", "download failed (%s): %s" % (url, str(exc)[:200]), "tunnel")
+
+
+def fetch_tailscale_installer():
+    return fetch_url_bytes(TAILSCALE_INSTALL_URL, timeout=90)
+
+
+def install_tailscale_tarball():
+    machine = os.uname().machine.lower()
+    ts_arch = TAILSCALE_ARCH_MAP.get(machine, "")
+    if not ts_arch:
+        raise ScriptError("unsupported_arch", "tailscale static archive is not available for " + machine, "tunnel")
+    meta_raw = fetch_url_bytes(TAILSCALE_STABLE_JSON_URL, timeout=60)
+    try:
+        meta = json.loads(meta_raw.decode("utf-8", "replace"))
+    except ValueError:
+        raise ScriptError("internal", "tailscale stable metadata is invalid json", "tunnel")
+    tarballs = (meta.get("Tarballs") or {}) if isinstance(meta, dict) else {}
+    tar_name = str(tarballs.get(ts_arch, "") or "").strip()
+    if not tar_name or "/" in tar_name or not tar_name.endswith(".tgz"):
+        raise ScriptError("internal", "tailscale tarball name is missing for " + ts_arch, "tunnel")
+    archive_bytes = fetch_url_bytes(TAILSCALE_STABLE_BASE_URL + tar_name, timeout=300)
+    bin_dir = path_of("/usr/local/bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    extracted = {}
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            base = os.path.basename(member.name)
+            if base in ("tailscale", "tailscaled"):
+                extracted[base] = tar.extractfile(member).read()
+    if "tailscale" not in extracted or "tailscaled" not in extracted:
+        raise ScriptError("internal", "tailscale tarball did not contain tailscale and tailscaled", "tunnel")
+    for name, payload in extracted.items():
+        target = os.path.join(bin_dir, name)
+        fd, tmp_bin = tempfile.mkstemp(dir=bin_dir, prefix=".obhod-" + name + "-")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_bin, 0o755)
+            os.replace(tmp_bin, target)
+        except OSError:
+            if os.path.exists(tmp_bin):
+                try:
+                    os.unlink(tmp_bin)
+                except OSError:
+                    pass
+            raise
+    os.makedirs(UNIT_DIR, exist_ok=True)
+    unit_file = os.path.join(UNIT_DIR, "tailscaled.service")
+    daemon_bin = os.path.join(bin_dir, "tailscaled")
+    unit_body = "\n".join(
+        [
+            "[Unit]",
+            "Description=Tailscale node agent",
+            "Documentation=https://tailscale.com/kb/",
+            "Wants=network-pre.target",
+            "After=network-pre.target NetworkManager.service systemd-resolved.service",
+            "",
+            "[Service]",
+            "ExecStart=" + daemon_bin + " --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641",
+            "ExecStopPost=" + daemon_bin + " --cleanup",
+            "Restart=on-failure",
+            "RuntimeDirectory=tailscale",
+            "RuntimeDirectoryMode=0755",
+            "StateDirectory=tailscale",
+            "StateDirectoryMode=0700",
+            "CacheDirectory=tailscale",
+            "CacheDirectoryMode=0750",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        ]
+    )
+    write_atomic(unit_file, unit_body, 0o644)
+    if has_systemd():
+        run_host(["systemctl", "daemon-reload"], timeout=60)
+        run_host(["systemctl", "enable", "--now", "tailscaled"], timeout=60)
+
+
+def enable_exit_node_forwarding():
+    if run is not _ORIG_RUN:
+        return
+    sysctl_dir = path_of("/etc/sysctl.d")
+    conf_path = os.path.join(sysctl_dir, "99-obhod-tailscale.conf")
+    try:
+        os.makedirs(sysctl_dir, exist_ok=True)
+        write_atomic(conf_path, "net.ipv4.ip_forward = 1\nnet.ipv6.conf.all.forwarding = 1\n", 0o644)
+    except OSError:
+        pass
+    try:
+        run_host(["sysctl", "-p", conf_path], timeout=15)
+    except ScriptError:
+        pass
 
 
 def cmd_tunnel_install(flags, rest):
     found = tunnel_binary()
     if found:
         if has_systemd():
-            run(["systemctl", "enable", "--now", "tailscaled"], timeout=60)
+            run_host(["systemctl", "enable", "--now", "tailscaled"], timeout=60)
         return tunnel_state(), None
     if not has_systemd():
         raise ScriptError("unsupported", "tailscale needs systemd", "tunnel")
     if not shutil.which("curl") and shutil.which("apt-get"):
-        run(["apt-get", "update"], timeout=300)
-        run(["apt-get", "install", "-y", "curl", "ca-certificates"], timeout=300)
+        run_host(["apt-get", "update"], timeout=300)
+        run_host(["apt-get", "install", "-y", "curl", "ca-certificates"], timeout=300)
     script = fetch_tailscale_installer()
     if len(script) < 200 or not script.lstrip().startswith(b"#!/bin/sh"):
         raise ScriptError("internal", "tailscale install.sh looks broken", "tunnel")
-    fd, script_path = tempfile.mkstemp(prefix="obhod-tailscale-", suffix=".sh")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(script)
-        os.chmod(script_path, 0o700)
-        code, text = run(["sh", script_path], timeout=900)
-        if code != 0:
-            raise ScriptError("internal", "tailscale install.sh failed: " + text[:300], "tunnel")
-    finally:
+    code = 1
+    text = ""
+    if sandboxed_host():
+        code, text = run_host(["/bin/sh", "-s"], timeout=900, stdin_bytes=script)
+    else:
+        fd, script_path = tempfile.mkstemp(prefix="obhod-tailscale-", suffix=".sh")
         try:
-            os.unlink(script_path)
-        except OSError:
-            pass
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(script)
+            os.chmod(script_path, 0o700)
+            code, text = run(["sh", script_path], timeout=900)
+        finally:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+    if (code != 0 or not tunnel_binary()) and run is _ORIG_RUN:
+        note("install.sh exited with %s, falling back to official static tarball" % code)
+        try:
+            install_tailscale_tarball()
+            code = 0
+        except ScriptError as fallback_exc:
+            raise ScriptError(
+                "internal",
+                "tailscale install failed (script: %s; tarball: %s)" % (text[:180], fallback_exc.message[:160]),
+                "tunnel",
+            )
+    if code != 0:
+        raise ScriptError("internal", "tailscale install.sh failed: " + text[:300], "tunnel")
     if has_systemd():
-        run(["systemctl", "enable", "--now", "tailscaled"], timeout=60)
+        run_host(["systemctl", "enable", "--now", "tailscaled"], timeout=60)
     if not tunnel_binary():
         raise ScriptError("internal", "tailscale is still missing after install.sh", "tunnel")
     return tunnel_state(), None
@@ -1612,6 +1879,8 @@ def cmd_tunnel_up(flags, rest):
     if not found:
         raise ScriptError("not_installed", "tailscale is not installed", "tunnel")
     exit_node = str(flags.get("exit_node", "")) == "1" or "--advertise-exit-node" in raw_key
+    if exit_node:
+        enable_exit_node_forwarding()
     tags = clean_tunnel_tags(flags.get("tags", "")) or extract_tunnel_tags(raw_key)
     extra_flags = ["--accept-dns=false", "--accept-routes=false"]
     if hostname:
@@ -1622,16 +1891,16 @@ def cmd_tunnel_up(flags, rest):
         extra_flags.append("--advertise-exit-node")
     if key:
         up_cmd = [found, "up", "--authkey=" + key] + extra_flags
-        code, text = run(up_cmd, timeout=180)
+        code, text = run_host(up_cmd, timeout=180)
         if code != 0 and "--reset" in (text or ""):
-            code, text = run(up_cmd + ["--reset"], timeout=180)
+            code, text = run_host(up_cmd + ["--reset"], timeout=180)
         if code != 0:
             cur = tunnel_state(https_port)
             if cur.get("backend") == "Running" and cur.get("have_node_key") and not cur.get("expired"):
                 reconf = [found, "up"] + extra_flags
-                rc2, txt2 = run(reconf, timeout=120)
+                rc2, txt2 = run_host(reconf, timeout=120)
                 if rc2 != 0 and "--reset" in (txt2 or ""):
-                    run(reconf + ["--reset"], timeout=120)
+                    run_host(reconf + ["--reset"], timeout=120)
             else:
                 raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
     else:
@@ -1640,13 +1909,13 @@ def cmd_tunnel_up(flags, rest):
             raise ScriptError("key_expired", "the tailscale node key expired, paste a new tskey-auth key", "tunnel")
         if before.get("backend") != "Running":
             reconf = [found, "up"] + extra_flags
-            code, text = run(reconf, timeout=120)
+            code, text = run_host(reconf, timeout=120)
             if code != 0 and "--reset" in (text or ""):
-                code, text = run(reconf + ["--reset"], timeout=120)
+                code, text = run_host(reconf + ["--reset"], timeout=120)
             if code != 0:
                 raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
     if run is _ORIG_RUN:
-        run([found, "funnel", "reset"], timeout=30)
+        run_host([found, "funnel", "reset"], timeout=30)
     code, text = run_funnel([found, "funnel", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port], timeout=30)
     if code != 0:
         cur = tunnel_state(https_port)
@@ -1689,7 +1958,7 @@ def cmd_tunnel_down(flags, rest):
     found = tunnel_binary()
     if not found:
         return tunnel_state(), None
-    run([found, "funnel", "reset"], timeout=60)
+    run_host([found, "funnel", "reset"], timeout=60)
     return tunnel_state(), None
 
 
