@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import i18n
-from .xray import FINGERPRINTS, FLOWS, LOG_LEVELS
+from .xray import FLOWS, FINGERPRINTS, LOG_LEVELS
 
 TOKEN_LEN = 10
 MAX_QUERY = 256
