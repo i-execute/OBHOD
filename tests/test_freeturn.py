@@ -416,13 +416,12 @@ async def test_control_apply_passes_the_key_only_when_given() -> None:
 
 
 @pytest.mark.asyncio
-async def test_control_refuses_the_owner_removal_locally() -> None:
-    shell = FakeShell(ok_envelope({"removed": True}))
+async def test_control_allows_the_owner_revocation_call() -> None:
+    shell = FakeShell(ok_envelope({"removed": True, "name": "owner"}))
     control = FtControl(shell=shell)
-    with pytest.raises(FtError) as info:
-        await control.client_remove("owner")
-    assert info.value.code == "owner_protected"
-    assert shell.calls == []
+    res = await control.client_remove("owner")
+    assert res.result == "ok"
+    assert any("--name=owner" in item for item in shell.calls[-1][0])
 
 
 @pytest.mark.asyncio

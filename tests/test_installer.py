@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-INSTALLER = ROOT / "Storage" / "obhod-install.sh"
+INSTALLER = ROOT / "Storage" / "obhod_install.sh"
 UNIT = ROOT / "Storage" / "obhod.service"
 HASH = "b" * 32
 
@@ -88,7 +88,7 @@ def test_dev_install_and_uninstall(tmp_path: Path) -> None:
     (payload / "BOT").mkdir(parents=True)
     (payload / "BOT" / "__init__.py").write_text("SENTINEL = 1\n")
     (payload / "requirements.txt").write_text("")
-    shutil.copy(INSTALLER, payload / "Storage" / "obhod-install.sh")
+    shutil.copy(INSTALLER, payload / "Storage" / "obhod_install.sh")
     shutil.copy(UNIT, payload / "Storage" / "obhod.service")
     shutil.copy(ROOT / "Storage" / "remote" / "xray_agent.py", payload / "Storage" / "remote" / "xray_agent.py")
     env_conf = home / ".obhod" / "etc" / "obhod.env"
@@ -97,7 +97,7 @@ def test_dev_install_and_uninstall(tmp_path: Path) -> None:
     env = {"HOME": str(home)}
 
     install = subprocess.run(
-        ["bash", str(payload / "Storage" / "obhod-install.sh"), "install", "--dev", "--yes", "--skip-deps"],
+        ["bash", str(payload / "Storage" / "obhod_install.sh"), "install", "--dev", "--yes", "--skip-deps"],
         capture_output=True,
         text=True,
         env={**os.environ, **env},
@@ -116,7 +116,7 @@ def test_dev_install_and_uninstall(tmp_path: Path) -> None:
     assert f"OBHOD_STATE_DIR={home}/.obhod/state" in body
 
     status = subprocess.run(
-        ["bash", str(payload / "Storage" / "obhod-install.sh"), "status", "--dev"],
+        ["bash", str(payload / "Storage" / "obhod_install.sh"), "status", "--dev"],
         capture_output=True,
         text=True,
         env={**os.environ, **env},
@@ -126,7 +126,7 @@ def test_dev_install_and_uninstall(tmp_path: Path) -> None:
     assert "config present" in status.stdout
 
     remove = subprocess.run(
-        ["bash", str(payload / "Storage" / "obhod-install.sh"), "uninstall", "--dev"],
+        ["bash", str(payload / "Storage" / "obhod_install.sh"), "uninstall", "--dev"],
         capture_output=True,
         text=True,
         env={**os.environ, **env},
@@ -176,7 +176,7 @@ def dev_payload(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     (payload / "BOT").mkdir(parents=True)
     (payload / "BOT" / "__init__.py").write_text("SENTINEL = 1\n")
     (payload / "requirements.txt").write_text("")
-    shutil.copy(INSTALLER, payload / "Storage" / "obhod-install.sh")
+    shutil.copy(INSTALLER, payload / "Storage" / "obhod_install.sh")
     shutil.copy(UNIT, payload / "Storage" / "obhod.service")
     shutil.copy(ROOT / "Storage" / "remote" / "xray_agent.py", payload / "Storage" / "remote" / "xray_agent.py")
     env_conf = home / ".obhod" / "etc" / "obhod.env"
@@ -187,7 +187,7 @@ def dev_payload(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
 
 def dev_run(payload: Path, args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(payload / "Storage" / "obhod-install.sh"), *args],
+        ["bash", str(payload / "Storage" / "obhod_install.sh"), *args],
         capture_output=True,
         text=True,
         env={**os.environ, **env},
@@ -586,7 +586,6 @@ def test_without_a_runtime_the_unit_keeps_the_venv_path() -> None:
 
 def test_cmd_update_copies_full_storage_heals_corrupt_state_and_reports_both_cores(tmp_path: Path) -> None:
     payload, env, env_conf = dev_payload(tmp_path)
-    (payload / "Storage" / "emoji-pack.json").write_text('{"pack":"test","icons":{}}', encoding="utf-8")
     shutil.copy2(ROOT / "Storage" / "obhod_setup.py", payload / "Storage" / "obhod_setup.py")
     env_conf.parent.mkdir(parents=True, exist_ok=True)
     env_conf.write_text("BOT_TOKEN=123456:ABC\nAPI_ID=42\nAPI_HASH=%s\nADMIN_ID=1000\nOBHOD_SUB_PORT=2096\nOBHOD_API_PORT=62789\n" % HASH, encoding="utf-8")
@@ -599,7 +598,7 @@ def test_cmd_update_copies_full_storage_heals_corrupt_state_and_reports_both_cor
     assert "updated" in res.stdout
     assert "xray-core & freeturn" in res.stdout
     prefix = Path(env["HOME"]) / ".obhod" / "app"
-    assert (prefix / "Storage" / "emoji-pack.json").is_file()
+    assert (prefix / "Storage" / "obhod_setup.py").is_file()
     assert not (state_dir / ".state-stale.json").exists()
     assert not (state_dir / "state.json").exists()
     assert list(state_dir.glob("state.json.corrupt.*"))

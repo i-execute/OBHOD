@@ -446,22 +446,26 @@ class FakeFtControl:
         from BOT.freeturn import FtClient
 
         self.calls.append(["client-add", name])
-        return FtClient(name=name, client_id="ffeeddccbbaa99887766554433221100"), self._link(name), self._conf()
+        if name == "owner":
+            self.owner_revoked = False
+        return FtClient(name=name, client_id="ffeeddccbbaa99887766554433221100", owner=(name == "owner")), self._link(name), self._conf()
 
     async def client_conf(self, name: str) -> Any:
-        from BOT.freeturn import FtClient
+        from BOT.freeturn import FtClient, FtError
 
         self.calls.append(["client-conf", name])
+        if name == "owner" and getattr(self, "owner_revoked", False):
+            raise FtError("the owner link is already revoked", "client_missing")
         owner = name == "owner"
         return FtClient(name=name, client_id="0123456789abcdef0123456789abcdef", owner=owner), self._link(name), self._conf()
 
     async def client_remove(self, name: str) -> Any:
-        from BOT.freeturn import FtError, FtResponse
+        from BOT.freeturn import FtResponse
 
         self.calls.append(["client-remove", name])
         if name == "owner":
-            raise FtError("the owner client cannot be removed", "owner_protected")
-        return FtResponse(result="ok", data={"removed": True})
+            self.owner_revoked = True
+        return FtResponse(result="ok", data={"removed": True, "name": name})
 
     async def wg_peers(self, iface: str = "all", timeout: float = 0) -> Any:
         self.calls.append(["wg-peers", iface])

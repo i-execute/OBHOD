@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import json
 import re
 from pathlib import Path
 
@@ -10,22 +9,20 @@ import pytest
 from BOT import icons, i18n, ui
 
 ROOT = Path(__file__).resolve().parents[1]
-PACK = ROOT / "Storage" / "emoji-pack.json"
 TG_EMOJI = re.compile(r'<tg-emoji emoji-id="(\d+)">')
 
 
 def pack_items() -> dict[str, str]:
-    body = json.loads(PACK.read_text(encoding="utf-8"))
-    return {str(item["id"]): str(item["alt"]) for item in body["items"]}
+    return {str(ident): str(alt) for ident, alt in icons.ALL_EMOJI.items()}
 
 
 def test_the_pack_is_vendored_and_matches_the_declared_id() -> None:
-    body = json.loads(PACK.read_text(encoding="utf-8"))
-    assert body["pack"]["id"] == icons.PACK_ID
-    assert body["pack"]["short_name"] == icons.PACK
-    assert body["pack"]["link"] == icons.PACK_LINK
-    assert len(body["items"]) >= 400
-    assert len({item["id"] for item in body["items"]}) == len(body["items"])
+    assert not (ROOT / "Storage" / "emoji-pack.json").exists()
+    assert icons.PACK_ID == 7489288727785635936
+    assert icons.PACK == "tgiosicons"
+    assert icons.PACK_LINK == "https://t.me/addemoji/tgiosicons"
+    assert len(icons.ALL_EMOJI) >= 400
+    assert all(isinstance(k, int) and k > 0 and isinstance(v, str) for k, v in icons.ALL_EMOJI.items())
 
 
 def test_every_icon_id_exists_in_the_pack() -> None:

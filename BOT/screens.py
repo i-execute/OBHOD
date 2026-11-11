@@ -528,6 +528,82 @@ def _update_stage_catalog(t: i18n.Translator, include_deps: bool = False) -> lis
     return items
 
 
+def update_step_block(view: View, info: dict[str, Any], stage: str, meta: dict[str, Any] | None = None) -> str:
+    t = view.tr()
+    data = dict(meta or {})
+    repo = str(info.get("repo") or DEFAULT_REPO)
+    target = str(data.get("target") or "")[:12]
+    linked = ref_link(target, repo) if target else code(t("UI_NOT_SET"))
+    subject = str(data.get("subject") or "").strip()
+    if stage == "fetch":
+        return f"<p>{ico('loading')}{bold(t('UPD_STAGE_FETCH_RUN'))}</p>"
+    if stage == "compare":
+        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_FETCH_DONE'))} · {ico('loading')}{bold(t('UPD_STAGE_COMPARE_RUN'))}</p>"
+    if stage == "apply":
+        tail = f" ({linked})" if target else ""
+        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_COMPARE_DONE'))} · {ico('loading')}{bold(t('UPD_STAGE_APPLY_RUN'))}{tail}</p>"
+    if stage == "verify":
+        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_APPLY_DONE'))} · {ico('loading')}{bold(t('UPD_STAGE_VERIFY_RUN'))}</p>"
+    if stage == "deps":
+        return f"<p>{ico('ok')}{esc(t('UPD_STAGE_VERIFY_DONE'))} · {ico('loading')}{bold(t('UPD_STAGE_DEPS_RUN'))}</p>"
+    if stage == "restarting":
+        prev_done = t("UPD_STAGE_DEPS_DONE") if data.get("deps") else t("UPD_STAGE_VERIFY_DONE")
+        parts = [
+            f"<p>{ico('ok')}{esc(prev_done)}</p>",
+            quote(ico("restart") + bold(t("UPD_RESTARTING_TITLE")) + " · " + bold_html(t("UPD_RESTARTING_BODY", commit=linked))),
+        ]
+        if subject:
+            parts.append(quote(muted(subject)))
+        return "\n".join(parts)
+    return f"<p>{ico('loading')}{bold(stage)}</p>"
+
+
+def update_final_block(view: View, info: dict[str, Any], kind: str, payload: dict[str, Any] | None = None) -> tuple[str, list[str]]:
+    t = view.tr()
+    data = dict(payload or {})
+    repo = str(info.get("repo") or data.get("repo") or DEFAULT_REPO)
+    commit = str(data.get("commit") or data.get("target") or data.get("to") or data.get("source") or info.get("commit") or "")[:12]
+    linked = ref_link(commit, repo) if commit else code(t("UI_NOT_SET"))
+    subject = str(data.get("subject") or info.get("subject") or "").strip()
+    if kind == "already":
+        parts = [
+            f"<p>{ico('ok')}{esc(t('UPD_STAGE_COMPARE_DONE'))}</p>",
+            quote(ico("ok") + bold(t("UPD_ALREADY_TITLE")) + " · " + bold_html(t("UPD_ALREADY", commit=linked))),
+        ]
+        if subject:
+            parts.append(quote(muted(subject)))
+        btns = [row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
+        return "\n".join(parts), btns
+    if kind == "failed":
+        message = str(data.get("message") or t("UPD_NOTHING_DONE")).strip()
+        prefix = esc(str(t("UPD_FAILED", error="")).rstrip(": ").strip())
+        parts = [quote(ico("warn") + bold_html(f"{prefix}: {esc(message)}"))]
+        if data.get("rollback"):
+            source = str(data.get("source") or "")[:12]
+            if source:
+                parts.append(quote(muted_html(t("UPD_ROLLBACK", commit=ref_link(source, repo)))))
+        btns = [row(button(t("UI_REFRESH"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
+        return "\n".join(parts), btns
+    if kind == "manual":
+        prev_done = t("UPD_STAGE_DEPS_DONE") if data.get("deps") else t("UPD_STAGE_VERIFY_DONE")
+        parts = [
+            f"<p>{ico('ok')}{esc(prev_done)}</p>",
+            quote(ico("info") + bold(t("UPD_RESTART_MANUAL_TITLE")) + " · " + bold_html(t("UPD_RESTART_MANUAL_BODY", commit=linked))),
+        ]
+        if subject:
+            parts.append(quote(muted(subject)))
+        btns = [row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
+        return "\n".join(parts), btns
+    parts = [quote(ico("ok") + bold_html(t("UPD_APPLIED_FINAL", commit=linked)))]
+    btns = [row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home"))]
+    return "\n".join(parts), btns
+
+
+def update_cumulative_screen(view: View, log_blocks: list[str], buttons: list[str] | None = None) -> Any:
+    t = view.tr()
+    return screen(t("UPD_PROGRESS_TITLE"), "", list(log_blocks), list(buttons or []), icon="update")
+
+
 def update_progress_screen(view: View, info: dict[str, Any], stage: str, meta: dict[str, Any] | None = None) -> Any:
     t = view.tr()
     data = dict(meta or {})
@@ -635,7 +711,7 @@ def _daemon_label(t: i18n.Translator, key: str) -> str:
 
 def update_verified_screen(view: View, notice: dict[str, Any]) -> Any:
     t = view.tr()
-    blocks = banner(view, t)
+    blocks: list[str] = []
     repo = str(notice.get("repo") or DEFAULT_REPO)
     healthy = bool(notice.get("healthy", True))
     commit = str(notice.get("commit") or notice.get("to") or "")[:12]
@@ -659,12 +735,23 @@ def update_verified_screen(view: View, notice: dict[str, Any]) -> Any:
         blocks.append(quote(bold_html(t("UPD_BOOTED_ALL_OK", commit=linked, ok=ok_count, total=total_count))))
     else:
         blocks.append(quote(bold_html(t("UPD_BOOTED_PARTIAL", commit=linked, ok=ok_count, total=total_count))))
-    meta_rows = [("info", t("UPD_LABEL_COMMIT"), linked)]
-    branch = str(notice.get("branch") or "").strip()
-    if branch:
-        meta_rows.append(("tag", t("UPD_LABEL_BRANCH"), code(branch)))
-    blocks.append(table(meta_rows, (t("UI_PARAM"), t("UI_VALUE"))))
-    blocks.append(heading(t("UPD_DAEMONS_HEAD"), 3, icon="server"))
+    summary_parts: list[str] = []
+    cores_info = list(notice.get("cores_info") or [])
+    if cores_info:
+        core_rows = []
+        for entry in cores_info:
+            cid = str(entry.get("id") or "").strip().lower()
+            configured = bool(entry.get("configured", False))
+            raw_state = str(entry.get("state") or "missing").strip().lower()
+            cfg_text = t("UPD_CORE_CONFIGURED") if configured else t("UPD_CORE_UNCONFIGURED")
+            state_text = service_state_label(raw_state, view.lang)
+            ver = str(entry.get("detail") or "").strip()
+            parts_cell = [cfg_text, state_text]
+            if ver:
+                parts_cell.append(ver)
+            c_icon = "ok" if raw_state in {"active", "running", "activating"} else ("warn" if configured else "info")
+            core_rows.append((c_icon, _daemon_label(t, cid), code(" / ".join(parts_cell))))
+        summary_parts.append(table(core_rows, (t("NAV_CORE"), t("UPD_COL_STATE"))))
     daemon_rows = []
     for item in raw_daemons:
         raw_state = str(item.get("state") or "inactive").strip().lower()
@@ -678,19 +765,23 @@ def update_verified_screen(view: View, notice: dict[str, Any]) -> Any:
         else:
             row_icon = "warn"
         daemon_rows.append((row_icon, _daemon_label(t, str(item.get("id") or "")), cell))
-    blocks.append(table(daemon_rows, (t("UPD_COL_DAEMON"), t("UPD_COL_STATE"))))
+    summary_parts.append(table(daemon_rows, (t("UPD_COL_DAEMON"), t("UPD_COL_STATE"))))
+    branch = str(notice.get("branch") or "").strip()
     subject = str(notice.get("subject") or "").strip()
-    if subject:
-        blocks.append(quote(muted(subject)))
+    if branch or subject:
+        tail_bits = [code(branch)] if branch else []
+        if subject:
+            tail_bits.append(esc(subject))
+        summary_parts.append(quote(muted_html(" · ".join(tail_bits))))
+    blocks.append(details(t("UPD_BOOTED_SUMMARY", ok=ok_count, total=total_count), "\n".join(summary_parts)))
     output = str(notice.get("output") or "").strip()
     if not healthy and output:
         blocks.append(pre(output[:1200]))
     buttons = [
-        row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     title = t("UPD_BOOTED_TITLE") if healthy else t("UPD_TITLE")
-    subtitle = t("UPD_BOOTED_SUBTITLE") if healthy else t("UPD_SUBTITLE")
-    return screen(title, subtitle, blocks, buttons, icon="ok" if all_ok else "warn")
+    return screen(title, "", blocks, buttons, icon="ok" if all_ok else "warn")
 
 
 def body_text(value: object) -> str:

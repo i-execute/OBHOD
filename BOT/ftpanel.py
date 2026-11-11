@@ -65,6 +65,8 @@ class FtPanel:
         self.bot.save()
 
     def view(self, notice: str = "", error: str = "") -> ftscreens.FtView:
+        xr_panel = getattr(self.bot, "xray", None)
+        xr_core = getattr(xr_panel, "core", None) or getattr(self.bot.state, "last_probe", None) or {}
         return ftscreens.FtView(
             state=self.state,
             draft=self.draft,
@@ -84,6 +86,7 @@ class FtPanel:
             page=self.page,
             pages=pages_of(len(self.clients)),
             traffic_error=self.traffic_error,
+            xray_installed=bool(xr_core.get("installed")),
         )
 
     async def render(self, chat_id: int, msg_id: int, rich: Any) -> None:
@@ -158,6 +161,7 @@ class FtPanel:
             if arg2 != "yes":
                 self.pending = arg1
                 t = self.tr()
+                back_dest = "ft:share" if arg1 == "owner" else ("ft:cl:%s" % arg1)
                 await self.render(
                     chat_id,
                     msg_id,
@@ -166,7 +170,7 @@ class FtPanel:
                         t("FT_CONFIRM_REMOVE_TITLE", name=arg1),
                         t("FT_CONFIRM_REMOVE_BODY", name=arg1),
                         "ft:rm:%s:yes" % arg1,
-                        "ft:cl:%s" % arg1,
+                        back_dest,
                     ),
                 )
                 return
@@ -176,6 +180,12 @@ class FtPanel:
                 return
             self.pending = ""
             await self.remove_client(chat_id, msg_id, arg1)
+            return
+        if head == "owner":
+            if arg1 == "issue":
+                await self.reissue_owner(chat_id, msg_id)
+                return
+            await self.owner_share(chat_id, msg_id)
             return
         if head == "share":
             await self.owner_share(chat_id, msg_id)
@@ -602,16 +612,43 @@ class FtPanel:
             await self.control.client_remove(clean)
         except FtError as exc:
             self.note("client-remove", "failed", exc.code)
-            await self.render(chat_id, msg_id, ftscreens.clients_screen(self.view(error=self.describe(exc))))
+            dest = ftscreens.share_screen if clean == "owner" else ftscreens.clients_screen
+            await self.render(chat_id, msg_id, dest(self.view(error=self.describe(exc))))
             return
         self.note("client-remove", "ok", clean[:32])
         self.clients = [item for item in self.clients if item.name != clean]
-        if self.name == clean:
+        if clean in self.state.links:
+            self.state.links.pop(clean, None)
+            self.save()
+        if self.name == clean or clean == "owner":
             self.link = ""
             self.conf = ""
-            self.name = ""
+            if self.name == clean:
+                self.name = ""
         self.clients, self.share = await self._safe_list()
+        if clean == "owner":
+            await self.render(chat_id, msg_id, ftscreens.share_screen(self.view(notice=t("FT_OWNER_REVOKED"))))
+            return
         await self.render(chat_id, msg_id, ftscreens.clients_screen(self.view(notice=t("FT_NOTICE_REMOVED", name=clean))))
+
+    async def reissue_owner(self, chat_id: int, msg_id: int) -> None:
+        t = self.tr()
+        await self.busy(chat_id, msg_id, t("FT_BUSY_ACTION"))
+        try:
+            client, link, conf = await self.control.client_add("owner")
+        except FtError as exc:
+            self.note("client-add", "failed", exc.code)
+            await self.render(chat_id, msg_id, ftscreens.share_screen(self.view(error=self.describe(exc))))
+            return
+        self.note("client-add", "ok", "owner")
+        self.clients, self.share = await self._safe_list()
+        if not any(item.name == "owner" for item in self.clients):
+            self.clients.insert(0, client)
+        self.link = self._finish_link(link)
+        self.remember_link("owner", self.link)
+        self.conf = normalize_conf(_conf_text(conf))
+        self.name = "owner"
+        await self.render(chat_id, msg_id, ftscreens.share_screen(self.view(notice=t("FT_OWNER_REISSUED"))))
 
     async def owner_share(self, chat_id: int, msg_id: int) -> None:
         t = self.tr()
@@ -619,8 +656,15 @@ class FtPanel:
         try:
             _client, link, conf = await self.control.client_conf("owner")
             if not link:
-                self.clients, self.share = await self.control.client_list()
+                self.clients, self.share = await self._safe_list()
         except FtError as exc:
+            if exc.code in {"client_missing", "not_found"} and self.state.installed:
+                self.link = ""
+                self.conf = ""
+                self.name = ""
+                self.clients, self.share = await self._safe_list()
+                await self.render(chat_id, msg_id, ftscreens.share_screen(self.view()))
+                return
             await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
             return
         self.link = self._finish_link(link)
@@ -640,7 +684,7 @@ class FtPanel:
             self.note("uninstall", "failed", exc.code)
             await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
             return
-        self.state = FtState(config=self.draft)
+        self.state = FtState(config=self.draft, configured=False, installed=False, running=False)
         self.clients = []
         self.share = None
         self.link = ""

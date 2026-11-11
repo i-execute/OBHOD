@@ -46,6 +46,7 @@ class FtView:
     page: int = 0
     pages: int = 1
     traffic_error: str = ""
+    xray_installed: bool = False
 
     def tr(self) -> i18n.Translator:
         return i18n.translator(self.lang)
@@ -317,7 +318,9 @@ def client_screen(view: FtView, name: str) -> Any:
     if view.conf:
         blocks.append(long_block(t("FT_BTN_CONF"), view.conf))
     buttons.append(row(button(t("FT_BTN_REFRESH_TRAFFIC"), "ft:cl:%s:t" % name, icon="refresh")))
-    if client is None or not client.owner:
+    if name == "owner" or (client is not None and client.owner):
+        buttons.append(row(button(t("FT_BTN_REVOKE_OWNER"), "ft:rm:owner", icon="delete")))
+    else:
         buttons.append(row(button(t("FT_BTN_REMOVE"), "ft:rm:%s" % name, icon="delete")))
     buttons.append(row(button(t("FT_BTN_CLIENTS"), "ft:clients:%d" % (view.page + 1), icon="users"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home", icon="tunnel")))
     return screen(t("FT_CLIENT_TITLE", name=name), client.ip if client and client.ip else "", blocks, buttons, icon="user")
@@ -360,14 +363,17 @@ def traffic_screen(view: FtView) -> Any:
 def share_screen(view: FtView) -> Any:
     t = view.tr()
     blocks = banner(view, t)
-    if view.share is None or not view.share.peer():
+    peer_label = view.share.peer() if view.share is not None else ""
+    if not view.state.installed and not peer_label:
         blocks.append(quote(muted(t("FT_ERR_NOT_INSTALLED"))))
-        return screen(t("FT_SHARE_TITLE"), "", blocks, [back_row(view.lang)], icon="gift")
-    pairs = [
-        ("link", t("FT_SHARE_PEER"), code(view.share.peer())),
-        ("settings", t("FT_SHARE_MODE"), code("%s / %s" % (view.share.mode or "-", view.share.obf_profile or "-"))),
-    ]
-    blocks.append(table(pairs, (t("FT_SHARE_TITLE"), t("UI_VALUE"))))
+        btns = [row(button(t("FT_BTN_INSTALL"), "ft:apply", icon="ok")), back_row(view.lang)]
+        return screen(t("FT_SHARE_TITLE"), "", blocks, btns, icon="gift")
+    if view.share is not None and peer_label:
+        pairs = [
+            ("link", t("FT_SHARE_PEER"), code(peer_label)),
+            ("settings", t("FT_SHARE_MODE"), code("%s / %s" % (view.share.mode or "-", view.share.obf_profile or "-"))),
+        ]
+        blocks.append(table(pairs, (t("FT_SHARE_TITLE"), t("UI_VALUE"))))
     buttons = []
     if view.link:
         link_button, link_block = fitted(t("FT_BTN_LINK"), view.link, view.lang)
@@ -377,8 +383,24 @@ def share_screen(view: FtView) -> Any:
             blocks.append(link_block)
     if view.conf:
         blocks.append(long_block(t("FT_BTN_CONF"), view.conf))
+    if view.link:
+        buttons.append(
+            row(
+                button(t("FT_BTN_REVOKE_OWNER"), "ft:rm:owner", icon="delete"),
+                button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"),
+            )
+        )
+    else:
+        if not view.notice:
+            blocks.append(quote(muted(t("FT_OWNER_REVOKED"))))
+        buttons.append(
+            row(
+                button(t("FT_BTN_REISSUE_OWNER"), "ft:owner:issue", icon="add"),
+                button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"),
+            )
+        )
     buttons.append(back_row(view.lang))
-    return screen(t("FT_SHARE_TITLE"), view.share.peer(), blocks, buttons, icon="gift")
+    return screen(t("FT_SHARE_TITLE"), peer_label, blocks, buttons, icon="gift")
 
 
 def logs_screen(view: FtView) -> Any:
@@ -398,9 +420,20 @@ def core_screen(view: FtView) -> Any:
     name = t("CORE_BTN_FREETURN") if view.core == "freeturn" else t("CORE_BTN_XRAY")
     blocks.append(f"<p>{t('CORE_CURRENT')}: {code(name)}</p>")
     blocks.append(f"<p>{muted(t('CORE_NOTE'))}</p>")
+    xr_action = (
+        button(i18n.t("XR_CORE_PURGE", view.lang), "xr:core:purge", icon="delete")
+        if view.xray_installed
+        else button(i18n.t("XR_CORE_INSTALL", view.lang), "xr:core:install", icon="box")
+    )
+    ft_action = (
+        button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete")
+        if view.state.installed
+        else button(t("FT_BTN_INSTALL"), "ft:apply", icon="ok")
+    )
     buttons = [
         row(button(t("CORE_BTN_XRAY"), "core:set:xray", icon="xray"), button(t("CORE_BTN_FREETURN"), "core:set:freeturn", icon="tunnel")),
         row(button(i18n.t("NAV_XRAY", view.lang), "xr:home", icon="xray"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home", icon="tunnel")),
+        row(xr_action, ft_action),
         row(button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("CORE_TITLE"), t("CORE_SUBTITLE"), blocks, buttons, icon="module")

@@ -157,9 +157,16 @@ def home(view: XrayView) -> Any:
         blocks.append(table(rows, (t("XR_HOME_TABLE"), t("XR_HOME_TABLE2"))))
     else:
         blocks.append(quote(muted(t("XR_HOME_EMPTY"))))
+    core_installed = bool((view.core or {}).get("installed"))
+    core_quick_btn = (
+        button(t("XR_CORE_PURGE"), "xr:core:purge", icon="delete")
+        if core_installed
+        else button(t("XR_CORE_INSTALL"), "xr:core:install", icon="box")
+    )
     buttons = [
         row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
-        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("XR_BTN_CHECK"), "xr:check", icon="scan"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
+        row(button(t("NAV_CORE"), "xr:core", icon="xray"), core_quick_btn),
+        row(button(t("XR_BTN_CHECK"), "xr:check", icon="scan"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
     ]
     if state.inbounds:
         buttons.insert(1, row(*[button(t("XR_BTN_OPEN", remark=item.remark), f"xr:in:{item.id}", icon="module") for item in state.inbounds[:3]]))

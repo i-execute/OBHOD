@@ -714,6 +714,32 @@ class Bot:
             )
         return daemons
 
+    async def probe_cores_summary(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        try:
+            xr_core = await self.xray.control.probe(self.state.ssh)
+        except Exception:
+            xr_core = None
+        xr_inst = bool(xr_core is not None and getattr(xr_core, "installed", False))
+        xr_cfg = bool(self.state.xray.inbounds) or xr_inst
+        xr_state = str(getattr(xr_core, "service", "") or "inactive") if xr_inst else "missing"
+        xr_ver = str(getattr(xr_core, "version", "") or "") if xr_inst else ""
+        out.append({"id": "xray", "configured": xr_cfg, "state": xr_state, "detail": xr_ver})
+        ft_disk = Path("/opt/free-turn-proxy/install.conf").exists() or Path("/etc/systemd/system/free-turn-proxy.service").exists()
+        ft_probe_needed = bool(getattr(self.state.freeturn, "configured", False)) or ft_disk or not isinstance(self.freeturn.control, FtControl)
+        ft_state_obj = None
+        if ft_probe_needed:
+            try:
+                ft_state_obj = await self.freeturn.control.probe()
+            except Exception:
+                ft_state_obj = None
+        ft_inst = bool(ft_state_obj is not None and getattr(ft_state_obj, "installed", False))
+        ft_cfg = bool(getattr(self.state.freeturn, "configured", False)) or ft_inst
+        ft_state = ("active" if bool(getattr(ft_state_obj, "running", False)) else "inactive") if ft_inst else "missing"
+        ft_ver = str(getattr(ft_state_obj, "version", "") or "") if ft_inst else ""
+        out.append({"id": "freeturn", "configured": ft_cfg, "state": ft_state, "detail": ft_ver})
+        return out
+
     async def report_update(self, notice: dict[str, object]) -> None:
         owner = int(getattr(self, "admin_id", 0) or 0)
         if not owner or self.app is None:
@@ -723,7 +749,19 @@ class Bot:
             return
         if "daemons" not in saved:
             saved["daemons"] = await self.probe_update_daemons(str(saved.get("state") or "active"))
+        if "cores_info" not in saved:
+            saved["cores_info"] = await self.probe_cores_summary()
         self.update_notice = {}
+        upd_chat = int(saved.get("chat_id", 0) or 0)
+        upd_msg = int(saved.get("msg_id", 0) or 0)
+        if upd_chat > 0 and upd_msg > 0:
+            prev_blocks = [str(item) for item in (saved.get("log_blocks") or []) if str(item)]
+            fin_block, fin_btns = screens.update_final_block(self.view(), {"repo": saved.get("repo", "")}, "booted", saved)
+            prev_blocks.append(fin_block)
+            try:
+                await self.render(upd_chat, upd_msg, screens.update_cumulative_screen(self.view(), prev_blocks, fin_btns))
+            except Exception as exc:
+                log.debug("the update message final edit was skipped: %s", exc)
         card = screens.update_verified_screen(self.view(), saved)
         try:
             await self.send(owner, card)
@@ -1761,16 +1799,23 @@ class Bot:
             step_meta: dict[str, Any] = {}
             handoff_rendered = False
             delay = max(0.0, float(getattr(self, "update_step_delay", UPDATE_STEP_DELAY) or 0.0))
+            log_blocks: list[str] = list(screens.banner(self.view(), t))
 
             async def on_step(stage: str, payload: dict[str, Any] | None = None) -> None:
                 nonlocal handoff_rendered
                 if payload:
                     step_meta.update(payload)
+                log_blocks.append(screens.update_step_block(self.view(), self.update_info, stage, step_meta))
                 if stage == "restarting":
                     handoff_rendered = True
-                    await self.render(chat_id, msg_id, screens.update_handoff_screen(self.view(), self.update_info, step_meta, restarted=True))
+                    patch_fn = getattr(self.updater, "patch_marker", None)
+                    if callable(patch_fn):
+                        patch_fn({"chat_id": int(chat_id), "msg_id": int(msg_id), "log_blocks": list(log_blocks)})
+                    await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks))
+                    if delay > 0.0:
+                        await asyncio.sleep(delay)
                     return
-                await self.render(chat_id, msg_id, screens.update_progress_screen(self.view(), self.update_info, stage, step_meta))
+                await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks))
                 if delay > 0.0:
                     await asyncio.sleep(delay)
 
@@ -1783,7 +1828,8 @@ class Bot:
             if accepts_step:
                 result = await self.updater.apply(mode, on_step=on_step)
             else:
-                await self.render(chat_id, msg_id, screens.update_progress_screen(self.view(), self.update_info, "fetch", step_meta))
+                log_blocks.append(screens.update_step_block(self.view(), self.update_info, "fetch", step_meta))
+                await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks))
                 result = await self.updater.apply(mode)
         except UpdateError as exc:
             self.audit.note(self.admin_id, "upd:%s" % mode, "failed")
@@ -1824,21 +1870,29 @@ class Bot:
         self.update_result = result.to_dict() if hasattr(result, "to_dict") else {"ok": ok_flag}
         self.update_error = ""
         if not ok_flag:
-            await self.render(chat_id, msg_id, screens.update_failed_screen(self.view(), self.update_info, self.update_result))
+            fin_block, fin_btns = screens.update_final_block(self.view(), self.update_info, "failed", self.update_result)
+            log_blocks.append(fin_block)
+            await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks, fin_btns))
             return
         if msg_text == "already up to date":
-            await self.render(chat_id, msg_id, screens.update_already_screen(self.view(), self.update_info, self.update_result))
+            fin_block, fin_btns = screens.update_final_block(self.view(), self.update_info, "already", self.update_result)
+            log_blocks.append(fin_block)
+            await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks, fin_btns))
             return
         final_meta = dict(step_meta)
         final_meta.setdefault("source", str(getattr(result, "source", "") or ""))
         final_meta.setdefault("target", str(getattr(result, "target", "") or ""))
         final_meta.setdefault("subject", str(getattr(result, "subject", "") or ""))
-        if not restarted_flag or not handoff_rendered:
-            await self.render(
-                chat_id,
-                msg_id,
-                screens.update_handoff_screen(self.view(), self.update_info, final_meta, restarted=restarted_flag),
-            )
+        if not restarted_flag:
+            fin_block, fin_btns = screens.update_final_block(self.view(), self.update_info, "manual", final_meta)
+            log_blocks.append(fin_block)
+            await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks, fin_btns))
+        elif not handoff_rendered:
+            log_blocks.append(screens.update_step_block(self.view(), self.update_info, "restarting", final_meta))
+            patch_fn = getattr(self.updater, "patch_marker", None)
+            if callable(patch_fn):
+                patch_fn({"chat_id": int(chat_id), "msg_id": int(msg_id), "log_blocks": list(log_blocks)})
+            await self.render(chat_id, msg_id, screens.update_cumulative_screen(self.view(), log_blocks))
 
     async def ssh_action(self, chat_id: int, msg_id: int, action: str) -> None:
         await self.render(chat_id, msg_id, screens.ssh_settings(self.view()))

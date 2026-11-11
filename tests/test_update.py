@@ -413,7 +413,7 @@ def test_a_release_tag_without_the_v_prefix_is_used(tmp_path: Path, monkeypatch:
 
 
 def test_reinstall_runs_get_sh_and_reports_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod-install.sh install")
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod_install.sh install")
     shell = FakeShell({"systemd-run": (0, "cloning\ndone in 1s\nservice restarted")})
     updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
     text = asyncio.run(updater.reinstall())
@@ -427,7 +427,7 @@ def test_reinstall_runs_get_sh_and_reports_tail(tmp_path: Path, monkeypatch: pyt
 
 
 def test_reinstall_failure_raises_with_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod-install.sh install")
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod_install.sh install")
     monkeypatch.setattr(update.shutil, "which", lambda name: None)
     shell = FakeShell({"get.sh": (2, "curl: (28) timeout")})
 
@@ -438,7 +438,7 @@ def test_reinstall_failure_raises_with_tail(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_reinstall_prefers_the_detached_unit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod-install.sh install")
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod_install.sh install")
     monkeypatch.setattr(update.shutil, "which", lambda name: "/usr/bin/" + name if name in {"systemd-run", "systemctl"} else None)
     shell = FakeShell({"systemd-run": (0, "")})
     updater = Updater(shell=shell, root=tmp_path / "src", state_dir=tmp_path / "state")
@@ -504,7 +504,7 @@ def test_the_installer_failure_becomes_a_plain_hint() -> None:
 
 
 def test_reinstall_refuses_and_explains_a_read_only_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod-install.sh install")
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash /opt/obhod-src/Storage/obhod_install.sh install")
     shell = FakeShell({"systemd-run": (0, "must not run")})
     root = tmp_path / "src"
     root.mkdir()
@@ -588,7 +588,7 @@ def test_a_failed_installer_keeps_the_log_for_the_screen(tmp_path: Path, monkeyp
     shell = FakeShell({"bash": (1, "step: copying payload\ncp: cannot create '/opt/obhod/BOT/app.py': Read-only file system\nerror: the install failed")})
     updater = Updater(shell=shell, root=root, state_dir=tmp_path / "state")
     monkeypatch.setattr(update, "write_probe", lambda path: (True, ""))
-    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash Storage/obhod-install.sh install")
+    monkeypatch.setattr(update, "fetch_get_body", lambda url, timeout=0: "bash Storage/obhod_install.sh install")
     monkeypatch.setattr(updater, "detached", _no_detach)
     with pytest.raises(update.UpdateError) as caught:
         asyncio.run(updater.reinstall())
@@ -763,12 +763,12 @@ def test_fetch_get_falls_back_to_mirror_and_blocks_evil_redirect(tmp_path: Path,
         attempts.append(url)
         if "raw.githubusercontent.com" in url:
             raise UpdateError("primary down")
-        return "bash /opt/obhod-src/Storage/obhod-install.sh install"
+        return "bash /opt/obhod-src/Storage/obhod_install.sh install"
 
     monkeypatch.setattr(update, "fetch_get_body", flaky)
     updater = Updater(shell=FakeShell({}), root=tmp_path / "src", state_dir=tmp_path / "state")
     body = asyncio.run(updater.fetch_get())
-    assert "obhod-install.sh" in body
+    assert "obhod_install.sh" in body
     assert len(attempts) == 2
     again = asyncio.run(updater.fetch_get())
     assert again == body

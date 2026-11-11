@@ -108,7 +108,7 @@ def test_dry_run_shows_target_directory(tmp_path: Path) -> None:
     target = tmp_path / "src"
     result = run(tmp_path, "--dry-run", f"--dir={target}")
     assert f"directory: {target}" in result.stdout
-    assert f"bash {target}/Storage/obhod-install.sh" in result.stdout
+    assert f"bash {target}/Storage/obhod_install.sh" in result.stdout
 
 
 def test_dry_run_reports_branch(tmp_path: Path) -> None:
@@ -129,12 +129,12 @@ def test_repo_override_by_env(tmp_path: Path) -> None:
 
 def test_command_is_passed_through(tmp_path: Path) -> None:
     result = run(tmp_path, "--dry-run", "reinstall", "--dev")
-    assert result.stdout.strip().endswith("obhod-install.sh reinstall --dev")
+    assert result.stdout.strip().endswith("obhod_install.sh reinstall --dev")
 
 
 def test_default_command_is_install(tmp_path: Path) -> None:
     result = run(tmp_path, "--dry-run")
-    assert result.stdout.strip().endswith("obhod-install.sh install")
+    assert result.stdout.strip().endswith("obhod_install.sh install")
 
 
 def test_env_file_is_written_from_environment(tmp_path: Path) -> None:
@@ -174,7 +174,7 @@ def test_sync_copies_payload(tmp_path: Path) -> None:
     target = tmp_path / "dest"
     result = run(tmp_path, "--no-install", f"--dir={target}", env={"OBHOD_SRC_DIR": str(ROOT)})
     assert result.returncode == 0, result.stderr
-    assert (target / "Storage" / "obhod-install.sh").is_file()
+    assert (target / "Storage" / "obhod_install.sh").is_file()
     assert (target / "BOT" / "app.py").is_file()
     assert (target / "requirements.txt").is_file()
     assert (target / ".obhod-src").is_file()
@@ -184,7 +184,7 @@ def test_sync_skips_git_files(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "Storage").mkdir()
-    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (source / "Storage" / "obhod_install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     (source / "keep.txt").write_text("ok", encoding="utf-8")
     (source / ".gitignore").write_text("x", encoding="utf-8")
     (source / ".git").mkdir()
@@ -203,7 +203,7 @@ def test_sync_replaces_stale_files(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "Storage").mkdir()
-    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (source / "Storage" / "obhod_install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     target = tmp_path / "dest"
     result = run(tmp_path, "--no-install", f"--dir={target}", env={"OBHOD_SRC_DIR": str(source)})
     assert result.returncode == 0, result.stderr
@@ -218,7 +218,7 @@ def test_sync_keeps_foreign_directory(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "Storage").mkdir()
-    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (source / "Storage" / "obhod_install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     target = tmp_path / "dest"
     target.mkdir()
     mine = target / "mine.txt"
@@ -233,7 +233,7 @@ def test_missing_source_payload(tmp_path: Path) -> None:
     empty.mkdir()
     result = run(tmp_path, "--no-install", env={"OBHOD_SRC_DIR": str(empty)})
     assert result.returncode == 1
-    assert "obhod-install.sh" in result.stderr
+    assert "obhod_install.sh" in result.stderr
 
 
 def test_dry_run_reports_tarball_without_git(tmp_path: Path) -> None:
@@ -266,7 +266,7 @@ def test_piped_script_works(tmp_path: Path) -> None:
         timeout=180,
     )
     assert result.returncode == 0, result.stderr
-    assert (target / "Storage" / "obhod-install.sh").is_file()
+    assert (target / "Storage" / "obhod_install.sh").is_file()
 
 
 def test_missing_tools_is_reported(tmp_path: Path) -> None:
@@ -281,14 +281,14 @@ def test_no_install_prints_manual_command(tmp_path: Path) -> None:
     target = tmp_path / "dest"
     result = run(tmp_path, "--no-install", f"--dir={target}", env={"OBHOD_SRC_DIR": str(ROOT)})
     assert "the install is skipped" in result.stdout
-    assert f"bash {target}/Storage/obhod-install.sh install" in result.stdout
+    assert f"bash {target}/Storage/obhod_install.sh install" in result.stdout
 
 
 def test_installer_is_skipped_without_terminal_and_credentials(tmp_path: Path) -> None:
     target = tmp_path / "dest"
     result = run(tmp_path, f"--dir={target}", env={"OBHOD_SRC_DIR": str(ROOT)})
     assert result.returncode == 1
-    assert not (target / "Storage" / "obhod-install.sh").exists()
+    assert not (target / "Storage" / "obhod_install.sh").exists()
 
 
 def test_env_names_with_prefix(tmp_path: Path) -> None:
@@ -337,7 +337,7 @@ def test_script_is_executable_bit_agnostic() -> None:
 
 def test_vendored_installer_untouched_by_script() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
-    assert "Storage/obhod-install.sh" in text
+    assert "Storage/obhod_install.sh" in text
     assert "Storage/install.sh" not in text
 
 
@@ -364,7 +364,7 @@ def test_sync_survives_a_file_that_cannot_be_written(tmp_path: Path) -> None:
     (source / "BOT").mkdir()
     (source / "BOT" / "app.py").write_text("print('hi')\n", encoding="utf-8")
     (source / "Storage").mkdir()
-    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (source / "Storage" / "obhod_install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     target = tmp_path / "dest"
     target.mkdir()
     (target / "BOT").mkdir()
@@ -373,7 +373,7 @@ def test_sync_survives_a_file_that_cannot_be_written(tmp_path: Path) -> None:
     result = run(tmp_path, "--no-install", f"--dir={target}", env={"OBHOD_SRC_DIR": str(source)})
     assert result.returncode == 0, result.stderr
     assert (target / "BOT" / "app.py").read_text(encoding="utf-8") == "print('hi')\n"
-    assert (target / "Storage" / "obhod-install.sh").is_file()
+    assert (target / "Storage" / "obhod_install.sh").is_file()
     assert "no tar pipe" in result.stdout
 
 
@@ -383,7 +383,7 @@ def test_sync_does_not_need_tar(tmp_path: Path) -> None:
     (source / "BOT").mkdir()
     (source / "BOT" / "app.py").write_text("ok\n", encoding="utf-8")
     (source / "Storage").mkdir()
-    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (source / "Storage" / "obhod_install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     binaries = fake_root(tmp_path)
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -425,7 +425,7 @@ def test_the_tree_is_rebuilt_when_a_file_inside_is_not_writable(tmp_path: Path) 
     (source / "BOT").mkdir()
     (source / "BOT" / "app.py").write_text("new\n", encoding="utf-8")
     (source / "Storage").mkdir()
-    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (source / "Storage" / "obhod_install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     target = tmp_path / "dest"
     (target / "BOT").mkdir(parents=True)
     frozen = target / "BOT" / "app.py"
@@ -437,14 +437,14 @@ def test_the_tree_is_rebuilt_when_a_file_inside_is_not_writable(tmp_path: Path) 
         frozen.chmod(0o644)
     assert result.returncode == 0, result.stderr
     assert (target / "BOT" / "app.py").read_text(encoding="utf-8") == "new\n"
-    assert (target / "Storage" / "obhod-install.sh").is_file()
+    assert (target / "Storage" / "obhod_install.sh").is_file()
 
 
 def test_a_read_only_destination_is_explained_instead_of_a_tar_trace(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "Storage").mkdir()
-    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (source / "Storage" / "obhod_install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     target = tmp_path / "dest"
     target.mkdir()
     target.chmod(0o555)
@@ -463,7 +463,7 @@ def test_a_read_only_env_directory_does_not_abort_the_run(tmp_path: Path) -> Non
     source = tmp_path / "source"
     source.mkdir()
     (source / "Storage").mkdir()
-    (source / "Storage" / "obhod-install.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    (source / "Storage" / "obhod_install.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     env_dir = tmp_path / "etc"
     env_dir.mkdir()
     env_file = env_dir / "obhod.env"

@@ -158,7 +158,8 @@ def test_client_removal_asks_first_and_protects_the_owner(tmp_path: Path) -> Non
     assert ["client-remove", "phone"] in control.calls
     run(panel.route(1, 0, "ft:rm:owner"))
     run(panel.route(1, 0, "ft:rm:owner:yes"))
-    assert "cannot be removed" in last(bot)
+    assert i18n.t("FT_OWNER_REVOKED", "en") in last(bot)
+    assert ["client-remove", "owner"] in control.calls
     run(panel.route(1, 0, "ft:rm:phone"))
     assert control.calls.count(["client-remove", "phone"]) == 1
 

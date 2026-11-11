@@ -93,7 +93,7 @@ def test_live_update_streams_progressive_steps_with_half_second_cadence_and_pre_
 
     edits = [item["rich"].to_html() for item in bot.app.edited_rich]
     assert len(edits) == 6
-    assert sleeps == [0.5, 0.5, 0.5, 0.5, 0.5]
+    assert sleeps == [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
 
     assert strings.RU.UPD_STAGE_FETCH_RUN in edits[0]
     assert strings.RU.UPD_STAGE_COMPARE_RUN in edits[1]

@@ -588,12 +588,12 @@ class Updater:
             except UpdateError as exc:
                 body, failure = "", exc.message
                 continue
-            if body and "obhod-install.sh" in body:
+            if body and "obhod_install.sh" in body:
                 self._get_cache = (time.monotonic() + GET_CACHE_TTL, body)
                 return body
         if cached.is_file():
             text = cached.read_text(encoding="utf-8", errors="replace")
-            if "obhod-install.sh" in text:
+            if "obhod_install.sh" in text:
                 return text
         raise UpdateError("the get.sh script could not be fetched: %s" % (failure or "the body is empty"))
 
@@ -979,6 +979,13 @@ class Updater:
         except (OSError, ValueError):
             return {}
         return raw if isinstance(raw, dict) else {}
+
+    def patch_marker(self, extra: dict[str, Any]) -> None:
+        current = self.marker()
+        if not current:
+            return
+        current.update(extra)
+        self.write_marker(current)
 
     def write_marker(self, payload: dict[str, Any]) -> None:
         path = self.marker_path

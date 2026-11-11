@@ -924,7 +924,14 @@ class XrayPanel:
         except RpcError as exc:
             await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=exc.message)))
             return
+        if self.state.inbounds:
+            try:
+                applied = await self.control.apply(self.bot.state.ssh, self.state.to_config(), version=version)
+                state = applied
+            except (RpcError, XrayError):
+                pass
         self.core = state_report(state)
+        self.bot.state.last_probe = dict(self.core)
         self.save()
         installed = str(self.core.get("version", version))
         if state.fallback:
@@ -1009,6 +1016,7 @@ class XrayPanel:
             await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=exc.message)))
             return
         self.core = {}
+        self.bot.state.last_probe = {}
         self.save()
         await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=t("NOTICE_CORE_PURGED"))))
 

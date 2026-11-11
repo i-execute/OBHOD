@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import queue
 import re
 import select
 import shlex
@@ -1800,6 +1801,9 @@ class Setup:
         self.limit = width()
         if self.action in ("status", "service"):
             return True
+        if self.action in ("uninstall", "nuke"):
+            ok, _note = self.check_root()
+            return ok
         checks: list[tuple[str, object]] = [("privileges", self.check_root)]
         if self.action in ("install", "update", "reinstall"):
             checks.append(("python runtime", self.check_python))
@@ -1938,7 +1942,7 @@ class Setup:
         return True
 
     def installer_argv(self) -> list[str]:
-        installer = Path(__file__).resolve().parent / "obhod-install.sh"
+        installer = Path(__file__).resolve().parent / "obhod_install.sh"
         cmd = self.service_cmd if self.action == "service" else self.action
         args = ["bash", str(installer), cmd]
         if self.dev:
@@ -2008,7 +2012,7 @@ class Setup:
 
     def run_installer(self) -> int:
         self.limit = width()
-        installer = Path(__file__).resolve().parent / "obhod-install.sh"
+        installer = Path(__file__).resolve().parent / "obhod_install.sh"
         if not installer.is_file():
             self.notes.append("the installer is missing at %s" % installer)
             section(7, "Execute", [mark(BAD) + " " + paint("the installer script is missing", theme.bad)], theme.bad)
@@ -2019,7 +2023,27 @@ class Setup:
         env = dict(os.environ)
         env["OBHOD_NO_UI"] = "0" if COLOR else "1"
         env["OBHOD_STATE_DIR"] = self.state_dir
+        env["OBHOD_CALLER_PID"] = str(os.getpid())
         env["TERM"] = os.environ.get("TERM", "xterm-256color")
+        is_remove = self.action in ("uninstall", "nuke")
+        if self.action == "nuke":
+            step_badge = "!"
+            run_title = "Removing OBHOD, Xray & FreeTurn"
+            done_title = "! " + g.half + " Full Wipe Complete"
+            fail_title = "! " + g.half + " Full Wipe Failed"
+            sec_title = "Full Wipe"
+        elif self.action == "uninstall":
+            step_badge = "3"
+            run_title = "Uninstalling OBHOD"
+            done_title = "3 " + g.half + " Uninstall Complete"
+            fail_title = "3 " + g.half + " Uninstall Failed"
+            sec_title = "Uninstall"
+        else:
+            step_badge = "7"
+            run_title = "Running Installer"
+            done_title = "7 " + g.half + " Execution Complete"
+            fail_title = "7 " + g.half + " Installer Failed"
+            sec_title = "Execute"
         if stream_direct:
             write("")
             proc = subprocess.run(args, env=env)
@@ -2036,42 +2060,72 @@ class Setup:
             )
         except OSError as exc:
             self.notes.append("the installer did not start: %s" % exc)
-            section(7, "Execute", [mark(BAD) + " " + paint("the installer did not start", theme.bad)], theme.bad)
+            section(3 if is_remove else 7, sec_title, [mark(BAD) + " " + paint("the installer did not start", theme.bad)], theme.bad)
             return 2
         assert process.stdout is not None
         tail: list[str] = []
+        line_queue: queue.Queue[str | None] = queue.Queue()
+
+        def _reader(stream) -> None:
+            try:
+                for raw_line in stream:
+                    line_queue.put(raw_line)
+            finally:
+                line_queue.put(None)
+
+        reader = threading.Thread(target=_reader, args=(process.stdout,), daemon=True)
+        reader.start()
         box = LiveBox()
         if COLOR and has_tty():
             hide_cursor()
             write("")
+
+        def _render_live() -> None:
+            if not (COLOR and has_tty()):
+                return
+            limit = width()
+            elapsed_now = time.time() - started
+            badge_color = theme.bad if self.action == "nuke" else theme.accent
+            lines = [
+                frame_top(
+                    paint(step_badge, badge_color, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint(run_title, theme.title),
+                    limit,
+                    theme.frame_active,
+                    paint("%.0fs" % elapsed_now, theme.accent),
+                ),
+                frame_line("", limit, theme.frame_active),
+            ]
+            shown = tail if tail else ["starting..."]
+            for item in shown:
+                lines.append(frame_line(paint(g.rail, theme.accent) + " " + paint(item, theme.muted), limit, theme.frame_active))
+            lines.append(frame_line("", limit, theme.frame_active))
+            lines.append(frame_bottom(limit, theme.frame_active))
+            box.render(lines)
+
         try:
-            for raw in process.stdout:
+            _render_live()
+            eof = False
+            while not eof:
+                try:
+                    raw = line_queue.get(timeout=0.25)
+                except queue.Empty:
+                    _render_live()
+                    continue
+                if raw is None:
+                    eof = True
+                    break
                 clean = ANSI_RE.sub("", raw.rstrip("\r\n")).strip()
                 if not clean:
                     continue
                 tail.append(clean)
                 tail = tail[-6:]
                 if COLOR and has_tty():
-                    limit = width()
-                    elapsed_now = time.time() - started
-                    lines = [
-                        frame_top(
-                            paint("7", theme.accent, theme.bold) + paint(" " + g.half + " ", theme.muted) + paint("Running Installer", theme.title),
-                            limit,
-                            theme.frame_active,
-                            paint("%.0fs" % elapsed_now, theme.accent),
-                        ),
-                        frame_line("", limit, theme.frame_active),
-                    ]
-                    for item in tail:
-                        lines.append(frame_line(paint(g.rail, theme.accent) + " " + paint(item, theme.muted), limit, theme.frame_active))
-                    lines.append(frame_line("", limit, theme.frame_active))
-                    lines.append(frame_bottom(limit, theme.frame_active))
-                    box.render(lines)
+                    _render_live()
                 else:
                     write("  " + clean)
         finally:
             show_cursor()
+        reader.join(timeout=1.0)
         code = process.wait()
         if self.action == "uninstall" and self.purge_all and code == 0:
             shutil.rmtree(self.state_dir, ignore_errors=True)
@@ -2086,25 +2140,25 @@ class Setup:
             if COLOR and has_tty():
                 box.finalize(
                     [
-                        frame_top("7 " + g.half + " Installer Failed", width(), theme.bad, "exit %d" % code),
+                        frame_top(fail_title, width(), theme.bad, "exit %d" % code),
                         *[frame_line(r, width(), theme.bad) for r in rows],
                         frame_bottom(width(), theme.bad),
                     ]
                 )
             else:
-                section(7, "Execute", rows, theme.bad, "stopped")
+                section(3 if is_remove else 7, sec_title, rows, theme.bad, "stopped")
             return code
         done_msg = mark(OK) + " " + paint("completed in %.1fs" % elapsed, theme.good, theme.bold)
         if COLOR and has_tty():
             box.finalize(
                 [
-                    frame_top("7 " + g.half + " Execution Complete", width(), theme.good, "ok"),
+                    frame_top(done_title, width(), theme.good, "ok"),
                     frame_line(done_msg, width(), theme.good),
                     frame_bottom(width(), theme.good),
                 ]
             )
         else:
-            section(7, "Execute", [done_msg], theme.good, "done")
+            section(3 if is_remove else 7, sec_title, [done_msg], theme.good, "done")
         return 0
 
     def run(self) -> int:

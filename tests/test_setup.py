@@ -289,9 +289,9 @@ def test_setup_banner_and_preflight_feature_both_xray_and_freeturn(capsys: pytes
 
 
 def test_the_installer_is_looked_up_next_to_the_script() -> None:
-    installer = (ROOT / "Storage" / "obhod-install.sh").resolve()
+    installer = (ROOT / "Storage" / "obhod_install.sh").resolve()
     assert installer.is_file()
-    assert (Path(setup.__file__).resolve().parent / "obhod-install.sh").resolve() == installer
+    assert (Path(setup.__file__).resolve().parent / "obhod_install.sh").resolve() == installer
 
 
 def test_the_banner_and_summary_render(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:

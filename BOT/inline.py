@@ -11,7 +11,8 @@ from . import i18n
 from .xray import FLOWS, FINGERPRINTS, LOG_LEVELS
 
 TOKEN_LEN = 10
-MAX_VALUE = 400
+MAX_QUERY = 256
+MAX_VALUE = MAX_QUERY - TOKEN_LEN - 1
 MAX_REGISTRY = 512
 MAX_RESULTS = 50
 ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
@@ -22,7 +23,7 @@ MODE_LIST = "l"
 KIND_INPUT = "i"
 KIND_OPTION = "o"
 KIND_STALE = "s"
-TITLE_CYCLE = ("ABXY", "1234", "abcd", "wxyz")
+TITLE_CYCLE = ("ABXY", "\u2191\u2193\u2190\u2192")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 TOKEN_RE = re.compile(r"^[a-z2-7]{10}$")
 PAYLOAD_RE = re.compile(r"^([a-z2-7]{10})([ios])([a-z2-7])([a-z2-7]*)$")
@@ -218,6 +219,13 @@ def marker_text() -> str:
 def title_symbol(length: int, index: int = 0) -> str:
     cycle = TITLE_CYCLE[max(int(index), 0) % len(TITLE_CYCLE)]
     return cycle[max(int(length), 0) % len(cycle)]
+
+
+def query_body(query: str) -> str:
+    raw = CONTROL.sub("", str(query or ""))
+    if raw.startswith(" "):
+        return raw[1:]
+    return raw
 
 
 def clean_value(ident: str, value: str, lang: str = i18n.DEFAULT_LANGUAGE) -> str:
@@ -474,6 +482,9 @@ def results_for(query: str, src: str = "bot", current: dict[str, str] | None = N
     if not ident:
         return [stale_article(token, lang, src)]
     item = field(ident)
+    if len(query_body(query)) > MAX_QUERY:
+        err = i18n.t("INL_TOO_LONG", lang, label=item.label(lang), limit=MAX_VALUE)
+        return [article("%s:%s" % (KIND_INPUT, token), item.label(lang), err, marker_text(), src)]
     if value:
         try:
             clean = clean_value(ident, value, lang)
@@ -505,6 +516,9 @@ def value_for(kind: str, token: str, index: int, query: str = "", lang: str = i1
         if index < 0 or index >= len(items):
             raise InlineError(i18n.t("INL_STALE", lang))
         return items[index]
+    item = field(ident)
+    if len(query_body(query)) > MAX_QUERY:
+        raise InlineError(i18n.t("INL_TOO_LONG", lang, label=item.label(lang), limit=MAX_VALUE))
     _token, raw = parse_query(query)
     return clean_value(ident, raw, lang)
 

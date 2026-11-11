@@ -229,7 +229,7 @@ fetch_source() {
   local started
   started="$(date +%s)"
   if [ -n "$SRC_DIR" ]; then
-    [ -f "$SRC_DIR/Storage/obhod-install.sh" ] || die "there is no Storage/obhod-install.sh in $SRC_DIR"
+    [ -f "$SRC_DIR/Storage/obhod_install.sh" ] || die "there is no Storage/obhod_install.sh in $SRC_DIR"
     say "source: $SRC_DIR"
     SRC="$SRC_DIR"
     return 0
@@ -490,7 +490,7 @@ if [ "$DRY_RUN" = "1" ]; then
   if [ "$TUI" = "1" ] && [ "$HAS_INSTALLER_ARGS" = "0" ] && [ "$CREDS" = "0" ]; then
     say "screen: python3 $DEST/Storage/obhod_setup.py"
   fi
-  say "command: bash $DEST/Storage/obhod-install.sh ${ARGS[*]}"
+  say "command: bash $DEST/Storage/obhod_install.sh ${ARGS[*]}"
   exit 0
 fi
 
@@ -501,14 +501,14 @@ fi
 detach_stdin
 echo_off
 fetch_source
-[ -f "$SRC/Storage/obhod-install.sh" ] || die "there is no Storage/obhod-install.sh in the source"
+[ -f "$SRC/Storage/obhod_install.sh" ] || die "there is no Storage/obhod_install.sh in the source"
 if ! sync_source; then
   die "the files were not updated completely: look at the list above, fix the permissions in $DEST and run the script again"
 fi
 say "files updated in $DEST"
 
 if [ "$NO_INSTALL" = "1" ]; then
-  say "the install is skipped, run it by hand: bash $DEST/Storage/obhod-install.sh ${ARGS[*]}"
+  say "the install is skipped, run it by hand: bash $DEST/Storage/obhod_install.sh ${ARGS[*]}"
   exit 0
 fi
 
@@ -556,11 +556,11 @@ fi
 
 say "starting the installer"
 if [ -t 0 ]; then
-  bash "$DEST/Storage/obhod-install.sh" "${INSTALL_ARGS[@]}"
+  bash "$DEST/Storage/obhod_install.sh" "${INSTALL_ARGS[@]}"
 elif tty_available; then
-  bash "$DEST/Storage/obhod-install.sh" "${INSTALL_ARGS[@]}" < /dev/tty
+  bash "$DEST/Storage/obhod_install.sh" "${INSTALL_ARGS[@]}" < /dev/tty
 else
-  bash "$DEST/Storage/obhod-install.sh" "${INSTALL_ARGS[@]}" < /dev/null
+  bash "$DEST/Storage/obhod_install.sh" "${INSTALL_ARGS[@]}" < /dev/null
 fi
 
 echo_on

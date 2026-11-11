@@ -752,7 +752,7 @@ tok = os.environ.get("OBHOD_PROBE_TOKEN", "").strip()
 if not tok or ":" not in tok:
     raise SystemExit(0)
 try:
-    req = urllib.request.Request("https://api.telegram.org/bot%s/getMe" % tok, headers={"User-Agent": "obhod-install/1"})
+    req = urllib.request.Request("https://api.telegram.org/bot%s/getMe" % tok, headers={"User-Agent": "obhod_install/1"})
     with urllib.request.urlopen(req, timeout=5) as r:
         data = json.loads(r.read(32768).decode("utf-8", "replace"))
 except Exception:
@@ -1103,12 +1103,12 @@ cmd_nuke() {
     require_root
   fi
   ui_init
-  local stopped
-  stopped="$(kill_leftovers)"
-  if [ -n "$stopped" ]; then
-    say "$stopped"
-  fi
   if [ "$DEV" = "1" ]; then
+    local stopped_dev
+    stopped_dev="$(kill_leftovers)"
+    if [ -n "$stopped_dev" ]; then
+      say "$stopped_dev"
+    fi
     rm -rf "$PREFIX" "$STATE_DIR"
     rm -f "$ENV_FILE" "$CLI_BIN"
     rmdir "$(dirname "$ENV_FILE")" 2>/dev/null || true
@@ -1124,6 +1124,7 @@ cmd_nuke() {
       ''|*[!0-9]*) ft_port="" ;;
     esac
   fi
+  say "stopping systemd services"
   if command -v systemctl >/dev/null 2>&1; then
     local unit
     for unit in obhod.service obhod-self-update.service obhod-self-update-timer.timer obhod-honeypot.service xray.service free-turn-proxy.service wg-quick@ft-wg0.service; do
@@ -1131,11 +1132,17 @@ cmd_nuke() {
       systemctl disable "$unit" >/dev/null 2>&1 || true
     done
   fi
+  local stopped
+  stopped="$(kill_leftovers)"
+  if [ -n "$stopped" ]; then
+    say "$stopped"
+  fi
+  say "removing FreeTurn and firewall rules"
   if [ -f /opt/free-turn-proxy/install.sh ]; then
     if command -v timeout >/dev/null 2>&1; then
-      timeout 60 bash /opt/free-turn-proxy/install.sh --uninstall --yes </dev/null >/dev/null 2>&1 || true
+      timeout 20 bash /opt/free-turn-proxy/install.sh uninstall --target=all --purge </dev/null >/dev/null 2>&1 || true
     else
-      bash /opt/free-turn-proxy/install.sh --uninstall --yes </dev/null >/dev/null 2>&1 || true
+      bash /opt/free-turn-proxy/install.sh uninstall --target=all --purge </dev/null >/dev/null 2>&1 || true
     fi
   fi
   if command -v docker >/dev/null 2>&1; then
@@ -1146,13 +1153,17 @@ cmd_nuke() {
   fi
   if command -v iptables >/dev/null 2>&1; then
     if [ -n "$ft_port" ]; then
-      local pr
+      local pr guard
       for pr in udp tcp; do
-        while iptables -C INPUT -p "$pr" --dport "$ft_port" -j OBHOD-FT 2>/dev/null; do
+        guard=0
+        while [ "$guard" -lt 16 ] && iptables -C INPUT -p "$pr" --dport "$ft_port" -j OBHOD-FT 2>/dev/null; do
           iptables -D INPUT -p "$pr" --dport "$ft_port" -j OBHOD-FT 2>/dev/null || break
+          guard=$((guard + 1))
         done
-        while iptables -C INPUT -p "$pr" --dport "$ft_port" -j ACCEPT 2>/dev/null; do
+        guard=0
+        while [ "$guard" -lt 16 ] && iptables -C INPUT -p "$pr" --dport "$ft_port" -j ACCEPT 2>/dev/null; do
           iptables -D INPUT -p "$pr" --dport "$ft_port" -j ACCEPT 2>/dev/null || break
+          guard=$((guard + 1))
         done
       done
     fi
@@ -1173,6 +1184,7 @@ cmd_nuke() {
       firewall-cmd --permanent --remove-port="${ft_port}/tcp" >/dev/null 2>&1 || true
     fi
   fi
+  say "removing Xray-core and security drop-ins"
   rm -f "$SERVICE" \
     /etc/systemd/system/obhod.service \
     /etc/systemd/system/obhod-self-update.service \
@@ -1193,6 +1205,7 @@ cmd_nuke() {
     systemctl reload fail2ban >/dev/null 2>&1 || true
     systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
   fi
+  say "removing OBHOD files, credentials and state"
   rm -f /usr/local/bin/obhod \
     /usr/local/bin/obhod-get \
     /usr/local/bin/free-turn-proxy \
@@ -1223,17 +1236,46 @@ cmd_nuke() {
   say "wiped OBHOD, Xray-core, FreeTurn, configs, state, logs and units"
 }
 
+is_caller_process() {
+  local pid="$1"
+  [ -z "$pid" ] && return 0
+  [ "$pid" = "$$" ] && return 0
+  [ "$pid" = "$PPID" ] && return 0
+  if [ -n "${OBHOD_CALLER_PID:-}" ] && [ "$pid" = "$OBHOD_CALLER_PID" ]; then
+    return 0
+  fi
+  local cmdline=""
+  if [ -r "/proc/$pid/cmdline" ]; then
+    cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  elif command -v ps >/dev/null 2>&1; then
+    cmdline="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+  fi
+  case "$cmdline" in
+    *obhod_setup.py*|*obhod_install.sh*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 kill_leftovers() {
-  local pid count=0
+  local pid count=0 sent_term=0
   if command -v pgrep >/dev/null 2>&1; then
     for pid in $(pgrep -f "$PREFIX/venv/bin/python" 2>/dev/null || true); do
-      [ "$pid" = "$$" ] && continue
+      if is_caller_process "$pid"; then
+        continue
+      fi
       kill -TERM "$pid" 2>/dev/null || true
       count=$((count + 1))
+      sent_term=1
     done
-    sleep 1
+    if [ "$sent_term" = "1" ]; then
+      sleep 1
+    fi
     for pid in $(pgrep -f "$PREFIX/BOT" 2>/dev/null || true); do
-      [ "$pid" = "$$" ] && continue
+      if is_caller_process "$pid"; then
+        continue
+      fi
       kill -KILL "$pid" 2>/dev/null || true
       count=$((count + 1))
     done

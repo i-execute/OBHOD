@@ -914,8 +914,6 @@ class FtControl:
     async def client_remove(self, name: str) -> FtResponse:
         if not valid_name(name):
             raise FtError("the client name is not usable", "bad_arg")
-        if name == OWNER_NAME:
-            raise FtError(FT_ERROR_CODES["owner_protected"], "owner_protected")
         response = await self.call(["client-remove", "--name=%s" % name], timeout=180)
         response.raise_for_status()
         return response

@@ -1356,9 +1356,168 @@ def guard_main(flags):
     return 0
 
 
+def _strip_owner_from_auth(obj, owner_cid):
+    if isinstance(obj, list):
+        kept = []
+        for item in obj:
+            if isinstance(item, str):
+                if owner_cid and item.strip().lower() == owner_cid:
+                    continue
+                kept.append(item)
+            elif isinstance(item, dict):
+                name_val = str(item.get("name") or "").strip()
+                cid_val = str(item.get("client_id") or item.get("id") or "").strip().lower()
+                if name_val == "owner" or (owner_cid and cid_val == owner_cid):
+                    continue
+                kept.append(item)
+            else:
+                kept.append(item)
+        return kept
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if str(k).strip() == "owner" or (owner_cid and str(k).strip().lower() == owner_cid):
+                continue
+            if isinstance(v, (list, dict)):
+                out[k] = _strip_owner_from_auth(v, owner_cid)
+            else:
+                out[k] = v
+        return out
+    return obj
+
+
+def _strip_owner_wg_peer(wg_conf, pubkey):
+    if not wg_conf or not os.path.isfile(wg_conf):
+        return False
+    try:
+        with open(wg_conf, "r", encoding="utf-8", errors="replace") as handle:
+            raw = handle.read(262144)
+    except OSError:
+        return False
+    chunks = re.split(r"(?m)^(?=\[Peer\])", raw)
+    if len(chunks) <= 1:
+        return False
+    kept = [chunks[0]]
+    changed = False
+    for block in chunks[1:]:
+        low = block.lower()
+        has_owner_tag = bool(re.search(r"(?m)^#\s*(?:client\s*:\s*)?owner\s*$", low))
+        has_pub = bool(pubkey and pubkey in block)
+        if has_owner_tag or has_pub:
+            changed = True
+            continue
+        kept.append(block)
+    if not changed:
+        return False
+    tmp_path = wg_conf + ".obhod.tmp"
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write("".join(kept))
+        os.replace(tmp_path, wg_conf)
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def revoke_owner_client(root=INSTALL_ROOT, wg_conf="/etc/wireguard/ft-wg0.conf"):
+    if not os.path.isdir(root):
+        raise AgentError("not_installed", "FreeTurn is not installed", "client_remove")
+    owner_dir = os.path.join(root, "clients", "owner")
+    meta_path = os.path.join(root, "clients.list")
+    auth_path = os.path.join(root, "auth", "clients.json")
+    owner_cid = ""
+    pubkey = ""
+    found_any = os.path.isdir(owner_dir)
+    for key_file in ("publickey", "owner.pub", "public.key"):
+        cand = os.path.join(owner_dir, key_file)
+        if os.path.isfile(cand):
+            try:
+                with open(cand, "r", encoding="utf-8", errors="replace") as handle:
+                    val = handle.read(256).strip()
+                if WG_KEY_RE.match(val):
+                    pubkey = val
+                    break
+            except OSError:
+                pass
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8", errors="replace") as handle:
+                lines = handle.readlines()
+            kept_lines = []
+            for raw in lines:
+                parts = raw.strip().split("|")
+                if parts and parts[0] == "owner":
+                    found_any = True
+                    if len(parts) >= 2 and not owner_cid:
+                        owner_cid = parts[1].strip().lower()
+                    for seg in parts[2:]:
+                        cand_key = seg.strip()
+                        if not pubkey and WG_KEY_RE.match(cand_key):
+                            pubkey = cand_key
+                    continue
+                kept_lines.append(raw)
+            if len(kept_lines) != len(lines):
+                tmp_meta = meta_path + ".obhod.tmp"
+                fd = os.open(tmp_meta, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.writelines(kept_lines)
+                os.replace(tmp_meta, meta_path)
+        except OSError:
+            pass
+    if os.path.isfile(auth_path):
+        try:
+            with open(auth_path, "r", encoding="utf-8", errors="replace") as handle:
+                parsed = json.loads(handle.read(262144))
+            cleaned = _strip_owner_from_auth(parsed, owner_cid)
+            if cleaned != parsed:
+                found_any = True
+                tmp_auth = auth_path + ".obhod.tmp"
+                fd = os.open(tmp_auth, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump(cleaned, stream, indent=2)
+                os.replace(tmp_auth, auth_path)
+        except (OSError, ValueError):
+            pass
+    if _strip_owner_wg_peer(wg_conf, pubkey):
+        found_any = True
+    if pubkey and os.geteuid() == 0 and shutil.which("wg"):
+        try:
+            run_tool(["wg", "set", "ft-wg0", "peer", pubkey, "remove"], timeout=10)
+        except Exception:
+            pass
+    if os.path.isdir(owner_dir):
+        shutil.rmtree(owner_dir, ignore_errors=True)
+    if not found_any:
+        raise AgentError("client_missing", "the owner link is already revoked", "client_remove")
+    if os.geteuid() == 0:
+        installed = read_install_conf(root)
+        method = str(installed.get("INSTALL_METHOD", "systemd") or "systemd").strip().lower()
+        try:
+            if method == "docker" and shutil.which("docker"):
+                run_tool(["docker", "restart", "free-turn-proxy"], timeout=20)
+            elif shutil.which("systemctl"):
+                run_tool(["systemctl", "try-restart", "free-turn-proxy.service"], timeout=20)
+        except Exception:
+            pass
+    return {"removed": True, "name": "owner"}
+
+
 def main(argv):
     command, flags = parse_argv(argv)
     stage = command.replace("-", "_")
+    if command == "client-remove" and str(flags.get("name") or "") == "owner":
+        try:
+            data = revoke_owner_client()
+            emit("ok", data, stage=stage, logs=["owner link revoked"])
+            return 0
+        except AgentError as exc:
+            emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
+            return 1
     if command == "fw-guard":
         try:
             return guard_main(flags)
@@ -1689,13 +1848,17 @@ def owner_allowlisted(root=INSTALL_ROOT):
     if not os.path.isfile(meta_path) or not os.path.isfile(auth_path):
         return False
     owner_cid = ""
+    has_owner = False
     try:
         with open(meta_path, "r", encoding="utf-8", errors="replace") as handle:
             for raw in handle:
                 parts = raw.strip().split("|")
                 if len(parts) >= 2 and parts[0] == "owner":
+                    has_owner = True
                     owner_cid = parts[1].strip().lower()
                     break
+        if not has_owner:
+            return True
         if not owner_cid:
             return False
         with open(auth_path, "r", encoding="utf-8", errors="replace") as handle:
