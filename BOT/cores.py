@@ -162,11 +162,10 @@ def freeturn_card(raw: Any, clients: int, active: str) -> Card:
 
 def snapshot(state: Any, xray_raw: dict[str, Any] | None, ft_clients: int = 0) -> list[Card]:
     active = normalize(getattr(state, "core", ""))
-    clients = sum(len(getattr(item, "clients", [])) for item in getattr(getattr(state, "xray", None), "inbounds", []))
     out: list[Card] = []
     for item in sorted(all_cores(), key=lambda entry: (entry.order, entry.key)):
         if item.key == "xray":
-            out.append(xray_card(xray_raw, clients, active))
+            out.append(xray_card(xray_raw, 0, active))
         elif item.key == "freeturn":
             out.append(freeturn_card(getattr(state, "freeturn", None), ft_clients, active))
     return out

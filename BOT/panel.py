@@ -12,17 +12,14 @@ from typing import Any
 from . import i18n, inline, portguard, screens, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
-from .scan import CONCURRENCY, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit
-from .ui import button, code, copy_row, muted, pre, quote, row, screen
+from .scan import CONCURRENCY, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit, vps_subnet_cidr
 from .xray import (
     DEFAULT_IGNOREIP,
     FINGERPRINTS,
     LOG_LEVELS,
     MASS_FINGERPRINTS,
     NETWORKS,
-    SECURITIES,
     SUB_PORT,
-    SUB_SEGMENT_LEN,
     SYNTHETIC_FINGERPRINTS,
     TUNNEL_HOST_RE,
     VERSION_CHOICES,
@@ -45,7 +42,6 @@ from .xray import (
     valid_alpn,
     valid_cert_path,
     valid_dest,
-    valid_email,
     valid_host_name,
     valid_padding,
     valid_request_path,
@@ -66,6 +62,7 @@ GLOBAL_FIELDS = frozenset(
     {
         "xr_scan_targets",
         "xr_scan_manual",
+        "xr_subnet_cidr",
         "xr_log_level",
         "xr_sub_port",
         "xr_sub_address",
@@ -110,6 +107,10 @@ class XrayPanel:
         self.tunnel_host_hint: str = ""
         self.pending_funnel_port: int = 0
         self.funnel_watch_task: asyncio.Task[None] | None = None
+        self.picked_dest: str = ""
+        self.picked_sni: str = ""
+        self.last_subnet: str = ""
+        self.pending_subnet_targets: list[str] = []
         self.tunnel_key = self.load_tunnel_key()
 
     @property
@@ -169,7 +170,10 @@ class XrayPanel:
     def save(self) -> None:
         self.state.last_core = dict(self.core)
         self.state.scan_results = [item.to_dict() for item in self.results]
-        self.state.sub_port = int(self.bot.state.sub_port)
+        if int(self.state.sub_port or 0) not in {0, SUB_PORT} and int(self.bot.state.sub_port or SUB_PORT) == SUB_PORT:
+            self.bot.state.sub_port = int(self.state.sub_port)
+        else:
+            self.state.sub_port = int(self.bot.state.sub_port)
         self.bot.save()
 
     def view(self, notice: str = "", error: str = "") -> xscreens.XrayView:
@@ -178,6 +182,10 @@ class XrayPanel:
         item.address = self.address()
         item.bundle = self.sub_bundle()
         item.key_mask = self.key_mask()
+        item.picked_dest = self.picked_dest
+        item.picked_sni = self.picked_sni
+        item.vps_subnet = vps_subnet_cidr(item.address)
+        item.last_subnet = self.last_subnet
         return item
 
     async def render(self, chat_id: int, msg_id: int, rich: Any) -> None:
@@ -193,9 +201,10 @@ class XrayPanel:
     def links_of(self, inbound: XrayInbound) -> list[tuple[str, str]]:
         host = self.address()
         out: list[tuple[str, str]] = []
-        for client in inbound.clients:
+        creds = inbound.clients if inbound.clients else [inbound.ensure_credential()]
+        for client in creds:
             try:
-                out.append((client.email, link_for(inbound, client, host, inbound.port)))
+                out.append((client.email or inbound.remark, link_for(inbound, client, host, inbound.port)))
             except XrayError as exc:
                 log.warning("link failed: %s", exc)
         return out
@@ -275,7 +284,8 @@ class XrayPanel:
             await self.create_quick(chat_id, msg_id, arg2 or "reality", arg1, parts[4] if len(parts) > 4 else "")
             return
         if head == "custom":
-            self.draft = {"network": "raw", "security": "reality", "port": str(self.next_port())}
+            if arg1 != "open" or not self.draft:
+                self.draft = {"network": "raw", "security": "reality", "port": str(self.next_port())}
             await self.render(chat_id, msg_id, xscreens.custom_menu(self.view()))
             return
         if head == "cyc":
@@ -322,29 +332,11 @@ class XrayPanel:
         if head == "del2":
             await self.delete_inbound(chat_id, msg_id, arg1)
             return
-        if head == "cladd":
-            await self.render(chat_id, msg_id, xscreens.input_screen(self.view(), "xr_client_email", arg1, f"xr:in:{arg1}"))
-            return
-        if head == "cl":
-            await self.open_client(chat_id, msg_id, arg1, arg2)
-            return
-        if head == "cldel":
-            await self.delete_client(chat_id, msg_id, arg1, arg2)
-            return
-        if head == "clflow":
-            await self.render(chat_id, msg_id, xscreens.input_screen(self.view(), "xr_client_flow", f"{arg1}:{arg2}", f"xr:cl:{arg1}:{arg2}"))
-            return
-        if head == "cllimit":
-            await self.render(chat_id, msg_id, xscreens.input_screen(self.view(), "xr_client_limit", f"{arg1}:{arg2}", f"xr:cl:{arg1}:{arg2}"))
-            return
         if head == "link":
             await self.show_links(chat_id, msg_id, arg1)
             return
-        if head == "sub":
-            await self.show_subscription(chat_id, msg_id, arg1, arg2)
-            return
-        if head == "subrot":
-            await self.rotate_subscription(chat_id, msg_id, arg1, arg2)
+        if head == "subscan":
+            await self.subscan_action(chat_id, msg_id, arg1, arg2, parts[4] if len(parts) > 4 else "")
             return
         if head == "subs":
             await self.subs_action(chat_id, msg_id, arg1)
@@ -364,13 +356,12 @@ class XrayPanel:
         await self.render(chat_id, msg_id, xscreens.home(self.view(notice=self.tr()("XR_HOME_NOTICE_UNKNOWN"))))
 
     def cycle(self, key: str) -> None:
-        options = {"network": NETWORKS, "security": SECURITIES}
-        values = options.get(key)
-        if not values:
+        self.draft["security"] = "reality"
+        if key != "network":
             return
-        current = self.draft.get(key, values[0])
-        index = values.index(current) if current in values else 0
-        self.draft[key] = values[(index + 1) % len(values)]
+        current = self.draft.get("network", NETWORKS[0])
+        index = NETWORKS.index(current) if current in NETWORKS else 0
+        self.draft["network"] = NETWORKS[(index + 1) % len(NETWORKS)]
 
     async def ensure_core_probed(self) -> None:
         if self.core:
@@ -413,17 +404,23 @@ class XrayPanel:
     async def create_quick(self, chat_id: int, msg_id: int, security: str, network: str, port: str = "") -> None:
         if network not in NETWORKS:
             raise PanelError(f"the network {network} is not supported")
-        if security not in SECURITIES:
-            raise PanelError(f"the security {security} is not supported")
+        if security != "reality":
+            raise PanelError("only reality inbounds are supported")
         foreign, _owners = await self.free_of_strangers()
         number = int(port) if port.isdigit() else self.next_port(foreign)
         number, moved = await self.guard_port(number)
         try:
-            inbound = new_inbound("vless", number, network, security)
+            inbound = new_inbound("vless", number, network, "reality")
         except (XrayError, ValueError) as exc:
             raise PanelError(str(exc)) from None
-        inbound.remark = f"{security}-{number}"
+        inbound.remark = f"{network}-reality-{number}"
+        if self.picked_dest:
+            inbound.dest = self.picked_dest
+        if self.picked_sni:
+            inbound.sni = self.picked_sni
+        inbound.ensure_credential()
         self.state.add(inbound)
+        self.state.ensure_sub_all()
         self.save()
         await self.sync_live_and_subs()
         notice = self.tr()("NOTICE_INBOUND_CREATED")
@@ -433,15 +430,25 @@ class XrayPanel:
         draft = dict(self.draft)
         network = draft.get("network", "raw")
         security = draft.get("security", "reality")
+        if network not in NETWORKS:
+            raise PanelError(f"the network {network} is not supported")
+        if security != "reality":
+            raise PanelError("only reality inbounds are supported")
         foreign, _owners = await self.free_of_strangers()
         port = int(draft.get("port") or self.next_port(foreign))
         port, moved = await self.guard_port(port)
         try:
-            inbound = new_inbound("vless", port, network, security)
+            inbound = new_inbound("vless", port, network, "reality")
         except (XrayError, ValueError) as exc:
             raise PanelError(str(exc)) from None
-        inbound.remark = f"{security}-{port}"
+        inbound.remark = f"{network}-reality-{port}"
+        if self.picked_dest:
+            inbound.dest = self.picked_dest
+        if self.picked_sni:
+            inbound.sni = self.picked_sni
+        inbound.ensure_credential()
         self.state.add(inbound)
+        self.state.ensure_sub_all()
         self.draft = {}
         self.save()
         await self.sync_live_and_subs()
@@ -637,6 +644,8 @@ class XrayPanel:
         if not domain:
             return "", t("DOM_REQUIRED")
         self.stop_funnel_autopilot()
+        self.state.sub_port = int(port)
+        self.bot.state.sub_port = int(port)
         self.state.tunnel_host = domain
         self.state.tunnel_enabled = True
         self.state.tunnel_approval_url = ""
@@ -849,50 +858,10 @@ class XrayPanel:
         await self.sync_live_and_subs()
         await self.render(chat_id, msg_id, xscreens.home(self.view(notice=self.tr()("NOTICE_INBOUND_DELETED", remark=remark))))
 
-    async def open_client(self, chat_id: int, msg_id: int, ident: str, email: str) -> None:
-        inbound = self.get(ident)
-        link = self.link_of(inbound, email)
-        path, url = self.sub_url(email)
-        await self.render(chat_id, msg_id, xscreens.client_screen(self.view(), inbound, email, link, url, path))
-
-    async def delete_client(self, chat_id: int, msg_id: int, ident: str, email: str) -> None:
-        inbound = self.get(ident)
-        if not inbound.remove_client(email):
-            raise PanelError(f"the client {email} was not found")
-        self.save()
-        await self.sync_live_and_subs()
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_CLIENT_DELETED", email=email)), inbound))
-
     async def show_links(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
         links = self.links_of(inbound)
         await self.render(chat_id, msg_id, xscreens.links_screen(self.view(), inbound, self.address(), links))
-
-    async def show_subscription(self, chat_id: int, msg_id: int, ident: str, email: str) -> None:
-        inbound = self.get(ident)
-        path, url = self.sub_url(email)
-        if not path:
-            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error="the client has no subscription path"), inbound))
-            return
-        t = self.tr()
-        blocks = [
-            f"<p>{t('XR_CLIENT_NAME')} {code(email)}</p>",
-            f"<p>{t('SUB_LABEL_PATH', path=code(path))}</p>",
-            pre(url),
-            quote(muted(t("XR_SUBS_NOTE", length=SUB_SEGMENT_LEN))),
-        ]
-        buttons = [
-            copy_row(t("SUB_COPY"), url, icon="copy") or "",
-            row(button(t("XR_CLIENT_NEW_PATH"), f"xr:subrot:{ident}:{email}", icon="refresh"), button(t("XR_CLIENT_SUB"), f"xr:cl:{ident}:{email}", icon="link")),
-            xscreens.back_row(self.bot.state.language, "xr:home"),
-        ]
-        await self.render(chat_id, msg_id, screen(t("SUB_TITLE"), email, blocks, buttons))
-
-    async def rotate_subscription(self, chat_id: int, msg_id: int, ident: str, email: str) -> None:
-        if self.state.rotate_subscription(email) is None:
-            raise PanelError(f"the client {email} was not found")
-        self.save()
-        await self.show_subscription(chat_id, msg_id, ident, email)
 
     def sub_rows(self) -> list[tuple[str, str, str]]:
         out: list[tuple[str, str, str]] = []
@@ -963,22 +932,9 @@ class XrayPanel:
             await self.subs_stop(chat_id, msg_id)
             return
         if action == "rotate":
-            self.state.sub_all_id = ""
-            self.state.sub_all_key = ""
             self.state.ensure_sub_all()
-            for inbound in self.state.inbounds:
-                for client in inbound.clients:
-                    client.sub_id = client.sub_key = ""
-                    client.ensure_subscription()
             self.save()
-            domain = self.public_domain()
-            if self.state.sub_enabled and domain:
-                try:
-                    registry = self.state.sub_registry(self.state.address(self.address()), [])
-                    await self.control.sub_sync(self.bot.state.ssh, registry, self.state.sub_port, domain)
-                except (RpcError, OSError):
-                    pass
-            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=self.tr()("NOTICE_SUBS_ROTATED")), self.sub_rows()))
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
             return
         await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
 
@@ -1255,6 +1211,98 @@ class XrayPanel:
             return
         await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(), self.results))
 
+    async def subscan_action(self, chat_id: int, msg_id: int, arg1: str, arg2: str = "", arg3: str = "") -> None:
+        t = self.tr()
+        if arg1 in {"", "new", "custom"} or arg1.isdigit():
+            ctx = arg1 or "new"
+            await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(), self.results, ctx=ctx))
+            return
+        if arg1 == "vps":
+            ctx = arg2 or "new"
+            cidr = vps_subnet_cidr(self.address())
+            if not cidr:
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    xscreens.subnet_scan_screen(self.view(error="server public IPv4 is not detected; enter CIDR manually"), self.results, ctx=ctx),
+                )
+                return
+            self.last_subnet = cidr
+            await self.run_subnet_scan(chat_id, msg_id, [cidr], ctx)
+            return
+        if arg1 == "cand":
+            ctx = arg2 or "new"
+            self.last_subnet = ""
+            await self.run_subnet_scan(chat_id, msg_id, list(self.state.candidates())[:CANDIDATE_LIMIT], ctx)
+            return
+        if arg1 == "pick":
+            ctx = arg2 or "new"
+            _, item = self.result_at(arg3)
+            if not item.feasible:
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    xscreens.subnet_scan_screen(self.view(error="the selected target is not suitable for Reality"), self.results, ctx=ctx),
+                )
+                return
+            host = item.host or item.target
+            port = int(item.port or 443)
+            sni = (item.server_names[0] if item.server_names else "") or host
+            dest = f"{host}:{port}"
+            self.picked_dest = dest
+            self.picked_sni = sni
+            notice = t("XR_SUBSCAN_PICKED_NOTICE", dest=dest, sni=sni)
+            if ctx.isdigit():
+                inbound = self.get(ctx)
+                self.state.adopt_scan(inbound.id, host, sni, port)
+                self.save()
+                await self.sync_live_and_subs()
+                await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
+                return
+            if ctx == "custom":
+                await self.render(chat_id, msg_id, xscreens.custom_menu(self.view(notice=notice)))
+                return
+            await self.render(chat_id, msg_id, xscreens.new_menu(self.view(notice=notice)))
+            return
+        await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(), self.results, ctx="new"))
+
+    async def run_subnet_scan(self, chat_id: int, msg_id: int, targets: list[str], ctx: str = "new") -> None:
+        clean = [item for item in targets if str(item).strip()][:CANDIDATE_LIMIT]
+        t = self.tr()
+        if not clean:
+            await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(error="the scan list is empty"), self.results, ctx=ctx))
+            return
+        has_subnet = any("/" in item for item in clean) or len(clean) > 24
+        shown_count = 254 * sum(1 for item in clean if "/" in item) + sum(1 for item in clean if "/" not in item)
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.busy_screen(
+                t("BUSY_SCAN"),
+                self.bot.state.language,
+                [t("BUSY_SCAN_STEP_COUNT", count=shown_count), t("BUSY_SCAN_STEP_CHECKS")],
+            ),
+        )
+        try:
+            results = await scan_targets(
+                clean,
+                sni=self.state.scan_sni,
+                xver=int(self.state.scan_xver or 0),
+                candidates=self.state.candidates(),
+                concurrency=48 if has_subnet else CONCURRENCY,
+            )
+        except (OSError, ValueError, ScanError) as exc:
+            await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(error=str(exc)), self.results, ctx=ctx))
+            return
+        self.results = results
+        self.save()
+        good = sum(1 for item in results if item.feasible)
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.subnet_scan_screen(self.view(notice=t("NOTICE_SCAN_DONE", good=good, total=len(results))), results, ctx=ctx),
+        )
+
     async def run_scan(self, chat_id: int, msg_id: int, targets: list[str]) -> None:
         clean = [item for item in targets if item.strip()][:SCAN_LIMIT]
         t = self.tr()
@@ -1377,25 +1425,23 @@ class XrayPanel:
         ident = ctx.split(":", 1)[0]
         return self.state.inbound(ident) if ident.isdigit() else None
 
-    def client_of_ctx(self, ctx: str, ident: str) -> Any:
-        inbound = self.inbound_of_ctx(ctx)
-        if inbound is None:
-            raise PanelError("the inbound was not found")
-        client = inbound.client(ctx.split(":", 1)[1])
-        if client is None:
-            raise PanelError("the client was not found")
-        return client
-
     def set_field(self, ident: str, ctx: str, value: str) -> str:
         t = self.tr()
         if ident not in FIELDS:
             raise PanelError(f"the field {ident} is not supported")
         if ident in GLOBAL_FIELDS:
             return self.set_global(ident, ctx, value)
+        text = (value or "").strip()
         inbound = self.inbound_of_ctx(ctx)
+        if inbound is None and ident == "xr_port" and ctx in {"-", "custom"}:
+            port = parse_port(text)
+            for item in self.state.inbounds:
+                if item.port == port:
+                    raise PanelError(f"the port {port} is used by the inbound {item.remark}")
+            self.draft["port"] = str(port)
+            return t("NOTICE_PORT", port=port)
         if inbound is None:
             raise PanelError("the inbound for the input was not found")
-        text = (value or "").strip()
         if ident == "xr_port":
             port = parse_port(text)
             for item in self.state.inbounds:
@@ -1466,34 +1512,20 @@ class XrayPanel:
                 raise PanelError("ml-dsa-65 needs the reality security")
             inbound.mldsa65_verify = text
             return t("NOTICE_MLDSA_VERIFY")
-        if ident == "xr_client_email":
-            email = valid_email(text)
-            if inbound.client(email) is not None:
-                raise PanelError(f"the client {email} already exists")
-            client = inbound.make_client(email)
-            shared = self.state.canonical_subscription(email, skip=client)
-            if shared is not None:
-                client.sub_id, client.sub_key = shared
-            return t("NOTICE_CLIENT_ADDED", email=email)
-        if ident == "xr_client_flow":
-            client = self.client_of_ctx(ctx, ident)
-            if text not in {"", "xtls-rprx-vision"}:
-                raise PanelError("the flow is not supported")
-            if text and not (inbound.network == "raw" and inbound.security in {"reality", "tls"}):
-                raise PanelError("the flow needs the raw network with reality or tls")
-            client.flow = text
-            return t("NOTICE_FLOW")
-        if ident == "xr_client_limit":
-            client = self.client_of_ctx(ctx, ident)
-            if not text.isdigit():
-                raise PanelError("the ip limit must be a number")
-            client.limit_ip = int(text)
-            return t("NOTICE_LIMIT_IP", value=client.limit_ip)
         raise PanelError(f"the field {ident} is not supported")
 
     def set_global(self, ident: str, ctx: str, value: str) -> str:
         t = self.tr()
         text = (value or "").strip()
+        if ident == "xr_subnet_cidr":
+            targets, bad = normalize_targets(text, CANDIDATE_LIMIT)
+            if not targets and not bad:
+                raise PanelError("the scan list is empty")
+            if not targets:
+                raise PanelError(bad[0])
+            self.last_subnet = text
+            self.pending_subnet_targets = targets
+            return t("NOTICE_TARGETS_COUNT", count=len(targets))
         if ident == "xr_scan_targets":
             targets, bad = normalize_targets(text, SCAN_LIMIT)
             if not targets and not bad:
@@ -1660,6 +1692,47 @@ class XrayPanel:
                         await res
                 except Exception as exc:
                     log.debug("subs sync skipped: %s", exc)
+        if ident == "xr_subnet_cidr":
+            clean = list(self.pending_subnet_targets)[:CANDIDATE_LIMIT]
+            self.pending_subnet_targets = []
+            scan_ctx = ctx if (ctx in {"new", "custom"} or ctx.isdigit()) else "new"
+            has_subnet = any("/" in item for item in clean) or len(clean) > 24
+            shown_count = 254 * sum(1 for item in clean if "/" in item) + sum(1 for item in clean if "/" not in item)
+            t = self.tr()
+            busy_id = 0
+            send_prog = getattr(self.bot, "send_progress", None)
+            if callable(send_prog):
+                busy_id = await send_prog(
+                    chat_id,
+                    xscreens.busy_screen(
+                        t("BUSY_SCAN"),
+                        self.bot.state.language,
+                        [t("BUSY_SCAN_STEP_COUNT", count=shown_count), t("BUSY_SCAN_STEP_CHECKS")],
+                    ),
+                )
+            err = ""
+            try:
+                results = await scan_targets(
+                    clean,
+                    sni=self.state.scan_sni,
+                    xver=int(self.state.scan_xver or 0),
+                    candidates=self.state.candidates(),
+                    concurrency=48 if has_subnet else CONCURRENCY,
+                )
+            except (OSError, ValueError, ScanError) as exc:
+                err = str(exc)
+                results = self.results
+            else:
+                self.results = results
+                self.save()
+            if busy_id:
+                drop = getattr(self.bot, "drop_marker", None)
+                if callable(drop):
+                    await drop(chat_id, busy_id)
+            good = sum(1 for item in results if item.feasible)
+            shown_notice = "" if err else t("NOTICE_SCAN_DONE", good=good, total=len(results))
+            await self.send(chat_id, xscreens.subnet_scan_screen(self.view(notice=shown_notice, error=err), results, ctx=scan_ctx))
+            return
         if ident == "xr_tunnel_key":
             if not (value or "").strip():
                 self.stop_funnel_autopilot()
@@ -1696,23 +1769,23 @@ class XrayPanel:
 
     def error_screen(self, ident: str, ctx: str, message: str) -> Any:
         try:
-            return xscreens.input_screen(self.view(error=message), ident, ctx, self.back_target(ctx))
+            return xscreens.input_screen(self.view(error=message), ident, ctx, self.back_target(ctx, ident))
         except InlineError:
             return xscreens.home(self.view(error=message))
 
-    def back_target(self, ctx: str) -> str:
+    def back_target(self, ctx: str, ident: str = "") -> str:
+        if ident == "xr_subnet_cidr":
+            scan_ctx = ctx if (ctx in {"new", "custom"} or ctx.isdigit()) else "new"
+            return f"xr:subscan:{scan_ctx}"
+        if ident == "xr_port" and ctx in {"-", "custom"}:
+            return "xr:custom:open"
         parts = ctx.split(":", 1)
         return f"xr:in:{parts[0]}" if parts[0].isdigit() else "xr:home"
 
     async def screen_for(self, ident: str, ctx: str, notice: str) -> Any:
-        parts = ctx.split(":", 1)
         inbound = self.inbound_of_ctx(ctx)
-        if inbound is not None and len(parts) > 1:
-            client = inbound.client(parts[1])
-            if client is not None:
-                link = self.link_of(inbound, client.email)
-                path, url = self.sub_url(client.email)
-                return xscreens.client_screen(self.view(notice=notice), inbound, client.email, link, url, path)
+        if inbound is None and ident == "xr_port" and ctx in {"-", "custom"}:
+            return xscreens.custom_menu(self.view(notice=notice))
         if inbound is not None:
             return xscreens.inbound_screen(self.view(notice=notice), inbound)
         if ident in {"xr_scan_targets", "xr_scan_manual", "xr_scan_candidates", "xr_scan_sni", "xr_scan_xver"}:

@@ -116,7 +116,6 @@ def home(view: View) -> Any:
     blocks.append(table(core_rows(view, t), (t("HOME_SUMMARY_TITLE"), t("HOME_CORE_TABLE2"))))
     facts = [
         ("info", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
-        ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
         ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
         ("shield", t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),
     ]
@@ -165,7 +164,6 @@ def quick_screen(view: View) -> Any:
     blocks.append(quote(muted(t("HOME_SUMMARY_ACTIVE"))))
     facts = [
         ("xray", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
-        ("users", t("HOME_LABEL_CLIENTS"), code(view.clients)),
         ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
         ("shield", t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),
         ("info", t("HOME_LABEL_PROTOCOL"), code(xray.protocol_label())),

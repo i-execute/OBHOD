@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import i18n
-from .xray import FLOWS, FINGERPRINTS, LOG_LEVELS
+from .xray import FINGERPRINTS, LOG_LEVELS
 
 TOKEN_LEN = 10
 MAX_QUERY = 256
@@ -67,15 +67,13 @@ FIELDS: dict[str, Field] = {
     "xr_padding": Field("xr_padding", "FLD_XR_PADDING", "FLH_XR_PADDING", "60-40-0"),
     "xr_mldsa65_seed": Field("xr_mldsa65_seed", "FLD_XR_MLDSA_SEED", "FLH_XR_MLDSA_SEED", "", True),
     "xr_mldsa65_verify": Field("xr_mldsa65_verify", "FLD_XR_MLDSA_VERIFY", "FLH_XR_MLDSA_VERIFY", ""),
-    "xr_client_email": Field("xr_client_email", "FLD_XR_CLIENT_EMAIL", "FLH_XR_CLIENT_EMAIL", "phone-1"),
     "dbg_target": Field("dbg_target", "FLD_DBG_TARGET", "FLH_DBG_TARGET", "203.0.113.0/24"),
     "dbg_ports": Field("dbg_ports", "FLD_DBG_PORTS", "FLH_DBG_PORTS", "22,80,443"),
     "dbg_chk_target": Field("dbg_chk_target", "FLD_DBG_CHK_TARGET", "FLH_DBG_CHK_TARGET", "31.77.12.187"),
     "dbg_hops": Field("dbg_hops", "FLD_DBG_HOPS", "FLH_DBG_HOPS", "12"),
-    "xr_client_flow": Field("xr_client_flow", "FLD_XR_CLIENT_FLOW", "FLH_XR_CLIENT_FLOW", ""),
-    "xr_client_limit": Field("xr_client_limit", "FLD_XR_CLIENT_LIMIT", "FLH_XR_CLIENT_LIMIT", "2"),
     "xr_scan_targets": Field("xr_scan_targets", "FLD_XR_SCAN_TARGETS", "FLH_XR_SCAN_TARGETS", ""),
     "xr_scan_manual": Field("xr_scan_manual", "FLD_XR_SCAN_MANUAL", "FLH_XR_SCAN_MANUAL", "1.1.1.1:443"),
+    "xr_subnet_cidr": Field("xr_subnet_cidr", "FLD_XR_SUBNET_CIDR", "FLH_XR_SUBNET_CIDR", "185.199.108.0/24"),
     "xr_scan_sni": Field("xr_scan_sni", "FLD_XR_SCAN_SNI", "FLH_XR_SCAN_SNI", "www.google.com"),
     "xr_scan_xver": Field("xr_scan_xver", "FLD_XR_SCAN_XVER", "FLH_XR_SCAN_XVER", "0"),
     "xr_log_level": Field("xr_log_level", "FLD_XR_LOG_LEVEL", "FLH_XR_LOG_LEVEL", "warning"),
@@ -110,7 +108,6 @@ OPTIONS: dict[str, tuple[str, ...]] = {
     "xr_spider_x": ("/", "/index.html", "/home", "/about"),
     "xr_fingerprint": tuple(FINGERPRINTS),
     "xr_alpn": ("h2,http/1.1", "h2", "http/1.1"),
-    "xr_client_flow": tuple(item for item in FLOWS if item),
     "xr_scan_xver": ("0", "1", "2", "3"),
     "xr_log_level": tuple(LOG_LEVELS),
     "xr_bantime": ("30", "60", "300", "600"),
@@ -118,7 +115,6 @@ OPTIONS: dict[str, tuple[str, ...]] = {
     "xr_ssh_maxretry": ("3", "5", "10"),
     "xr_sub_port": ("2096", "8080", "8443", "9443"),
     "xr_sub_refresh": ("6", "12", "24"),
-    "xr_client_limit": ("1", "2", "3", "5"),
     "ft_port": ("56000", "56123", "443", "8443"),
     "ft_wg_port": ("51820", "51821", "51830"),
     "ft_wg_net": ("10.13.13.0/24", "10.44.0.0/24", "10.8.0.0/24"),

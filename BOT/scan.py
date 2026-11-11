@@ -353,6 +353,20 @@ def enumerate_cidr(cidr: str, limit: int = DISCOVER_MAX_IPS) -> list[str]:
     return out
 
 
+def vps_subnet_cidr(address: object) -> str:
+    text = str(address or "").strip().strip("[]")
+    if not text:
+        return ""
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return ""
+    if blocked_ip(ip):
+        return ""
+    prefix = 24 if ip.version == 4 else 120
+    return str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
+
+
 def tls_version_name(version: str | None) -> str:
     mapping = {
         "TLSv1.3": "1.3",

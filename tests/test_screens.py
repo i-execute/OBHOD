@@ -205,7 +205,7 @@ def render_all(lang: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, object]]:
         ("xray_custom", xscreens.custom_menu(xview)),
         ("xray_inbound", xscreens.inbound_screen(xview, inbound)),
         ("xray_links", xscreens.links_screen(xview, inbound, "203.0.113.10", [("owner", "vless://uuid@host:443")])),
-        ("xray_client", xscreens.client_screen(xview, inbound, "owner", "vless://x", "http://h:2096/a/b", "/a/b")),
+        ("xray_subnet_scan", xscreens.subnet_scan_screen(xview, [result], ctx="new")),
         ("xray_mldsa", xscreens.mldsa_screen(xview, inbound)),
         ("xray_subs", xscreens.subs_screen(xview, [("owner", "/a/b", "http://h:2096/a/b")])),
         ("xray_core", xscreens.core_screen(xview)),

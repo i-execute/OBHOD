@@ -33,12 +33,16 @@ def test_next_port_skips_used(tmp_path: Path) -> None:
 def test_create_custom_inbound(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     item.draft = {"network": "xhttp", "security": "tls", "port": "8443"}
+    with pytest.raises(PanelError):
+        run(item.create_custom(1, 0))
+    item.draft = {"network": "xhttp", "security": "reality", "port": "8443"}
     run(item.create_custom(1, 0))
     inbound = bot.state.xray.inbounds[0]
     assert inbound.port == 8443
     assert inbound.network == "xhttp"
-    assert inbound.security == "tls"
-    assert inbound.clients == []
+    assert inbound.security == "reality"
+    assert len(inbound.clients) == 1
+    assert inbound.clients[0].email == ""
     assert bot.rendered
 
 
@@ -48,6 +52,10 @@ def test_create_quick_rejects_unknown_network(tmp_path: Path) -> None:
         run(item.create_quick(1, 0, "reality", "ws"))
     with pytest.raises(PanelError):
         run(item.create_quick(1, 0, "xtls", "raw"))
+    with pytest.raises(PanelError):
+        run(item.create_quick(1, 0, "tls", "raw"))
+    with pytest.raises(PanelError):
+        run(item.create_quick(1, 0, "none", "raw"))
 
 
 def test_cycle_rotates_values(tmp_path: Path) -> None:
@@ -56,7 +64,7 @@ def test_cycle_rotates_values(tmp_path: Path) -> None:
     item.cycle("network")
     assert item.draft["network"] == "grpc"
     item.cycle("security")
-    assert item.draft["security"] == "tls"
+    assert item.draft["security"] == "reality"
     item.cycle("unknown")
 
 
@@ -106,28 +114,13 @@ def test_set_network_specific_fields(tmp_path: Path) -> None:
     assert inbound.encryption.padding == "60-40-0"
 
 
-def test_client_fields(tmp_path: Path) -> None:
+def test_client_fields_are_removed(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     inbound = new_inbound("vless", 443, "raw", "reality")
     bot.state.xray.add(inbound)
-    assert "owner" in item.set_field("xr_client_email", str(inbound.id), "owner")
-    with pytest.raises(PanelError):
-        item.set_field("xr_client_email", str(inbound.id), "owner")
-    assert "flow" in item.set_field("xr_client_flow", f"{inbound.id}:owner", "xtls-rprx-vision")
-    with pytest.raises(PanelError):
-        item.set_field("xr_client_flow", f"{inbound.id}:owner", "xtls-rprx-direct")
-    assert "3" in item.set_field("xr_client_limit", f"{inbound.id}:owner", "3")
-    with pytest.raises(PanelError):
-        item.set_field("xr_client_limit", f"{inbound.id}:owner", "many")
-
-
-def test_client_flow_needs_raw_reality(tmp_path: Path) -> None:
-    item, bot = panel(tmp_path)
-    inbound = new_inbound("vless", 443, "grpc", "reality")
-    inbound.make_client("owner")
-    bot.state.xray.add(inbound)
-    with pytest.raises(PanelError):
-        item.set_field("xr_client_flow", f"{inbound.id}:owner", "xtls-rprx-vision")
+    for removed in ("xr_client_email", "xr_client_flow", "xr_client_limit"):
+        with pytest.raises(PanelError):
+            item.set_field(removed, str(inbound.id), "owner")
 
 
 def test_global_fields(tmp_path: Path) -> None:
@@ -196,13 +189,8 @@ def test_regen_reality_keys(tmp_path: Path) -> None:
 def test_delete_inbound_and_client(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     inbound = new_inbound("vless", 443, "raw", "reality")
-    inbound.make_client("owner")
-    inbound.make_client("phone")
     bot.state.xray.add(inbound)
-    run(item.delete_client(1, 0, str(inbound.id), "phone"))
-    assert inbound.client("phone") is None
-    with pytest.raises(PanelError):
-        run(item.delete_client(1, 0, str(inbound.id), "ghost"))
+    assert not hasattr(item, "delete_client")
     run(item.delete_inbound(1, 0, str(inbound.id)))
     assert bot.state.xray.inbounds == []
 
@@ -220,21 +208,19 @@ def test_toggle_inbound(tmp_path: Path) -> None:
 def test_show_links_and_subscription(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     inbound = new_inbound("vless", 443, "raw", "reality")
-    inbound.make_client("owner")
     bot.state.xray.add(inbound)
     bot.state.xray.sub_address = "203.0.113.10"
     item.save()
     run(item.show_links(1, 0, str(inbound.id)))
-    run(item.show_subscription(1, 0, str(inbound.id), "owner"))
-    path, url = item.sub_url("owner")
+    rows = item.sub_rows()
+    assert len(rows) == 1
+    _label, path, url = rows[0]
     assert path.endswith("/json")
     assert len(path) == 7 + SUB_SEGMENT_LEN * 2
     assert url.endswith(path)
     assert url.startswith("http://203.0.113.10:2096/")
-    before = path
-    run(item.rotate_subscription(1, 0, str(inbound.id), "owner"))
-    after, _url = item.sub_url("owner")
-    assert after != before
+    run(item.subs_action(1, 0, "rotate"))
+    assert item.sub_rows()[0][1] == path
 
 
 def test_subs_apply_pushes_registry(tmp_path: Path) -> None:

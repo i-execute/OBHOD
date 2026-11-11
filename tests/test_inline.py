@@ -205,7 +205,6 @@ def test_fixed_choice_fields_follow_the_core_allowlists() -> None:
 
     assert options("xr_fingerprint") == tuple(FINGERPRINTS)
     assert options("xr_log_level") == tuple(LOG_LEVELS)
-    assert options("xr_client_flow") == ("xtls-rprx-vision",)
     assert "http/1.1" in options("xr_alpn")
 
 

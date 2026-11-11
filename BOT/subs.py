@@ -176,8 +176,12 @@ def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port:
     if xray_state is not None:
         bundle.id, bundle.key = xray_state.ensure_sub_all()
         bundle.title = ALL_TITLE
-        for item in xray_state.subscriptions(address):
-            bundle.links.extend(item.links)
+        all_fn = getattr(xray_state, "all_links", None)
+        if callable(all_fn):
+            bundle.links.extend(all_fn(address))
+        else:
+            for item in xray_state.subscriptions(address):
+                bundle.links.extend(item.links)
     bundle.links.extend(xray_links(extra_links))
     bundle.links = xray_links(bundle.links)
     return bundle

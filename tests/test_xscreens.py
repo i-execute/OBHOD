@@ -30,11 +30,10 @@ def test_home_and_core_line() -> None:
 def test_new_menu_lists_only_supported_values() -> None:
     html = xscreens.new_menu(view()).to_html()
     for network in NETWORKS:
-        assert network in html
-    for security in SECURITIES:
-        assert security in html
-    for name in ("vmess", "trojan", "shadowsocks", "ws", "httpupgrade"):
-        assert name not in html
+        assert f"xr:new:{network}:reality" in html
+    assert "xr:subscan:new" in html
+    for forbidden in (":tls", ":none", "vmess", "trojan", "shadowsocks", "ws", "httpupgrade"):
+        assert forbidden not in html
 
 
 def test_custom_menu_shows_relevant_fields() -> None:
@@ -97,22 +96,28 @@ def test_inbound_screen_offers_a_list_for_fixed_choices() -> None:
     assert inline.list_query("xr_fingerprint", str(inbound.id)) in html
 
 
-def test_client_screen_fields() -> None:
+def test_inbound_screen_direct_link_without_clients() -> None:
     inbound = new_inbound("vless", 443, "raw", "reality")
-    client = inbound.make_client("owner")
-    html = xscreens.client_screen(view(), inbound, "owner", "vless://x", "http://h:2096/a/b", "/a/b").to_html()
-    assert "owner" in html
-    assert "xtls-rprx-vision" in html
-    assert "/a/b" not in html
-    assert "<summary>" + i18n.t("XR_CLIENT_ID") + "</summary><pre>" + client.ident in html
-    assert "<summary>" + i18n.t("XR_CLIENT_COPY") + "</summary><pre>vless://x</pre>" in html
-    assert "xr:subs" in html
+    item = view()
+    item.address = "203.0.113.10"
+    html = xscreens.inbound_screen(item, inbound).to_html()
+    assert "vless://" in html
+    assert f"xr:subscan:{inbound.id}" in html
+    assert "xr:cladd" not in html
+    assert "xr:cl:" not in html
 
 
-def test_client_screen_missing_client() -> None:
-    inbound = new_inbound("vless", 443, "raw", "reality")
-    html = xscreens.client_screen(view(), inbound, "ghost", "", "", "").to_html()
-    assert i18n.t("XR_CLIENT_MISSING") in html
+def test_subnet_scan_screen_renders_results_and_pick_buttons() -> None:
+    from BOT.scan import ScanResult
+
+    item = view()
+    item.address = "203.0.113.10"
+    item.vps_subnet = "203.0.113.0/24"
+    res = ScanResult(target="203.0.113.44:443", host="203.0.113.44", ip="203.0.113.44", port=443, feasible=True, tls13=True, h2=True, x25519=True, server_names=["cdn.example.com"], latency_ms=9)
+    html = xscreens.subnet_scan_screen(item, [res], ctx="new").to_html()
+    assert "203.0.113.0/24" in html
+    assert "xr:subscan:vps:new" in html
+    assert "xr:subscan:pick:new:0" in html
 
 
 def test_mldsa_screen() -> None:

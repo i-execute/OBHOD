@@ -63,12 +63,12 @@ def test_xray_creates_inbounds_without_auto_owner_or_auto_raw(tmp_path: Path) ->
     bot = make_bot(tmp_path)
     asyncio.run(bot.xray.create_quick(1, 0, "reality", "xhttp"))
     assert len(bot.state.xray.inbounds) == 1
-    assert bot.state.xray.inbounds[0].clients == []
+    assert [c.email for c in bot.state.xray.inbounds[0].clients] == [""]
 
     bot.xray.draft = {"network": "grpc", "security": "reality", "port": "24443"}
     asyncio.run(bot.xray.create_custom(1, 0))
     assert len(bot.state.xray.inbounds) == 2
-    assert bot.state.xray.inbounds[1].clients == []
+    assert [c.email for c in bot.state.xray.inbounds[1].clients] == [""]
 
     pick = ScanResult(
         target="dl.google.com",
@@ -89,7 +89,7 @@ def test_xray_creates_inbounds_without_auto_owner_or_auto_raw(tmp_path: Path) ->
     )
     bot.xray.results = [pick]
     asyncio.run(bot.xray.scan_action(1, 0, "create", "0"))
-    assert bot.state.xray.inbounds[-1].clients == []
+    assert all(c.email == "" for c in bot.state.xray.inbounds[-1].clients)
 
 
 def test_freeturn_never_auto_creates_owner_but_keeps_existing_owner(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -176,11 +176,6 @@ def test_subs_screen_blocks_dummy_links_and_uses_json_endpoint(tmp_path: Path, m
     inb.sni = "dl.google.com"
     inb.dest = "dl.google.com:443"
     bot.state.xray.add(inb)
-    html_no_clients = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).to_html()
-    assert f"xr:in:{inb.id}" in html_no_clients
-    assert "/json</pre>" not in html_no_clients
-
-    inb.make_client("alice")
     html_unapplied = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).to_html()
     assert "xr:core:apply" in html_unapplied
     assert "/json</pre>" not in html_unapplied
@@ -189,7 +184,8 @@ def test_subs_screen_blocks_dummy_links_and_uses_json_endpoint(tmp_path: Path, m
     html_ready = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).to_html()
     assert "/json</pre>" in html_ready
     assert f"127.0.0.1:{bot.state.xray.sub_port}" in html_ready
-    assert "xr:dom:port" in html_ready
+    assert "xr:dom:port" not in html_ready
+    assert "xr:subs:rotate" not in html_ready
 
     registry = bot.state.xray.sub_registry("203.0.113.10", [])
     reg_file = tmp_path / "registry.json"

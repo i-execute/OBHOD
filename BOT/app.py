@@ -33,8 +33,9 @@ from .ratelimit import CALLBACK_LIMIT, CLAIM_LIMIT, EXPENSIVE_LIMIT, INLINE_LIMI
 from .shell import LocalShell, ShellError
 from .store import State, Store
 from .update import UpdateError, Updater
+from .scan import vps_subnet_cidr
 from .xrayrpc import XrayControl, XrayError as RpcError
-from .xray import API_PORT, SUB_PORT, tailnet_expiry_stage
+from .xray import API_PORT, SUB_PORT, current_funnel_port, tailnet_expiry_stage
 
 log = logging.getLogger("obhod.app")
 
@@ -77,7 +78,7 @@ CLICK_QUIET = 2.0
 ACTION_LOCK_QUIET = 5.0
 
 NAV_PREFIXES = ("nav:", "lang:", "set:")
-NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:info", "core:show", "ft:home", "xr:home", "xr:scan", "xr:subs", "xr:core")
+NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:info", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
 
 def is_navigation(data: str) -> bool:
     if data.startswith(NAV_PREFIXES):
@@ -595,6 +596,26 @@ class Bot:
         self.inline_enabled = True
         return True
 
+    async def ensure_subs_warm(self) -> None:
+        xr = self.state.xray
+        if not (xr.sub_enabled and xr.tunnel_host and xr.sub_port):
+            return
+        if isinstance(self.xray.control, XrayControl) and os.geteuid() != 0:
+            return
+        xr.ensure_sub_all()
+        raw_host = xr.tunnel_host.strip().lower()
+        port = int(xr.sub_port)
+        https_port = current_funnel_port(raw_host)
+        if xr.tunnel_enabled:
+            try:
+                await self.xray.call_tunnel_up("", raw_host.split(":", 1)[0], port, https_port)
+            except Exception as exc:
+                log.debug("tunnel warmup skipped: %s", exc)
+        try:
+            await self.subs_sync(force=True)
+        except Exception as exc:
+            log.debug("subs warmup skipped: %s", exc)
+
     async def ensure_cores_warm(self) -> None:
         if self.cores_warmed:
             return
@@ -607,6 +628,7 @@ class Bot:
                 self.save()
             except Exception as exc:
                 log.debug("xray warmup skipped: %s", exc)
+        await self.ensure_subs_warm()
         if not self.freeturn.state.installed and (
             not isinstance(self.freeturn.control, FtControl)
             or self.state.freeturn.configured
@@ -995,9 +1017,7 @@ class Bot:
             "xr_padding": "",
             "xr_mldsa65_seed": "",
             "xr_mldsa65_verify": "",
-            "xr_client_email": "",
-            "xr_client_flow": "",
-            "xr_client_limit": "0",
+            "xr_subnet_cidr": self.xray.last_subnet or vps_subnet_cidr(self.address()),
             "dbg_target": str(getattr(dbg, "scan_target", "") or ""),
             "dbg_ports": str(getattr(dbg, "scan_ports", "") or ""),
             "dbg_chk_target": str(getattr(dbg, "chk_target", "") or ""),
@@ -1048,10 +1068,6 @@ class Bot:
             values["xr_service"] = inbound.service_name
             values["xr_padding"] = inbound.encryption.padding
             values["xr_mldsa65_verify"] = inbound.mldsa65_verify
-            if inbound.clients:
-                first_client = inbound.clients[0]
-                values["xr_client_flow"] = first_client.flow
-                values["xr_client_limit"] = str(first_client.limit_ip)
         return values
 
     def default_scan_target(self) -> str:

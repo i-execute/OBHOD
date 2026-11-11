@@ -639,7 +639,9 @@ class XrayClient:
         )
 
     def entry(self) -> dict[str, Any]:
-        body: dict[str, Any] = {"id": self.ident, "email": self.email}
+        body: dict[str, Any] = {"id": self.ident}
+        if self.email:
+            body["email"] = self.email
         if self.flow:
             body["flow"] = self.flow
         if self.limit_ip:
@@ -705,8 +707,23 @@ class XrayInbound:
             return base + "-" + group if group else base
         return base + ("-" + group if group else "")
 
+    def ensure_credential(self) -> XrayClient:
+        wanted_flow = "xtls-rprx-vision" if (self.security in {"reality", "tls"} and self.network == "raw") else ""
+        if self.clients:
+            first = self.clients[0]
+            if not first.ident:
+                first.ident = gen_uuid()
+            if not first.email:
+                first.flow = wanted_flow
+            return first
+        cred = XrayClient(email="", ident=gen_uuid(), flow=wanted_flow)
+        self.clients = [cred]
+        return cred
+
     def make_client(self, email: str) -> XrayClient:
         name = valid_email(email)
+        if len(self.clients) == 1 and not self.clients[0].email:
+            self.clients = []
         if self.client(name) is not None:
             raise XrayError("a client with this name already exists")
         client = XrayClient(email=name, ident=gen_uuid())
@@ -721,14 +738,18 @@ class XrayInbound:
         self.clients = [item for item in self.clients if item.email != email]
         return len(self.clients) != before
 
+    def inbound_link(self, host: str, port: int | None = None) -> str:
+        return inbound_link(self, host, port)
+
     def post_quantum(self) -> bool:
         return bool(self.encryption.private_key and self.encryption.public_key)
 
     def settings(self) -> dict[str, Any]:
         if not self.post_quantum():
             raise XrayError("vless encryption needs a generated post quantum key pair")
+        creds = self.clients if self.clients else [self.ensure_credential()]
         return {
-            "clients": [client.entry() for client in self.clients],
+            "clients": [client.entry() for client in creds],
             "decryption": self.encryption.decryption(),
             "fallbacks": [],
         }
@@ -1107,8 +1128,10 @@ def config_text(
     )
 
 
-def _remark_suffix(inbound: XrayInbound, email: str) -> str:
+def _remark_suffix(inbound: XrayInbound, email: str = "") -> str:
     base = inbound.remark or "vless-%d" % inbound.port
+    if not email:
+        return base
     parts = [base, email]
     if inbound.security != "none":
         parts.append(inbound.security)
@@ -1181,6 +1204,10 @@ def link_for(inbound: XrayInbound, client: XrayClient, address: str, port: int |
     if inbound.protocol != "vless":
         raise XrayError("only vless links are supported")
     return vless_link(inbound, client, address, port)
+
+
+def inbound_link(inbound: XrayInbound, address: str, port: int | None = None) -> str:
+    return link_for(inbound, inbound.ensure_credential(), address, port)
 
 
 def links_for(inbound: XrayInbound, address: str, port: int | None = None) -> list[tuple[str, str]]:
@@ -1615,11 +1642,21 @@ class XrayState:
         return value if value in VERSION_CHOICES else LATEST_CHOICE
 
     def ensure_sub_all(self) -> tuple[str, str]:
+        id_ok = len(self.sub_all_id) == SUB_SEGMENT_LEN and all(char in SUB_ALPHABET for char in self.sub_all_id)
+        key_ok = len(self.sub_all_key) == SUB_SEGMENT_LEN and all(char in SUB_ALPHABET for char in self.sub_all_key)
+        if id_ok and key_ok:
+            return self.sub_all_id, self.sub_all_key
         for client in self.canonical_clients():
-            return client.sub_id, client.sub_key
-        if len(self.sub_all_id) != SUB_SEGMENT_LEN or any(char not in SUB_ALPHABET for char in self.sub_all_id):
+            if not id_ok:
+                self.sub_all_id = client.sub_id
+                id_ok = True
+            if not key_ok:
+                self.sub_all_key = client.sub_key
+                key_ok = True
+            break
+        if not id_ok:
             self.sub_all_id = gen_sub_segment()
-        if len(self.sub_all_key) != SUB_SEGMENT_LEN or any(char not in SUB_ALPHABET for char in self.sub_all_key):
+        if not key_ok:
             self.sub_all_key = gen_sub_segment()
         return self.sub_all_id, self.sub_all_key
 
@@ -1804,6 +1841,24 @@ class XrayState:
     def announce(self) -> str:
         return " ".join((self.sub_announce or "").split())[:200]
 
+    def all_links(self, address: str = "") -> list[str]:
+        host = self.address(address)
+        if not host:
+            return []
+        out: list[str] = []
+        for inbound in self.inbounds:
+            if not inbound.enable:
+                continue
+            creds = inbound.clients if inbound.clients else [inbound.ensure_credential()]
+            for client in creds:
+                try:
+                    link = link_for(inbound, client, host, inbound.port)
+                except XrayError:
+                    continue
+                if link and link not in out:
+                    out.append(link)
+        return out
+
     def client_configs(self, address: str = "") -> list[dict[str, Any]]:
         host = self.address(address)
         if not host:
@@ -1812,7 +1867,8 @@ class XrayState:
         for inbound in self.inbounds:
             if not inbound.enable:
                 continue
-            for client in inbound.clients:
+            creds = inbound.clients if inbound.clients else [inbound.ensure_credential()]
+            for client in creds:
                 try:
                     out.append(client_config(inbound, client, host, inbound.port))
                 except XrayError:

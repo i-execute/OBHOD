@@ -1091,7 +1091,8 @@ def write_sub_unit(server, registry, port):
         [
             "[Unit]",
             "Description=OBHOD subscription server",
-            "After=network.target",
+            "After=network.target network-online.target",
+            "Wants=network-online.target",
             "",
             "[Service]",
             "User=root",
@@ -1987,7 +1988,10 @@ def cmd_tunnel_up(flags, rest):
                 code, text = run_host(reconf + ["--reset"], timeout=120)
             if code != 0:
                 raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
-        elif before.get("url") and str(before["url"]).endswith(":%d" % https_port):
+        elif before.get("url") and (
+            str(before["url"]).endswith(":%d" % https_port)
+            or (https_port == 443 and ":" not in str(before["url"]).removeprefix("https://").strip("/"))
+        ):
             return before, None
     for other_port in TUNNEL_FUNNEL_PORTS:
         if other_port != https_port and str(before.get("url") or "").endswith(":%d" % other_port):
@@ -2047,7 +2051,11 @@ def cmd_tunnel_up(flags, rest):
         time.sleep(0.6)
         state = tunnel_state(https_port)
     if not state["url"] and state["hostname"].endswith(".ts.net"):
-        state["url"] = "https://%s:%d" % (state["hostname"], https_port)
+        state["url"] = (
+            "https://%s" % state["hostname"]
+            if int(https_port) == 443
+            else "https://%s:%d" % (state["hostname"], https_port)
+        )
         state["funnel"] = True
     if not state["url"]:
         raise ScriptError("internal", "the funnel is not answering with a ts.net name yet, dns may still be propagating", "tunnel")

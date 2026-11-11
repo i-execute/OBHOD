@@ -42,12 +42,15 @@ class State:
     ddos: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        effective_sub_port = int(self.xray.sub_port) if int(self.xray.sub_port or 0) not in {0, SUB_PORT} else int(self.sub_port)
+        self.sub_port = effective_sub_port
+        self.xray.sub_port = effective_sub_port
         return {
             "schema": int(self.schema),
             "ssh": self.ssh.to_dict(),
             "admin_id": int(self.admin_id),
             "log_tail": int(self.log_tail),
-            "sub_port": int(self.sub_port),
+            "sub_port": effective_sub_port,
             "last_probe": dict(self.last_probe),
             "language": i18n.normalize(self.language),
             "language_set": bool(self.language_set),
@@ -82,7 +85,10 @@ class State:
         )
         if state.core not in CORES:
             state.core = "xray"
-        state.xray.sub_port = state.sub_port
+        if int(state.xray.sub_port or 0) not in {0, SUB_PORT} and int(state.sub_port or SUB_PORT) == SUB_PORT:
+            state.sub_port = int(state.xray.sub_port)
+        else:
+            state.xray.sub_port = state.sub_port
         return state
 
 
