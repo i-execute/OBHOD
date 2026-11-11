@@ -29,18 +29,7 @@ USER_LINUX_SERVER_CMD = (
 USER_AUTH_KEY = "tskey-auth-k4QrgziQ1o11CNTRL-cC5HZT7BXLUitSqMgodtLUtfJpmyDFzVj"
 
 REQUIRED_TAILSCALE_URLS = (
-    "https://console.tailscale.com/admin/machines/new-linux",
-    "https://console.tailscale.com/admin/settings/keys",
-    "https://console.tailscale.com/admin/settings/oauth",
-    "https://console.tailscale.com/admin/acls/visual/tags",
-    "https://console.tailscale.com/admin/dns",
-    "https://console.tailscale.com/admin/acls",
-    "https://tailscale.com/docs/features/tags",
-    "https://tailscale.com/docs/features/ephemeral-nodes",
-    "https://tailscale.com/docs/features/exit-nodes",
-    "https://tailscale.com/docs/features/access-control/auth-keys#types-of-auth-keys",
-    "https://tailscale.com/docs/features/access-control/auth-keys#key-expiry",
-    "https://tailscale.com/docs/features/tailscale-funnel",
+    "https://login.tailscale.com/admin/machines/new-linux",
 )
 
 
@@ -181,9 +170,13 @@ def test_run_funnel_captures_interactive_approval_link_without_hanging(tmp_path:
     monkeypatch.setattr(bot.control, "tunnel_up", failing_up)
     run(panel.apply_input(1, "xr_tunnel_key", "subs", USER_LINUX_SERVER_CMD))
     assert bot.state.xray.tunnel_approval_url == approval_link
+    err_html = xscreens.subs_screen(panel.view(error=i18n.t("TAILSCALE_FUNNEL_ENABLE_NOTE", "ru")), panel.sub_rows()).to_html()
+    assert err_html.count(i18n.t("TAILSCALE_FUNNEL_ENABLE_NOTE", "ru")) == 1
     screen_html = xscreens.subs_screen(panel.view(), panel.sub_rows()).to_html()
+    assert screen_html.count(i18n.t("TAILSCALE_FUNNEL_ENABLE_NOTE", "ru")) == 1
     assert approval_link in screen_html
     assert i18n.t("TAILSCALE_APPROVE_BTN", "ru") in screen_html
+    assert "console.tailscale.com" not in screen_html
 
 
 def test_single_use_key_recovery_and_dom_up_restarts_sub_server(tmp_path: Path, monkeypatch) -> None:
@@ -372,4 +365,64 @@ def test_static_tarball_fallback_installs_into_usr_local_bin_when_apt_fails(tmp_
     assert str(tsd_bin) in unit_path.read_text(encoding="utf-8")
     assert state["installed"] is True
     assert state["version"] == "1.104.6"
+
+
+def test_serve_fallback_surfaces_one_click_https_url_and_autopilot_finishes_subs(tmp_path: Path, monkeypatch) -> None:
+    agent = load_agent()
+    serve_link = "https://login.tailscale.com/f/serve?node=nkAY4t2J6711CNTRL"
+    autofinish_calls: list[tuple[str, int, int]] = []
+
+    def fake_run_host(argv, timeout=180, stdin_bytes=None):
+        if len(argv) > 1 and argv[1] == "status":
+            return 0, json.dumps(
+                {
+                    "BackendState": "Running",
+                    "HaveNodeKey": True,
+                    "Self": {
+                        "DNSName": "resolute.tail1234.ts.net.",
+                        "Expired": False,
+                        "KeyExpiry": "2027-05-10T00:00:00Z",
+                    },
+                }
+            )
+        if len(argv) > 1 and argv[1] == "version":
+            return 0, "1.104.6"
+        return 0, ""
+
+    def fake_run_funnel(argv, timeout=30):
+        if "funnel" in argv:
+            return 1, "HTTPS must be enabled in the admin panel to use Funnel."
+        if "serve" in argv:
+            return 1, "Serve is not enabled on your tailnet.\nTo enable, visit:\n  " + serve_link
+        return 0, ""
+
+    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/bin/tailscale")
+    monkeypatch.setattr(agent, "run_host", fake_run_host)
+    monkeypatch.setattr(agent, "run_funnel", fake_run_funnel)
+    monkeypatch.setattr(agent, "start_funnel_autofinish", lambda f, hp, p: autofinish_calls.append((f, hp, p)))
+
+    with pytest.raises(agent.ScriptError) as err_info:
+        agent.cmd_tunnel_up({"key": "", "hostname": "", "port": "24567", "https_port": "8443"}, [])
+
+    assert err_info.value.code == "funnel_disabled"
+    assert err_info.value.data["approval_url"] == serve_link
+    assert err_info.value.data["step"] == "serve"
+    assert autofinish_calls == [("/usr/bin/tailscale", 8443, 24567)]
+
+    bot = make_bot(tmp_path)
+    bot.state.language = "ru"
+    panel = XrayPanel(bot, bot.control)
+    err_note = panel.handle_tunnel_error(RpcError("serve disabled", "funnel_disabled", err_info.value.data))
+    assert err_note == i18n.t("TAILSCALE_SERVE_ENABLE_NOTE", "ru")
+    rendered_html = xscreens.subs_screen(panel.view(error=err_note), panel.sub_rows()).to_html()
+    assert rendered_html.count(err_note) == 1
+    assert serve_link in rendered_html
+
+    run(panel.refresh_tunnel_meta())
+    assert bot.state.xray.tunnel_enabled is True
+    assert bot.state.xray.sub_enabled is True
+    assert bot.state.xray.tunnel_approval_url == ""
+    ready_html = xscreens.subs_screen(panel.view(), panel.sub_rows()).to_html()
+    assert "ts.net" in ready_html
+
 

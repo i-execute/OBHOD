@@ -796,10 +796,13 @@ class Bot:
             return t("UPD_NOTICE_VERIFIED", commit=commit, state=state)
         return t("UPD_NOTICE_BROKEN", commit=commit)
 
-    async def send(self, chat_id: int, rich: object) -> None:
+    async def send(self, chat_id: int, rich: object) -> int:
         if self.app is None:
-            return
-        await self.app.send_rich(chat_id, rich, via="mt")
+            return 0
+        res = await self.app.send_rich(chat_id, rich, via="mt")
+        if isinstance(res, dict):
+            return int(res.get("id") or res.get("msg_id") or 0)
+        return int(getattr(res, "id", 0) or getattr(res, "msg_id", 0) or 0)
 
     async def send_progress(self, chat_id: int, rich: object) -> int:
         if "send" in self.__dict__:

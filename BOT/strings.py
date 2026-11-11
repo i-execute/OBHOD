@@ -43,7 +43,7 @@ class EN:
     NAV_SETTINGS = "Settings"
     NAV_SSH = "SSH access"
     NAV_SSHD = "SSH daemon"
-    XR_SUBS_NO_DOMAIN = "paste a Tailscale Auth key (tskey-auth-xxxx, not an API token) or the full install command from Add Linux server directly into this chat (or via the button below) to connect Tailscale Funnel and create your HTTPS subscription URL"
+    XR_SUBS_NO_DOMAIN = "send the install script from Tailscale Add Linux server (or a tskey-auth-xxxx key) right into this chat - the bot will install Tailscale, authorize the server, and bring up the subscription automatically"
     NAV_DOMAIN = "Tailscale"
     NAV_SUBS = "Subscriptions"
     NAV_XRAY = "Xray"
@@ -1410,16 +1410,14 @@ class EN:
     TAILNET_EXPIRY_DAYS = "{date} ({days}d)"
     TAILNET_EXPIRED = "expired"
     TAILNET_EXPIRED_NOTE = "the Tailscale node key expired, paste a new tskey-auth-xxxx key or install command (or assign a tag / disable key expiry in Tailscale console)"
-    TAILSCALE_FUNNEL_ENABLE_NOTE = "Tailscale connected the server, but Funnel / HTTPS is not enabled yet: approve Funnel via the button below (or enable HTTPS in DNS and Funnel in Access Controls), then press Bring it up"
-    TAILSCALE_APPROVE_BTN = "Approve Funnel"
-    TAILSCALE_CONSOLE_BTN = "Tailscale console"
+    TAILSCALE_FUNNEL_ENABLE_NOTE = "Server authorized in Tailscale. Tap the button below once to allow Funnel - the bot is waiting in the background and will finish bringing up your subscription automatically"
+    TAILSCALE_SERVE_ENABLE_NOTE = "Server authorized in Tailscale. Tap the button below once to enable HTTPS certificates - the bot is waiting in the background and will finish bringing up your subscription automatically"
+    TAILSCALE_DNS_ENABLE_NOTE = "Server authorized in Tailscale. Tap the button below and turn on Enable MagicDNS and Enable HTTPS on the DNS page - the bot will pick up the domain and start your subscription automatically"
+    TAILSCALE_APPROVE_BTN = "Allow in Tailscale"
+    TAILSCALE_CONSOLE_BTN = "Get Tailscale script"
     TAILSCALE_TAGS_ROW = "tags"
-    TS_GUIDE_TITLE = "How to connect Tailscale and get an Auth key"
-    TS_GUIDE_INTRO = 'Open <a href="https://console.tailscale.com/admin/machines/new-linux">Add Linux server</a> (or <a href="https://console.tailscale.com/admin/settings/keys">Settings - Keys</a>), copy the full <code>curl -fsSL https://tailscale.com/install.sh | sh &amp;&amp; sudo tailscale up --auth-key=tskey-auth-xxxx</code> command or just <code>tskey-auth-xxxx</code> (not an API token <code>tskey-api-xxxx</code>), and send it to this chat or tap the button below.'
-    TS_GUIDE_TAGS = '<b>Tags</b> (<code>--advertise-tags</code>): <a href="https://tailscale.com/docs/features/tags">tags docs</a> · <a href="https://console.tailscale.com/admin/acls/visual/tags">manage tags in Access Controls</a> - tagging a server disables node key expiry.'
-    TS_GUIDE_DEVICE = '<b>Ephemeral &amp; Exit node</b>: keep <a href="https://tailscale.com/docs/features/ephemeral-nodes">Ephemeral</a> off for a permanent server; <a href="https://tailscale.com/docs/features/exit-nodes">Use as exit node</a> (<code>--advertise-exit-node</code>) is optional and supported.'
-    TS_GUIDE_AUTH_KEY = '<b>Auth key &amp; OAuth</b>: <a href="https://tailscale.com/docs/features/access-control/auth-keys#types-of-auth-keys">Reusable</a> lets one key register multiple nodes; <a href="https://tailscale.com/docs/features/access-control/auth-keys#key-expiry">key expiration (1-90 days)</a> applies only to the key itself, not the connected server; for continuous automation use an <a href="https://console.tailscale.com/admin/settings/oauth">OAuth client</a> (<code>tskey-client-xxxx</code>).'
-    TS_GUIDE_FUNNEL = '<b>Public HTTPS Funnel</b>: enable MagicDNS + HTTPS Certificates in <a href="https://console.tailscale.com/admin/dns">DNS</a> and Funnel in <a href="https://console.tailscale.com/admin/acls">Access Controls</a> (<a href="https://tailscale.com/docs/features/tailscale-funnel">Funnel docs</a>).'
+    TS_GUIDE_TITLE = "Quick setup via Tailscale script"
+    TS_GUIDE_INTRO = 'Tap the button below to open <b>Add Linux server</b> in Tailscale, generate the install script with <code>tskey-auth-xxxx</code>, and paste the whole command directly into this chat - everything else runs automatically.'
     XR_ENC_TITLE = "vless encryption"
     XR_ENC_SUBTITLE = "six kinds, like 3x-ui"
     XR_ENC_HANDSHAKE = "handshake"
@@ -1691,7 +1689,7 @@ class RU:
     NAV_SETTINGS = "Настройки"
     NAV_SSH = "SSH доступ"
     NAV_SSHD = "SSH демон"
-    XR_SUBS_NO_DOMAIN = "вставь Auth-ключ Tailscale (tskey-auth-xxxx, не API-токен) или готовую команду установки из Add Linux server прямо в этот чат (либо через кнопку ниже): поднимется Tailscale Funnel и HTTPS-ссылка подписки"
+    XR_SUBS_NO_DOMAIN = "отправь прямо в этот чат готовый скрипт установки из Add Linux server (или ключ tskey-auth-xxxx) - бот сам установит Tailscale, авторизует сервер и автоматически поднимет подписку"
     NAV_DOMAIN = "Tailscale"
     NAV_SUBS = "Подписки"
     NAV_XRAY = "Xray"
@@ -3022,16 +3020,14 @@ class RU:
     TAILNET_EXPIRY_DAYS = "{date} ({days} дн.)"
     TAILNET_EXPIRED = "истёк"
     TAILNET_EXPIRED_NOTE = "срок ключа узла Tailscale истёк, вставь новый tskey-auth-xxxx или команду установки (либо назначь тег / отключи истечение в консоли Tailscale)"
-    TAILSCALE_FUNNEL_ENABLE_NOTE = "Узел Tailscale подключён, но Funnel / HTTPS ещё не включены: подтверди включение Funnel по кнопке ниже (или включи HTTPS в DNS и Funnel в Access Controls), затем нажми «Поднять»"
-    TAILSCALE_APPROVE_BTN = "Подтвердить Funnel"
-    TAILSCALE_CONSOLE_BTN = "Консоль Tailscale"
+    TAILSCALE_FUNNEL_ENABLE_NOTE = "Сервер авторизован в Tailscale. Нажми кнопку ниже и подтверди разрешение Funnel в 1 клик - бот ждёт в фоне и сам автоматически поднимет подписку без лишних действий"
+    TAILSCALE_SERVE_ENABLE_NOTE = "Сервер авторизован в Tailscale. Нажми кнопку ниже и подтверди включение HTTPS-сертификатов в 1 клик - бот ждёт в фоне и сам автоматически завершит запуск подписки"
+    TAILSCALE_DNS_ENABLE_NOTE = "Сервер авторизован в Tailscale. Открой кнопку ниже и включи Enable MagicDNS и кнопку Enable HTTPS внизу страницы - бот в фоне сам подхватит домен и запустит подписку"
+    TAILSCALE_APPROVE_BTN = "Разрешить в Tailscale"
+    TAILSCALE_CONSOLE_BTN = "Получить скрипт Tailscale"
     TAILSCALE_TAGS_ROW = "теги"
-    TS_GUIDE_TITLE = "Как подключить Tailscale и получить Auth-ключ"
-    TS_GUIDE_INTRO = 'Откройте <a href="https://console.tailscale.com/admin/machines/new-linux">Add Linux server</a> (или <a href="https://console.tailscale.com/admin/settings/keys">Settings - Keys</a>), скопируйте полную команду <code>curl -fsSL https://tailscale.com/install.sh | sh &amp;&amp; sudo tailscale up --auth-key=tskey-auth-xxxx</code> или сам ключ <code>tskey-auth-xxxx</code> (не API-токен <code>tskey-api-xxxx</code>) и отправьте прямо в этот чат либо нажмите кнопку ниже.'
-    TS_GUIDE_TAGS = '<b>Tags</b> (<code>--advertise-tags</code>): <a href="https://tailscale.com/docs/features/tags">документация по тегам</a> · <a href="https://console.tailscale.com/admin/acls/visual/tags">управление тегами в Access Controls</a> - назначение тега отключает истечение ключа узла.'
-    TS_GUIDE_DEVICE = '<b>Ephemeral и Exit node</b>: оставьте <a href="https://tailscale.com/docs/features/ephemeral-nodes">Ephemeral</a> выключенным для постоянного сервера; <a href="https://tailscale.com/docs/features/exit-nodes">Use as exit node</a> (<code>--advertise-exit-node</code>) поддерживается по желанию.'
-    TS_GUIDE_AUTH_KEY = '<b>Auth key и OAuth</b>: <a href="https://tailscale.com/docs/features/access-control/auth-keys#types-of-auth-keys">Reusable</a> позволяет подключать несколько узлов одним ключом; <a href="https://tailscale.com/docs/features/access-control/auth-keys#key-expiry">срок действия (1-90 дней)</a> относится только к самому ключу, а не к уже подключённому серверу; для постоянной автоматизации есть <a href="https://console.tailscale.com/admin/settings/oauth">OAuth client</a> (<code>tskey-client-xxxx</code>).'
-    TS_GUIDE_FUNNEL = '<b>Публичный HTTPS Funnel</b>: включите MagicDNS + HTTPS Certificates в <a href="https://console.tailscale.com/admin/dns">DNS</a> и Funnel в <a href="https://console.tailscale.com/admin/acls">Access Controls</a> (<a href="https://tailscale.com/docs/features/tailscale-funnel">документация Funnel</a>).'
+    TS_GUIDE_TITLE = "Автоустановка по скрипту Tailscale"
+    TS_GUIDE_INTRO = 'Открой кнопку ниже (<b>Add Linux server</b>), сгенерируй скрипт установки с ключом <code>tskey-auth-xxxx</code> и просто отправь всю команду целиком в этот чат - остальное бот сделает сам.'
     XR_ENC_TITLE = "шифрование vless"
     XR_ENC_SUBTITLE = "шесть видов, как в 3x-ui"
     XR_ENC_HANDSHAKE = "рукопожатие"
@@ -3303,7 +3299,7 @@ class ZH:
     NAV_SETTINGS = "设置"
     NAV_SSH = "SSH 访问"
     NAV_SSHD = "SSH 服务"
-    XR_SUBS_NO_DOMAIN = "请直接在本对话粘贴 Tailscale 认证密钥 (tskey-auth-xxxx, 请勿使用 API 令牌) 或来自 Add Linux server 的完整安装命令 (或点击下方按钮), 即可连接 Tailscale Funnel 并创建 HTTPS 订阅链接"
+    XR_SUBS_NO_DOMAIN = "直接将 Tailscale Add Linux server 生成的完整安装脚本 (或 tskey-auth-xxxx 密钥) 粘贴发送到本对话 - 机器人将自动安装 Tailscale、授权服务器并启动订阅服务"
     NAV_DOMAIN = "Tailscale 域名"
     NAV_SUBS = "订阅"
     NAV_XRAY = "Xray"
@@ -4633,16 +4629,14 @@ class ZH:
     TAILNET_EXPIRY_DAYS = "{date} ({days} 天)"
     TAILNET_EXPIRED = "已过期"
     TAILNET_EXPIRED_NOTE = "Tailscale 节点密钥已过期, 请粘贴新的 tskey-auth-xxxx 密钥或安装命令 (或在 Tailscale 控制台分配标签 / 禁用过期)"
-    TAILSCALE_FUNNEL_ENABLE_NOTE = "Tailscale 节点已连接, 但尚未启用 Funnel / HTTPS: 请点击下方按钮批准启用 Funnel (或在 DNS 开启 HTTPS 并在 Access Controls 允许 Funnel), 然后点击启动"
-    TAILSCALE_APPROVE_BTN = "批准启用 Funnel"
-    TAILSCALE_CONSOLE_BTN = "打开 Tailscale 控制台"
+    TAILSCALE_FUNNEL_ENABLE_NOTE = "服务器已在 Tailscale 完成授权。请点击下方按钮一键允许 Funnel - 机器人在后台自动等待, 确认后将自动启动订阅而无需再次操作"
+    TAILSCALE_SERVE_ENABLE_NOTE = "服务器已在 Tailscale 完成授权。请点击下方按钮一键开启 HTTPS 证书 - 机器人在后台自动等待, 确认后将自动完成订阅启动"
+    TAILSCALE_DNS_ENABLE_NOTE = "服务器已在 Tailscale 完成授权。请点击下方按钮并在 DNS 页面开启 Enable MagicDNS 与页面底部的 Enable HTTPS - 机器人将在后台自动检测域名并启动订阅"
+    TAILSCALE_APPROVE_BTN = "在 Tailscale 批准启用"
+    TAILSCALE_CONSOLE_BTN = "获取 Tailscale 安装脚本"
     TAILSCALE_TAGS_ROW = "标签"
-    TS_GUIDE_TITLE = "如何配置 Tailscale 并获取认证密钥"
-    TS_GUIDE_INTRO = '打开 <a href="https://console.tailscale.com/admin/machines/new-linux">Add Linux server</a> (或 <a href="https://console.tailscale.com/admin/settings/keys">Settings - Keys</a>), 复制完整的 <code>curl -fsSL https://tailscale.com/install.sh | sh &amp;&amp; sudo tailscale up --auth-key=tskey-auth-xxxx</code> 安装命令或单独的 <code>tskey-auth-xxxx</code> (请勿使用 API 令牌 <code>tskey-api-xxxx</code>), 直接发送到本对话或点击下方按钮输入。'
-    TS_GUIDE_TAGS = '<b>Tags</b> (<code>--advertise-tags</code>): <a href="https://tailscale.com/docs/features/tags">标签文档</a> · <a href="https://console.tailscale.com/admin/acls/visual/tags">在 Access Controls 管理标签</a> - 为服务器添加标签可永久禁用节点密钥过期。'
-    TS_GUIDE_DEVICE = '<b>Ephemeral 与 Exit node</b>: 长期运行的服务器请保持 <a href="https://tailscale.com/docs/features/ephemeral-nodes">Ephemeral</a> 关闭; <a href="https://tailscale.com/docs/features/exit-nodes">Use as exit node</a> (<code>--advertise-exit-node</code>) 可按需启用。'
-    TS_GUIDE_AUTH_KEY = '<b>Auth key 与 OAuth</b>: <a href="https://tailscale.com/docs/features/access-control/auth-keys#types-of-auth-keys">Reusable</a> 允许同一密钥注册多台设备; <a href="https://tailscale.com/docs/features/access-control/auth-keys#key-expiry">密钥有效期 (1-90 天)</a> 仅限制密钥本身而不影响已连接服务器; 持续自动化可使用 <a href="https://console.tailscale.com/admin/settings/oauth">OAuth client</a> (<code>tskey-client-xxxx</code>)。'
-    TS_GUIDE_FUNNEL = '<b>公网 HTTPS Funnel</b>: 请在 <a href="https://console.tailscale.com/admin/dns">DNS</a> 开启 MagicDNS 与 HTTPS 证书, 并在 <a href="https://console.tailscale.com/admin/acls">Access Controls</a> 允许 Funnel (<a href="https://tailscale.com/docs/features/tailscale-funnel">Funnel 文档</a>)。'
+    TS_GUIDE_TITLE = "通过 Tailscale 脚本自动部署"
+    TS_GUIDE_INTRO = '点击下方按钮打开 Tailscale <b>Add Linux server</b>, 生成包含 <code>tskey-auth-xxxx</code> 的安装脚本并完整粘贴到本对话 - 其余配置均由机器人自动完成。'
     XR_ENC_TITLE = "vless 加密"
     XR_ENC_SUBTITLE = "六种类型, 与 3x-ui 一致"
     XR_ENC_HANDSHAKE = "握手"

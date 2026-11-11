@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import os
@@ -104,6 +105,8 @@ class XrayPanel:
         self.tunnel_exit_node: bool = bool(bot.state.xray.tunnel_exit_node)
         self.tunnel_tags: str = str(bot.state.xray.tunnel_tags or "")
         self.tunnel_host_hint: str = ""
+        self.pending_funnel_port: int = 0
+        self.funnel_watch_task: asyncio.Task[None] | None = None
         self.tunnel_key = self.load_tunnel_key()
 
     @property
@@ -177,8 +180,9 @@ class XrayPanel:
     async def render(self, chat_id: int, msg_id: int, rich: Any) -> None:
         await self.bot.render(chat_id, msg_id, rich)
 
-    async def send(self, chat_id: int, rich: Any) -> None:
-        await self.bot.send(chat_id, rich)
+    async def send(self, chat_id: int, rich: Any) -> int:
+        res = await self.bot.send(chat_id, rich)
+        return int(res) if isinstance(res, int) else 0
 
     def address(self) -> str:
         return self.bot.address()
@@ -527,6 +531,60 @@ class XrayPanel:
             kwargs["tags"] = self.tunnel_tags
         return await self.control.tunnel_up(self.bot.state.ssh, key, host_hint, port, **kwargs)
 
+    def approval_note_for(self, url: str = "", step: str = "") -> str:
+        t = self.tr()
+        low = str(url or "").lower()
+        if step == "serve" or "/f/serve" in low:
+            return t("TAILSCALE_SERVE_ENABLE_NOTE")
+        if step == "dns" or "/admin/dns" in low:
+            return t("TAILSCALE_DNS_ENABLE_NOTE")
+        return t("TAILSCALE_FUNNEL_ENABLE_NOTE")
+
+    def stop_funnel_autopilot(self) -> None:
+        task = self.funnel_watch_task
+        self.funnel_watch_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def start_funnel_autopilot(self, chat_id: int, msg_id: int, port: int, https_port: int = 0) -> None:
+        self.stop_funnel_autopilot()
+        if getattr(self.bot, "app", None) is None or msg_id <= 0 or not self.state.tunnel_approval_url:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self.funnel_watch_task = loop.create_task(self.watch_funnel_until_ready(chat_id, msg_id, port, https_port))
+
+    async def watch_funnel_until_ready(self, chat_id: int, msg_id: int, port: int, https_port: int = 0) -> None:
+        chosen_https = int(https_port or self.pending_funnel_port or random_funnel_port())
+        for step_idx in range(85):
+            await asyncio.sleep(3.5)
+            if self.state.tunnel_enabled:
+                return
+            try:
+                tunnel = await self.control.tunnel_status(self.bot.state.ssh)
+            except (RpcError, OSError):
+                tunnel = None
+            if tunnel is not None and getattr(tunnel, "url", ""):
+                ready_notice, err = await self.finalize_tunnel_subs(tunnel, port)
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
+                return
+            if step_idx % 3 == 2:
+                prev_url = self.state.tunnel_approval_url
+                try:
+                    up_tunnel = await self.call_tunnel_up("", self.tunnel_host_hint, port, chosen_https)
+                except RpcError as exc:
+                    err_msg = self.handle_tunnel_error(exc)
+                    if self.state.tunnel_approval_url and self.state.tunnel_approval_url != prev_url:
+                        await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=err_msg), self.sub_rows()))
+                    continue
+                except OSError:
+                    continue
+                ready_notice, err = await self.finalize_tunnel_subs(up_tunnel, port)
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
+                return
+
     def handle_tunnel_error(self, exc: RpcError) -> str:
         t = self.tr()
         code_name = str(getattr(exc, "code", "") or "")
@@ -547,9 +605,12 @@ class XrayPanel:
             self.state.tunnel_enabled = False
             self.state.tunnel_backend = "Running"
             self.state.tunnel_approval_url = str(meta.get("approval_url", "") or "")[:200]
+            hp = int(meta.get("https_port", 0) or 0)
+            if hp:
+                self.pending_funnel_port = hp
             self.adopt_public_ip(meta.get("public_ip", ""))
             self.save()
-            return t("TAILSCALE_FUNNEL_ENABLE_NOTE")
+            return self.approval_note_for(self.state.tunnel_approval_url, str(meta.get("step", "") or ""))
         return exc.message
 
     async def finalize_tunnel_subs(self, tunnel: Any, port: int, raw_host: str = "") -> tuple[str, str]:
@@ -563,9 +624,11 @@ class XrayPanel:
                 domain = candidate
         if not domain:
             return "", t("DOM_REQUIRED")
+        self.stop_funnel_autopilot()
         self.state.tunnel_host = domain
         self.state.tunnel_enabled = True
         self.state.tunnel_approval_url = ""
+        self.pending_funnel_port = 0
         self.sync_tunnel_meta(tunnel)
         if not self.state.tunnel_backend:
             self.state.tunnel_backend = "Running"
@@ -583,13 +646,25 @@ class XrayPanel:
         return t("DOM_READY"), ""
 
     async def refresh_tunnel_meta(self) -> None:
-        if not self.state.tunnel_enabled and not self.state.tunnel_host:
+        if not (
+            self.state.tunnel_enabled
+            or self.state.tunnel_host
+            or self.state.tunnel_key_expiry
+            or self.state.tunnel_approval_url
+        ):
             return
         try:
             tunnel = await self.control.tunnel_status(self.bot.state.ssh)
         except (RpcError, OSError):
             return
         self.sync_tunnel_meta(tunnel)
+        if not self.state.tunnel_enabled and getattr(tunnel, "url", ""):
+            port = int(self.state.sub_port or 0)
+            if port in {0, 80, 443}:
+                port = self.ensure_random_sub_port()
+            self.bot.state.sub_port = port
+            await self.finalize_tunnel_subs(tunnel, port)
+            return
         self.save()
 
     async def setup_domain_subs(self) -> tuple[str, str]:
@@ -600,7 +675,8 @@ class XrayPanel:
         if raw_host and not TUNNEL_HOST_RE.match(raw_host):
             return "", t("DOM_HOST_BAD")
         host_hint = raw_host.split(":", 1)[0] if raw_host else self.tunnel_host_hint
-        funnel_port = random_funnel_port()
+        funnel_port = self.pending_funnel_port or random_funnel_port()
+        self.pending_funnel_port = funnel_port
         try:
             tunnel = await self.call_tunnel_up(self.tunnel_key, host_hint, port, funnel_port)
         except RpcError as exc:
@@ -633,16 +709,21 @@ class XrayPanel:
             self.bot.state.sub_port = port
             key_arg = "" if has_live_node else self.tunnel_key
             host_arg = raw_host or self.tunnel_host_hint
+            funnel_port = self.pending_funnel_port or random_funnel_port()
+            self.pending_funnel_port = funnel_port
             try:
-                tunnel = await self.call_tunnel_up(key_arg, host_arg, port, random_funnel_port())
+                tunnel = await self.call_tunnel_up(key_arg, host_arg, port, funnel_port)
             except RpcError as exc:
                 err_msg = self.handle_tunnel_error(exc)
                 await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=err_msg), self.sub_rows()))
+                if self.state.tunnel_approval_url:
+                    self.start_funnel_autopilot(chat_id, msg_id, port, self.pending_funnel_port)
                 return
             ready_notice, err = await self.finalize_tunnel_subs(tunnel, port, raw_host)
             await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
             return
         elif action == "off":
+            self.stop_funnel_autopilot()
             try:
                 tunnel = await self.control.tunnel_down(self.bot.state.ssh)
             except RpcError as exc:
@@ -808,6 +889,27 @@ class XrayPanel:
         if not action:
             await self.refresh_traffic()
             await self.refresh_tunnel_meta()
+            if not self.state.tunnel_enabled and self.state.tunnel_approval_url and not self.state.tunnel_expired:
+                port = int(self.state.sub_port or 0)
+                if port in {0, 80, 443}:
+                    port = self.ensure_random_sub_port()
+                self.bot.state.sub_port = port
+                funnel_port = self.pending_funnel_port or random_funnel_port()
+                self.pending_funnel_port = funnel_port
+                try:
+                    up_tunnel = await self.call_tunnel_up("", self.tunnel_host_hint, port, funnel_port)
+                except RpcError as exc:
+                    err_msg = self.handle_tunnel_error(exc)
+                    await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=err_msg), self.sub_rows()))
+                    if self.state.tunnel_approval_url:
+                        self.start_funnel_autopilot(chat_id, msg_id, port, self.pending_funnel_port)
+                    return
+                except OSError:
+                    pass
+                else:
+                    ready_notice, err = await self.finalize_tunnel_subs(up_tunnel, port)
+                    await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
+                    return
             await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
             return
         if action == "apply":
@@ -1497,6 +1599,7 @@ class XrayPanel:
         self.save()
         if ident == "xr_tunnel_key":
             if not (value or "").strip():
+                self.stop_funnel_autopilot()
                 if self.state.tunnel_enabled:
                     try:
                         await self.control.tunnel_down(self.bot.state.ssh)
@@ -1522,7 +1625,9 @@ class XrayPanel:
                 if callable(drop):
                     await drop(chat_id, busy_id)
             shown_notice = "" if err else (ready_notice or notice)
-            await self.send(chat_id, xscreens.subs_screen(self.view(notice=shown_notice, error=err), self.sub_rows()))
+            sent_id = await self.send(chat_id, xscreens.subs_screen(self.view(notice=shown_notice, error=err), self.sub_rows()))
+            if err and self.state.tunnel_approval_url and sent_id > 0:
+                self.start_funnel_autopilot(chat_id, sent_id, int(self.state.sub_port or 0), self.pending_funnel_port)
             return
         await self.send(chat_id, await self.screen_for(ident, ctx, notice))
 

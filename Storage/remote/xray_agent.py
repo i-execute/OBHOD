@@ -1320,20 +1320,17 @@ TUNNEL_API_KEY_RE = re.compile(r"(tskey-api-[A-Za-z0-9_-]{6,160})")
 TUNNEL_TAGS_FLAG_RE = re.compile(r"--advertise-tags(?:=|\s+)['\"]?([A-Za-z0-9_:,.-]+)['\"]?")
 TUNNEL_TAG_ITEM_RE = re.compile(r"^tag:[A-Za-z0-9_-]{1,48}$")
 TUNNEL_HOST_FLAG_RE = re.compile(r"--hostname(?:=|\s+)['\"]?([A-Za-z0-9][A-Za-z0-9-]{0,61})['\"]?")
-APPROVAL_URL_RE = re.compile(r"https://login\.tailscale\.com/[^\s\"'<>]+")
+APPROVAL_URL_RE = re.compile(r"https://(?:login|console)\.tailscale\.com/[^\s\"'<>]+")
 TUNNEL_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 TUNNEL_FQDN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9-]{1,63}){1,4}(?::[0-9]{2,5})?$")
 TUNNEL_CODENAME_RE = re.compile(r"^[a-z]{2,16}$")
 TUNNEL_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+\.ts\.net(?::[0-9]{2,5})?")
 TUNNEL_FUNNEL_PORTS = (8443, 10000)
 TAILSCALE_INSTALL_URL = "https://tailscale.com/install.sh"
+TAILSCALE_DNS_ADMIN_URL = "https://login.tailscale.com/admin/dns"
+AUTOFUNNEL_UNIT = "obhod-ts-autofunnel"
 FUNNEL_PROMPT_HINTS = (
-    "funnel is not enabled",
-    "https must be enabled",
-    "funnel not available",
-    "enable https",
-    "enable funnel",
-    "nodeattrs",
+    "to enable, visit",
 )
 
 
@@ -1850,6 +1847,74 @@ def cmd_tunnel_install(flags, rest):
     return tunnel_state(), None
 
 
+def stop_funnel_autofinish():
+    if run is not _ORIG_RUN:
+        return
+    if shutil.which("systemctl"):
+        subprocess.run(
+            ["systemctl", "stop", AUTOFUNNEL_UNIT],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+
+
+def start_funnel_autofinish(found, https_port, port):
+    if run is not _ORIG_RUN:
+        return
+    stop_funnel_autofinish()
+    loop_script = (
+        'ts="$1"; hp="$2"; lp="$3"; i=0; '
+        'while [ "$i" -lt 100 ]; do '
+        '"$ts" serve --bg --https="$hp" "http://127.0.0.1:$lp" >/dev/null 2>&1 || true; '
+        'if "$ts" funnel --bg --https="$hp" "http://127.0.0.1:$lp" >/dev/null 2>&1; then '
+        'if "$ts" funnel status 2>/dev/null | grep -q "ts\\.net"; then exit 0; fi; '
+        'fi; '
+        'i=$((i + 1)); sleep 3; '
+        'done'
+    )
+    shell_argv = ["/bin/sh", "-c", loop_script, "obhod-autofunnel", str(found), str(int(https_port)), str(int(port))]
+    systemd_bin = shutil.which("systemd-run")
+    if has_systemd() and systemd_bin:
+        cmd = [
+            systemd_bin,
+            "--quiet",
+            "--collect",
+            "--unit=" + AUTOFUNNEL_UNIT,
+            "-p",
+            "WorkingDirectory=/",
+            "-p",
+            "KillMode=control-group",
+            "-E",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "-E",
+            "HOME=/root",
+            "--",
+        ] + shell_argv
+        try:
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        subprocess.Popen(
+            shell_argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
 def cmd_tunnel_up(flags, rest):
     raw_key = str(flags.get("key", "") or "").strip()
     key = extract_tailnet_key(raw_key)
@@ -1878,6 +1943,7 @@ def cmd_tunnel_up(flags, rest):
         found = tunnel_binary()
     if not found:
         raise ScriptError("not_installed", "tailscale is not installed", "tunnel")
+    stop_funnel_autofinish()
     exit_node = str(flags.get("exit_node", "")) == "1" or "--advertise-exit-node" in raw_key
     if exit_node:
         enable_exit_node_forwarding()
@@ -1914,14 +1980,35 @@ def cmd_tunnel_up(flags, rest):
                 code, text = run_host(reconf + ["--reset"], timeout=120)
             if code != 0:
                 raise ScriptError("internal", "tailscale up failed: " + text[:300], "tunnel")
-    if run is _ORIG_RUN:
-        run_host([found, "funnel", "reset"], timeout=30)
-    code, text = run_funnel([found, "funnel", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port], timeout=30)
+        elif before.get("url"):
+            return before, None
+    code, text = run_funnel([found, "funnel", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port], timeout=65)
     if code != 0:
-        cur = tunnel_state(https_port)
         approval = APPROVAL_URL_RE.search(text or "")
+        if not approval and run is _ORIG_RUN:
+            _, serve_text = run_funnel(
+                [found, "serve", "--bg", "--https=%d" % https_port, "http://127.0.0.1:%d" % port],
+                timeout=15,
+            )
+            if serve_text:
+                serve_match = APPROVAL_URL_RE.search(serve_text)
+                if serve_match:
+                    approval = serve_match
+                    text = serve_text
+                elif not text:
+                    text = serve_text
+        cur = tunnel_state(https_port)
+        if cur.get("url"):
+            return cur, None
         low = (text or "").lower()
-        if approval or any(word in low for word in ("funnel", "https", "certificate", "policy", "nodeattrs", "enable")):
+        if approval or any(word in low for word in ("funnel", "https", "certificate", "policy", "nodeattrs", "enable", "serve", "dns")):
+            approval_link = approval.group(0)[:200] if approval else TAILSCALE_DNS_ADMIN_URL
+            step = "funnel"
+            if "/f/serve" in approval_link:
+                step = "serve"
+            elif not approval:
+                step = "dns"
+            start_funnel_autofinish(found, https_port, port)
             raise ScriptError(
                 "funnel_disabled",
                 (text or "tailscale funnel is not enabled in the admin console")[:320],
@@ -1931,20 +2018,22 @@ def cmd_tunnel_up(flags, rest):
                     "key_expiry": cur.get("key_expiry", ""),
                     "expired": bool(cur.get("expired", False)),
                     "have_node_key": bool(cur.get("have_node_key", False)),
-                    "approval_url": approval.group(0)[:200] if approval else "",
+                    "approval_url": approval_link,
+                    "step": step,
+                    "https_port": int(https_port),
                     "public_ip": cur.get("public_ip", ""),
                 },
             )
         raise ScriptError(
             "internal",
-            "the funnel did not start: " + (text or "")[:300] + " enable funnel in access controls and https certificates in dns",
+            "the funnel did not start: " + (text or "")[:300],
             "tunnel",
         )
     state = tunnel_state(https_port)
-    for _ in range(3):
+    for _ in range(5):
         if state["url"]:
             break
-        time.sleep(0.5)
+        time.sleep(0.6)
         state = tunnel_state(https_port)
     if not state["url"] and state["hostname"].endswith(".ts.net"):
         state["url"] = "https://%s:%d" % (state["hostname"], https_port)
@@ -1955,10 +2044,12 @@ def cmd_tunnel_up(flags, rest):
 
 
 def cmd_tunnel_down(flags, rest):
+    stop_funnel_autofinish()
     found = tunnel_binary()
     if not found:
         return tunnel_state(), None
     run_host([found, "funnel", "reset"], timeout=60)
+    run_host([found, "serve", "reset"], timeout=30)
     return tunnel_state(), None
 
 
