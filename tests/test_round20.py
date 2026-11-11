@@ -59,12 +59,26 @@ def install_scan_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | None 
             "mobile": False,
         }
 
-    def fake_ports(ip_addr: str, ports: tuple[int, ...] = ipscan.PROBE_PORTS, timeout: float = 1.0) -> list[tuple[int, int]]:
+    def fake_ports(ip_addr: str) -> dict[str, Any]:
         if calls is not None:
             calls.append("ports:" + ip_addr)
-        return [(80, 12), (443, 9)]
+        return {"open": [(80, "HTTP", 12), (443, "TLS", 9)], "best_ms": 9}
+
+    def fake_probe(ctx: str, deadline: float = 18.0) -> chebur.Live:
+        if calls is not None:
+            calls.append("probe:" + ctx)
+        return chebur.Live(
+            target="ya.ru",
+            online=2,
+            finished=True,
+            results=[
+                chebur.Probe(provider="MTS", region="Moscow", asn="AS8359", verdicts=["ok"]),
+                chebur.Probe(provider="RTK", region="SPb", asn="AS12389", verdicts=["tspu_block"], dpi_hop=6),
+            ],
+        )
 
     monkeypatch.setattr(chebur, "check", fake_chebur)
+    monkeypatch.setattr(chebur, "probe", fake_probe)
     monkeypatch.setattr(ipscan, "fetch_ip_api", fake_ip_api)
     monkeypatch.setattr(ipscan, "probe_ports", fake_ports)
 
@@ -106,7 +120,7 @@ def test_inline_with_valid_registered_hash_still_works(tmp_path: Path) -> None:
     assert evt.results[0]["id"] == f"i:{token}"
 
 
-def test_chosen_inline_result_immediately_upgrades_message_to_full_rich_report_mt_and_bot(
+def test_chosen_inline_result_waits_for_button_click_before_running_full_rich_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[str] = []
@@ -122,7 +136,10 @@ def test_chosen_inline_result_immediately_upgrades_message_to_full_rich_report_m
         inline_evt = FakeEvent(query="ya.ru", src="mt", from_id=7)
         run(bot.handle_inline(inline_evt))
         assert len(inline_evt.results) == 1
-        rid = inline_evt.results[0]["id"]
+        card0 = inline_evt.results[0]
+        rid = card0["id"]
+        assert card0["send_message"]["_"] == "inputBotInlineMessageRichMessage"
+        assert calls == []
 
         mt_msg_id = {"_": "inputBotInlineMessageID", "dc_id": 2, "id": 777 + idx, "access_hash": 123456789}
         chosen_mt = FakeEvent(
@@ -132,14 +149,31 @@ def test_chosen_inline_result_immediately_upgrades_message_to_full_rich_report_m
             msg_id=mt_msg_id,
             raw={"raw_update": {"_": "updateBotInlineSend", "user_id": 7, "id": rid, "query": "ya.ru", "msg_id": mt_msg_id}},
         )
+        run(bot.on_chosen(chosen_mt))
+        assert bot.app.mt_calls == []
+
+        cb_mt = FakeEvent(
+            src="mt",
+            update_type="updateInlineBotCallbackQuery",
+            chat_id=None,
+            msg_id=mt_msg_id,
+            from_id=7,
+            data="ipscan:run:ya.ru",
+            raw={"raw_update": {"_": "updateInlineBotCallbackQuery", "user_id": 7, "msg_id": mt_msg_id, "data": b"ipscan:run:ya.ru"}},
+        )
         use_icons(True)
         try:
-            run(bot.on_chosen(chosen_mt))
+            run(bot.on_callback(cb_mt))
         finally:
             use_icons(False)
 
-        assert len(bot.app.mt_calls) == 1
-        method, payload = bot.app.mt_calls[0]
+        assert len(bot.app.mt_calls) == 2
+        loading_method, loading_payload = bot.app.mt_calls[0]
+        assert loading_method == "messages.editInlineBotMessage"
+        assert i18n.t("IPSCAN_SCANNING_TITLE", lang) in loading_payload["rich_message"]["html"]
+        assert "reply_markup" not in loading_payload
+
+        method, payload = bot.app.mt_calls[1]
         assert method == "messages.editInlineBotMessage"
         assert payload["id"] == mt_msg_id
         assert payload["rich_message"]["_"] == "inputRichMessageHTML"
@@ -151,7 +185,10 @@ def test_chosen_inline_result_immediately_upgrades_message_to_full_rich_report_m
         assert "443" in html
         assert 'align="center"' in html
         assert "<tg-emoji" in html
-        assert "ipscan:run:ya.ru" in html
+        after_rows = payload["reply_markup"]["rows"]
+        assert len(after_rows) == 1 and len(after_rows[0]["buttons"]) == 1
+        assert after_rows[0]["buttons"][0]["type"]["_"] == "inlineButtonTypeSwitchInline"
+        calls.clear()
 
     packed_id = base64.urlsafe_b64encode(struct.pack("<iqq", 2, 5555, 987654321)).decode("ascii").rstrip("=")
     bot_dir = tmp_path / "bot_mode"
@@ -160,19 +197,26 @@ def test_chosen_inline_result_immediately_upgrades_message_to_full_rich_report_m
     bot2.app = FakeApp()
     bot2.app.bot = object()
     bot2.state.language = "ru"
-    chosen_bot = FakeEvent(
+    cb_bot = FakeEvent(
         src="bot",
-        update_type="chosen_inline_result",
+        update_type="callback_query",
+        chat_id=None,
+        msg_id=0,
         from_id=7,
         inline_message_id=packed_id,
-        raw={"chosen_inline_result": {"result_id": "ipscan:ya.ru", "from": {"id": 7}, "query": "ya.ru", "inline_message_id": packed_id}},
+        data="ipscan:run:ya.ru",
+        raw={"callback_query": {"id": "cb1", "from": {"id": 7}, "inline_message_id": packed_id, "data": "ipscan:run:ya.ru"}},
     )
-    run(bot2.on_chosen(chosen_bot))
-    assert len(bot2.app.bot_calls) == 1
-    b_method, b_payload = bot2.app.bot_calls[0]
+    run(bot2.on_callback(cb_bot))
+    assert len(bot2.app.bot_calls) == 2
+    assert i18n.t("IPSCAN_SCANNING_TITLE", "ru") in bot2.app.bot_calls[0][1]["rich_message"]["html"]
+    b_method, b_payload = bot2.app.bot_calls[1]
     assert b_method == "editMessageText"
     assert b_payload["inline_message_id"] == packed_id
     assert i18n.t("IPSCAN_REPORT_TITLE", "ru") in b_payload["rich_message"]["html"]
+    assert b_payload["reply_markup"]["inline_keyboard"] == [
+        [{"text": i18n.t("IPSCAN_BTN_OTHER", "ru"), "switch_inline_query_current_chat": ""}]
+    ]
 
 
 def test_clicking_start_scan_inline_button_runs_fresh_scan_and_edits_inline_message(

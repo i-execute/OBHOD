@@ -2,170 +2,145 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import html
-import ipaddress
 import json
+import secrets
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
 from . import chebur, i18n, inline, ui
 
-CACHE_TTL = 120.0
-ERR_CACHE_TTL = 5.0
-IP_API_FIELDS = (
-    "status,message,continent,country,countryCode,regionName,city,"
-    "timezone,isp,org,as,asname,reverse,mobile,proxy,hosting,query"
+IP_API_URL = "http://ip-api.com/json/{query}?fields=status,message,country,countryCode,regionName,city,timezone,isp,org,as,asname,reverse,mobile,proxy,hosting,query"
+IP_API_TIMEOUT = 3.5
+CHEBUR_SCAN_TIMEOUT = 8.0
+CHEBUR_PROBE_DEADLINE = 18.0
+PORT_PROBE_TIMEOUT = 1.1
+COMMON_PORTS: tuple[tuple[int, str], ...] = (
+    (22, "SSH"),
+    (80, "HTTP"),
+    (443, "TLS"),
+    (8443, "ALT-TLS"),
+    (2053, "CF-TLS"),
+    (2083, "CF-TLS"),
 )
-IP_API_URL = "http://ip-api.com/json/%s?fields=" + IP_API_FIELDS
-IP_API_SELF_URL = "http://ip-api.com/json/?fields=" + IP_API_FIELDS
-IP_API_TIMEOUT = 2.8
-CHEBUR_SCAN_TIMEOUT = 3.5
-PORT_PROBE_TIMEOUT = 1.0
-PROBE_PORTS = (22, 80, 443, 8080, 8443)
-_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
-
-def esc(value: Any) -> str:
-    return html.escape(str(value or ""))
+SELF_ALIASES = frozenset({"", "ip", "myip", "self", "me", "scan", "check"})
 
 
 def clear_cache() -> None:
-    _CACHE.clear()
+    return
 
 
-def safe_cb_target(raw: str) -> str:
-    token = "".join(ch for ch in str(raw or "").strip() if ord(ch) > 31 and ch not in "\r\n\t")
-    if not token:
-        return "self"
-    encoded = token.encode("utf-8")[:48]
-    return encoded.decode("utf-8", "ignore") or "self"
-
-
-def inline_keyboard_rows(cb_target: str, lang: str, rescan: bool = False) -> list[list[dict[str, Any]]]:
-    t = i18n.translator(lang)
-    btn_key = "IPSCAN_BTN_RESCAN" if rescan else "IPSCAN_BTN_START"
-    return [
-        [
-            {
-                "text": t(btn_key),
-                "callback_data": "ipscan:run:%s" % safe_cb_target(cb_target),
-            },
-            {
-                "text": t("IPSCAN_BTN_OTHER"),
-                "switch_inline_query_current_chat": "",
-            },
-        ]
-    ]
-
-
-def extract_target(raw: str) -> tuple[str, bool]:
-    text = str(raw or "").strip()
+def extract_candidate(raw_query: str) -> str:
+    text = str(raw_query or "").strip()
     if not text:
-        return "self", True
-    lowered = text.lower()
-    if lowered in {"ip", "self"}:
-        return "self", True
-    if lowered.startswith("ip "):
-        rest = text[3:].strip()
-        return (rest or "self"), True
-    return text, True
+        return "self"
+    parts = text.split()
+    first = parts[0]
+    low = first.lower()
+    if low in SELF_ALIASES:
+        if len(parts) >= 2:
+            return parts[1].strip()
+        return "self"
+    return first
 
 
 def resolve_ip(target: str) -> str:
     try:
-        return str(ipaddress.ip_address(target))
-    except ValueError:
-        pass
-    if "/" in target:
-        try:
-            net = ipaddress.ip_network(target, strict=False)
-            sample = net.network_address + (1 if net.num_addresses > 1 else 0)
-            return str(sample)
-        except ValueError:
-            return ""
-    if target.upper().startswith("AS"):
-        return ""
-    try:
-        infos = socket.getaddrinfo(target, None, socket.AF_INET, socket.SOCK_STREAM)
-        if infos:
-            return str(infos[0][4][0])
+        infos = socket.getaddrinfo(target, None, proto=socket.IPPROTO_TCP)
     except OSError:
         return ""
+    for family, _socktype, _proto, _canon, sockaddr in infos:
+        if family == socket.AF_INET and sockaddr:
+            return str(sockaddr[0])
+    for family, _socktype, _proto, _canon, sockaddr in infos:
+        if family == socket.AF_INET6 and sockaddr:
+            return str(sockaddr[0])
     return ""
 
 
-def fetch_ip_api(ip_addr: str, timeout: float = IP_API_TIMEOUT) -> dict[str, Any]:
-    url = (IP_API_URL % ip_addr) if ip_addr else IP_API_SELF_URL
+def fetch_ip_api(ip_or_host: str) -> dict[str, Any]:
+    encoded = urllib.parse.quote(str(ip_or_host or "").strip(), safe=":")
+    url = IP_API_URL.format(query=encoded)
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "obhod-ipscan/2", "Accept": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "obhod-ipscan/2.0",
+        },
+        method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read(65536)
-    except (urllib.error.URLError, OSError, ValueError):
+        with urllib.request.urlopen(req, timeout=IP_API_TIMEOUT) as resp:
+            raw = resp.read(32768)
+    except (urllib.error.URLError, TimeoutError, OSError):
         return {}
     try:
-        data = json.loads(raw.decode("utf-8", "replace"))
+        parsed = json.loads(raw.decode("utf-8", errors="replace"))
     except ValueError:
         return {}
-    if not isinstance(data, dict) or data.get("status") != "success":
+    if not isinstance(parsed, dict) or parsed.get("status") != "success":
         return {}
-    return data
+    return parsed
 
 
-def _probe_one_port(ip_addr: str, port: int, timeout: float) -> tuple[int, int] | None:
+def _probe_single_port(ip_addr: str, port: int) -> tuple[int, bool, int]:
     started = time.monotonic()
+    family = socket.AF_INET6 if ":" in ip_addr else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.settimeout(PORT_PROBE_TIMEOUT)
     try:
-        with socket.create_connection((ip_addr, int(port)), timeout=timeout):
-            elapsed = max(1, int(round((time.monotonic() - started) * 1000.0)))
-            return int(port), elapsed
+        sock.connect((ip_addr, port))
+        elapsed_ms = max(1, int(round((time.monotonic() - started) * 1000.0)))
+        return port, True, elapsed_ms
     except OSError:
+        return port, False, 0
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def probe_ports(ip_addr: str) -> dict[str, Any]:
+    if not ip_addr:
+        return {"open": [], "best_ms": 0}
+    open_list: list[tuple[int, str, int]] = []
+    best_ms = 0
+    label_map = dict(COMMON_PORTS)
+    with ThreadPoolExecutor(max_workers=len(COMMON_PORTS)) as pool:
+        futs = [pool.submit(_probe_single_port, ip_addr, port) for port, _ in COMMON_PORTS]
+        for fut in futs:
+            port, is_open, ms = fut.result()
+            if is_open:
+                open_list.append((port, label_map.get(port, ""), ms))
+                if best_ms == 0 or (ms > 0 and ms < best_ms):
+                    best_ms = ms
+    open_list.sort(key=lambda item: item[0])
+    return {"open": open_list, "best_ms": best_ms}
+
+
+def _safe_chebur(target: str) -> tuple[chebur.Registry | None, str]:
+    try:
+        return chebur.check(target, timeout=CHEBUR_SCAN_TIMEOUT), ""
+    except chebur.CheburError as exc:
+        return None, exc.code
+
+
+def _safe_chebur_live(reg: chebur.Registry | None, kind: str) -> chebur.Live | None:
+    ctx = getattr(reg, "context", "") if reg is not None else ""
+    if not ctx or not chebur.probe_supported(kind):
+        return None
+    try:
+        return chebur.probe(ctx, deadline=CHEBUR_PROBE_DEADLINE)
+    except Exception:
         return None
 
 
-def probe_ports(ip_addr: str, ports: tuple[int, ...] = PROBE_PORTS, timeout: float = PORT_PROBE_TIMEOUT) -> list[tuple[int, int]]:
-    if not ip_addr:
-        return []
-    try:
-        parsed = ipaddress.ip_address(ip_addr)
-    except ValueError:
-        return []
-    if not parsed.is_global:
-        return []
-    found: list[tuple[int, int]] = []
-    with ThreadPoolExecutor(max_workers=max(1, len(ports))) as pool:
-        futs = [pool.submit(_probe_one_port, ip_addr, port, timeout) for port in ports]
-        for fut in futs:
-            res = fut.result()
-            if res is not None:
-                found.append(res)
-    found.sort(key=lambda item: item[0])
-    return found
-
-
-def _safe_chebur(host: str) -> tuple[chebur.Registry | None, str]:
-    try:
-        return chebur.check(host, timeout=CHEBUR_SCAN_TIMEOUT), ""
-    except chebur.CheburError as exc:
-        if "429" in str(exc.message) or exc.code == "rate":
-            return None, "rate"
-        return None, "net"
-    except Exception:
-        return None, "net"
-
-
 def resolve_self_ip(default_target: str = "") -> tuple[str, str, dict[str, Any]]:
-    candidate = str(default_target or "").strip()
-    if candidate and candidate not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
-        try:
-            host, kind = chebur.clean_target(candidate)
-            return host, kind, {}
-        except chebur.CheburError:
-            pass
     self_meta = fetch_ip_api("")
     discovered = str(self_meta.get("query") or "").strip()
     if discovered:
@@ -174,22 +149,19 @@ def resolve_self_ip(default_target: str = "") -> tuple[str, str, dict[str, Any]]
             return host, kind, self_meta
         except chebur.CheburError:
             pass
+    candidate = str(default_target or "").strip()
+    if candidate and candidate not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
+        try:
+            host, kind = chebur.clean_target(candidate)
+            return host, kind, {}
+        except chebur.CheburError:
+            pass
     return "", "", {}
 
 
-def scan_sync(host: str, kind: str, force: bool = False, deep: bool = False) -> dict[str, Any]:
-    now = time.monotonic()
-    cached = None if force else _CACHE.get(host)
-    if cached and cached[0] > now:
-        entry = dict(cached[1])
-        if not deep or "ports" in entry:
-            return entry
-        ip_for_ports = str(entry.get("ip") or "")
-        entry["ports"] = probe_ports(ip_for_ports) if kind in ("ip", "domain") else []
-        _CACHE[host] = (cached[0], entry)
-        return entry
-
-    ip_addr = host if kind == "ip" else resolve_ip(host)
+def scan_sync(host: str, kind: str, force: bool = True, deep: bool = True) -> dict[str, Any]:
+    _ = force
+    ip_addr = host if kind == "ip" else (resolve_ip(host) if kind == "domain" else "")
     with ThreadPoolExecutor(max_workers=3) as pool:
         fut_reg = pool.submit(_safe_chebur, host)
         fut_meta = pool.submit(fetch_ip_api, ip_addr) if ip_addr else None
@@ -197,264 +169,503 @@ def scan_sync(host: str, kind: str, force: bool = False, deep: bool = False) -> 
         reg, reg_code = fut_reg.result()
         meta = fut_meta.result() if fut_meta is not None else {}
         ports = fut_ports.result() if fut_ports is not None else None
-
-    if not meta and reg is not None and reg.ips:
-        meta = fetch_ip_api(reg.ips[0])
-    shown_ip = host if kind in ("subnet", "asn") else str(meta.get("query") or ip_addr or (reg.ips[0] if reg and reg.ips else host))
+    reg_ips = list(getattr(reg, "ips", None) or []) if reg is not None else []
+    if not meta and reg_ips:
+        meta = fetch_ip_api(reg_ips[0])
+    shown_ip = str(meta.get("query") or ip_addr or (reg_ips[0] if reg_ips else "")).strip()
     if deep and ports is None:
-        ports = probe_ports(shown_ip) if kind in ("ip", "domain") else []
-
-    data: dict[str, Any] = {
+        if shown_ip and kind in ("ip", "domain"):
+            ports = probe_ports(shown_ip)
+        else:
+            ports = {"open": [], "best_ms": 0}
+    live = _safe_chebur_live(reg, kind) if deep else None
+    answer = chebur.Answer(target=host, registry=reg, live=live, at=time.time())
+    return {
         "target": host,
         "kind": kind,
         "ip": shown_ip,
         "registry": reg,
+        "live": live,
+        "answer": answer,
         "reg_code": reg_code,
         "meta": meta,
+        "ports": ports or {"open": [], "best_ms": 0},
     }
-    if ports is not None:
-        data["ports"] = ports
 
-    ttl = CACHE_TTL if (reg is not None or meta) else ERR_CACHE_TTL
-    _CACHE[host] = (now + ttl, data)
-    if len(_CACHE) > 256:
-        oldest = min(_CACHE, key=lambda key: _CACHE[key][0])
-        _CACHE.pop(oldest, None)
+
+def full_scan_sync(raw_target: str, default_target: str = "", force: bool = True) -> dict[str, Any]:
+    _ = force
+    candidate = extract_candidate(raw_target)
+    seed_meta: dict[str, Any] = {}
+    if candidate == "self":
+        host, kind, seed_meta = resolve_self_ip(default_target)
+        if not host:
+            return {
+                "target": "self",
+                "kind": "ip",
+                "ip": "",
+                "registry": None,
+                "live": None,
+                "answer": None,
+                "reg_code": "network",
+                "meta": {},
+                "ports": {"open": [], "best_ms": 0},
+            }
+    else:
+        try:
+            host, kind = chebur.clean_target(candidate)
+        except chebur.CheburError:
+            return {
+                "target": candidate[:64],
+                "kind": "bad",
+                "ip": "",
+                "registry": None,
+                "live": None,
+                "answer": None,
+                "reg_code": "bad",
+                "meta": {},
+                "ports": {"open": [], "best_ms": 0},
+            }
+    data = scan_sync(host, kind, force=True, deep=True)
+    if seed_meta and not data.get("meta"):
+        data["meta"] = seed_meta
+        if not data.get("ip"):
+            data["ip"] = str(seed_meta.get("query") or "")
     return data
 
 
-def full_scan_sync(raw_target: str, default_target: str = "", force: bool = False) -> dict[str, Any]:
-    candidate, _ = extract_target(raw_target)
-    if candidate == "self":
-        host, kind, pre_meta = resolve_self_ip(default_target)
-        if not host:
-            return {"target": default_target or "self", "kind": "unknown", "ip": "", "registry": None, "reg_code": "net", "meta": pre_meta, "ports": []}
-        return scan_sync(host, kind, force=force, deep=True)
-    try:
-        host, kind = chebur.clean_target(candidate)
-    except chebur.CheburError:
-        if default_target:
-            host2, kind2, _ = resolve_self_ip(default_target)
-            if host2:
-                return scan_sync(host2, kind2, force=force, deep=True)
-        return {"target": candidate[:64], "kind": "bad", "ip": "", "registry": None, "reg_code": "bad", "meta": {}, "ports": []}
-    return scan_sync(host, kind, force=force, deep=True)
-
-
-async def full_scan_async(raw_target: str, default_target: str = "", force: bool = False) -> dict[str, Any]:
+async def full_scan_async(raw_target: str, default_target: str = "", force: bool = True) -> dict[str, Any]:
     return await asyncio.to_thread(full_scan_sync, raw_target, default_target, force)
 
 
-def _cdn_list(reg: chebur.Registry | None) -> list[str]:
-    if reg is None or not reg.cdn:
+def _reg_blocked(reg: Any) -> bool:
+    if reg is None:
+        return False
+    if hasattr(reg, "blocked"):
+        return bool(reg.blocked)
+    return bool(getattr(reg, "rkn_blocked", False))
+
+
+def _reg_asn_and_org(reg: Any) -> tuple[str, str]:
+    if reg is None:
+        return "", ""
+    geo = getattr(reg, "geo", None)
+    asn = str((getattr(geo, "asn", "") if geo is not None else "") or getattr(reg, "asn", "") or "").strip()
+    org = str((getattr(geo, "organisation", "") if geo is not None else "") or getattr(reg, "as_org", "") or "").strip()
+    return asn, org
+
+
+def _reg_country(reg: Any) -> str:
+    if reg is None:
+        return ""
+    geo = getattr(reg, "geo", None)
+    return str((getattr(geo, "country", "") if geo is not None else "") or getattr(reg, "country", "") or "").strip()
+
+
+def _reg_reverse(reg: Any) -> str:
+    if reg is None:
+        return ""
+    rev = getattr(reg, "reverse", None)
+    if isinstance(rev, list):
+        return ", ".join(str(x) for x in rev[:3] if x)
+    return str(rev or "").strip()
+
+
+def _reg_cdn(reg: Any) -> str:
+    if reg is None:
+        return ""
+    cdn = getattr(reg, "cdn", None)
+    if isinstance(cdn, dict):
+        parts = [str(cdn.get(k) or "").strip() for k in ("provider", "name", "domain")]
+        return " ".join(p for p in parts if p).strip()
+    return str(cdn or "").strip()
+
+
+def _reg_complaints(reg: Any) -> tuple[int | None, int]:
+    if reg is None:
+        return None, 0
+    total_fn = getattr(reg, "complaint_total", None)
+    peak_fn = getattr(reg, "complaint_peak", None)
+    if callable(total_fn):
+        total = int(total_fn())
+        peak = int(peak_fn()) if callable(peak_fn) else 0
+        return total, peak
+    raw_total = getattr(reg, "complaints_total", None)
+    raw_peak = int(getattr(reg, "complaints_peak", 0) or 0)
+    return (int(raw_total) if raw_total is not None else None), raw_peak
+
+
+def _reg_subnets(reg: Any) -> list[str]:
+    if reg is None:
         return []
-    if isinstance(reg.cdn, dict):
-        return sorted(str(k) for k in reg.cdn.keys() if k)[:4]
-    return sorted(str(k) for k in reg.cdn if k)[:4]
+    subs = getattr(reg, "subnets", None)
+    if subs is None:
+        subs = getattr(reg, "rkn_subnets", None)
+    return [str(s) for s in (subs or []) if s]
 
 
-def format_card(data: dict[str, Any], lang: str) -> tuple[str, str, str]:
+def _format_asn(reg: Any, meta: dict[str, Any]) -> tuple[str, str]:
+    raw_as = str(meta.get("as") or "").strip()
+    as_num = ""
+    as_name = str(meta.get("asname") or "").strip()
+    if raw_as:
+        parts = raw_as.split(" ", 1)
+        as_num = parts[0].strip()
+        if len(parts) > 1 and not as_name:
+            as_name = parts[1].strip()
+    r_asn, r_org = _reg_asn_and_org(reg)
+    if not as_num and r_asn:
+        as_num = r_asn
+    if not as_name and r_org:
+        as_name = r_org
+    return as_num, as_name
+
+
+def _format_location(reg: Any, meta: dict[str, Any]) -> str:
+    country = str(meta.get("country") or "").strip()
+    cc = str(meta.get("countryCode") or _reg_country(reg) or "").strip()
+    region = str(meta.get("regionName") or "").strip()
+    city = str(meta.get("city") or "").strip()
+    loc_parts: list[str] = []
+    if country and cc:
+        loc_parts.append(f"{country} ({cc})")
+    elif country or cc:
+        loc_parts.append(country or cc)
+    if region and region != city:
+        loc_parts.append(region)
+    if city:
+        loc_parts.append(city)
+    if not loc_parts and reg is not None:
+        geo = getattr(reg, "geo", None)
+        geo_loc = str(getattr(geo, "location", "") or "").strip() if geo is not None else ""
+        if geo_loc:
+            loc_parts.append(geo_loc)
+    return ", ".join(loc_parts)
+
+
+def _format_rkn_status(reg: Any, reg_code: str, t: Any) -> tuple[str, bool, str]:
+    if reg is not None:
+        blocked = _reg_blocked(reg)
+        label = t("IPSCAN_BLOCKED") if blocked else t("IPSCAN_CLEAN")
+        extras: list[str] = []
+        comp_total, comp_peak = _reg_complaints(reg)
+        if comp_total is not None and (comp_total > 0 or getattr(reg, "complaints", None)):
+            extras.append(t("IPSCAN_COMPLAINTS", count=comp_total))
+        if comp_peak > 0:
+            extras.append(t("IPSCAN_PEAK", peak=comp_peak))
+        if extras:
+            label = f"{label} ({', '.join(extras)})"
+        return label, blocked, "warn" if blocked else "ok"
+    if reg_code == "rate":
+        return t("IPSCAN_ERR_RATE"), False, "warn"
+    return t("IPSCAN_ERR_NET"), False, "info"
+
+
+def _answer_verdict(answer: chebur.Answer | None, reg: Any, live: chebur.Live | None) -> str:
+    if _reg_blocked(reg):
+        return "registry"
+    if live is not None and live.results:
+        return live.verdict()
+    if answer is not None:
+        return answer.verdict()
+    if reg is not None:
+        return "clean"
+    return "unknown"
+
+
+def _status_key(verdict: str) -> str:
+    if verdict == "registry":
+        return "CHK_ST_REGISTRY"
+    if verdict in ("tspu", "tspu_block"):
+        return "CHK_ST_TSPU"
+    if verdict in ("sni", "sni_block"):
+        return "CHK_ST_SNI"
+    if verdict in ("dns", "dns_spoofing"):
+        return "CHK_ST_DNS"
+    if verdict in ("cdn", "cdn_block"):
+        return "CHK_ST_CDN"
+    if verdict == "partial":
+        return "CHK_ST_PARTIAL"
+    if verdict == "clean":
+        return "CHK_ST_CLEAN"
+    if verdict == "uncertain":
+        return "CHK_ST_UNCERTAIN"
+    return "CHK_ST_UNKNOWN"
+
+
+def _blocking_providers(live: chebur.Live) -> list[str]:
+    found: list[str] = []
+    for kind_name in chebur.BLOCKING:
+        for prov in live.providers_for(kind_name):
+            if prov and prov not in found:
+                found.append(prov)
+    return found
+
+
+def _verdict_quote(verdict: str, target: str, reg: Any, live: chebur.Live | None, reg_code: str, t: Any) -> str:
+    if reg is None and live is None:
+        if reg_code == "bad":
+            return ui.quote(ui.bold(t("IPSCAN_ERR_BAD")))
+        if reg_code == "rate":
+            return ui.quote(ui.muted(t("IPSCAN_ERR_RATE")))
+        return ui.quote(ui.muted(t("IPSCAN_ERR_NET")))
+    total = len(live.results) if live else 0
+    blocked_n = live.blocking() if live else 0
+    ok_n = live.counts().get("ok", 0) if live else 0
+    if verdict == "registry":
+        return ui.quote(ui.bold(t("CHK_QUOTE_REGISTRY")))
+    if verdict in ("tspu", "tspu_block", "sni", "sni_block", "dns", "dns_spoofing", "cdn", "cdn_block"):
+        return ui.quote(ui.bold(t("CHK_QUOTE_BANNED", blocked=blocked_n, total=total, target=target)))
+    if verdict == "partial":
+        return ui.quote(ui.bold(t("CHK_QUOTE_PARTIAL", blocked=blocked_n, total=total, target=target)))
+    if verdict == "clean" and live is not None and live.results:
+        return ui.quote(ui.bold(t("CHK_QUOTE_CLEAN", ok=ok_n, total=total, target=target)))
+    if verdict == "uncertain":
+        return ui.quote(ui.muted(t("CHK_QUOTE_UNCERTAIN", target=target)))
+    if reg is not None and not _reg_blocked(reg):
+        reg_kind = str(getattr(reg, "kind", None) or getattr(reg, "type", "") or "")
+        if chebur.probe_supported(reg_kind):
+            return ui.quote(ui.muted(t("CHK_QUOTE_REGISTRY_CLEAN", target=target)))
+        return ui.quote(ui.muted(t("CHK_QUOTE_WIDE", target=target)))
+    return ui.quote(ui.muted(t("CHK_QUOTE_UNKNOWN")))
+
+
+def safe_cb_target(target: str) -> str:
+    clean = str(target or "").strip()
+    if not clean or clean in SELF_ALIASES:
+        return "self"
+    if len(clean.encode("utf-8")) > 44:
+        return clean[:44]
+    return clean
+
+
+def _display_target_subtitle(raw_target: str, t: Any) -> str:
+    clean = str(raw_target or "").strip()
+    if not clean or clean.lower() in SELF_ALIASES:
+        return t("IPSCAN_NODE_SELF")
+    try:
+        host, _kind = chebur.clean_target(clean)
+        return host
+    except chebur.CheburError:
+        return clean[:64]
+
+
+def start_keyboard_rows(cb_target: str, lang: str = i18n.DEFAULT_LANGUAGE) -> list[list[dict[str, Any]]]:
+    t = i18n.translator(lang)
+    cb = safe_cb_target(cb_target)
+    return [[{"text": t("IPSCAN_BTN_START"), "callback_data": f"ipscan:run:{cb}"}]]
+
+
+def after_scan_keyboard_rows(lang: str = i18n.DEFAULT_LANGUAGE) -> list[list[dict[str, Any]]]:
+    t = i18n.translator(lang)
+    return [[{"text": t("IPSCAN_BTN_OTHER"), "switch_inline_query_current_chat": ""}]]
+
+
+def ready_screen(raw_target: str, lang: str = i18n.DEFAULT_LANGUAGE) -> ui.Rich:
+    t = i18n.translator(lang)
+    subtitle = _display_target_subtitle(raw_target, t)
+    return ui.screen(
+        t("IPSCAN_LAUNCH_TITLE"),
+        ui.muted(subtitle),
+        [ui.quote(ui.muted(t("IPSCAN_LAUNCH_PROMPT")))],
+        [],
+        icon="radar",
+    )
+
+
+def scanning_screen(raw_target: str, lang: str = i18n.DEFAULT_LANGUAGE) -> ui.Rich:
+    t = i18n.translator(lang)
+    subtitle = _display_target_subtitle(raw_target, t)
+    return ui.screen(
+        t("IPSCAN_SCANNING_TITLE"),
+        ui.muted(subtitle),
+        [ui.quote(ui.muted(t("IPSCAN_SCANNING_BODY")))],
+        [],
+        icon="loading",
+    )
+
+
+def _verdict_label(name: str, lang: str, t: Any) -> str:
+    key = "CHK_V_" + str(name or "").upper()
+    if i18n.has_key(key, lang):
+        return t(key)
+    return str(name or "")
+
+
+def rich_report(
+    data: dict[str, Any],
+    lang: str = i18n.DEFAULT_LANGUAGE,
+) -> tuple[ui.Rich, list[list[dict[str, Any]]]]:
     t = i18n.translator(lang)
     target = str(data.get("target") or "")
-    shown_ip = str(data.get("ip") or target)
-    reg: chebur.Registry | None = data.get("registry")
-    meta: dict[str, Any] = dict(data.get("meta") or {})
-
-    if reg is not None:
-        rkn_state = t("IPSCAN_BLOCKED") if reg.blocked else t("IPSCAN_CLEAN")
-        complaints = reg.complaint_total()
-        rkn_line = "%s (%s)" % (rkn_state, t("IPSCAN_COMPLAINTS", count=complaints))
-    else:
-        rkn_state = ""
-        rkn_line = t("IPSCAN_ERR_RATE") if data.get("reg_code") == "rate" else t("IPSCAN_ERR_NET")
-
-    country = str(meta.get("country") or (reg.geo.country if reg else "") or "")
-    cc = str(meta.get("countryCode") or "")
-    city = str(meta.get("city") or meta.get("regionName") or "")
-    loc_parts = []
-    if country:
-        loc_parts.append("%s (%s)" % (country, cc) if cc else country)
-    if city and city != country:
-        loc_parts.append(city)
-    location = ", ".join(loc_parts) or "-"
-
-    isp = str(meta.get("isp") or meta.get("org") or (reg.geo.organisation if reg else "") or "-")
-    asn_raw = str(meta.get("as") or (reg.geo.asn if reg else "") or "")
-    asn_code = asn_raw.split()[0] if asn_raw else ""
-
-    reverse_val = str(meta.get("reverse") or (reg.reverse[0] if reg and reg.reverse else "") or "")
-    cdn_val = ", ".join(_cdn_list(reg))
-    ptr_parts = [item for item in (reverse_val, cdn_val) if item]
-    ptr_line = " / ".join(ptr_parts)
-
-    yes = t("UI_YES")
-    no = t("UI_NO")
-    flags_line = ""
-    if meta:
-        flags_line = "%s: %s | %s: %s | %s: %s" % (
-            t("IPSCAN_HOSTING"),
-            yes if meta.get("hosting") else no,
-            t("IPSCAN_PROXY"),
-            yes if meta.get("proxy") else no,
-            t("IPSCAN_MOBILE"),
-            yes if meta.get("mobile") else no,
-        )
-
-    header_ip = "%s (%s)" % (esc(target), esc(shown_ip)) if shown_ip and shown_ip != target else esc(target)
-    isp_line = "%s (<code>%s</code>)" % (esc(isp), esc(asn_code)) if asn_code else esc(isp)
-    info_rows = [
-        "<b>%s:</b> %s" % (esc(t("IPSCAN_RKN")), esc(rkn_line)),
-        "<b>%s:</b> %s" % (esc(t("IPSCAN_COUNTRY")), esc(location)),
-        "<b>%s:</b> %s" % (esc(t("IPSCAN_ISP")), isp_line),
-    ]
-    if ptr_line:
-        info_rows.append("<b>%s:</b> <code>%s</code>" % (esc(t("IPSCAN_PTR")), esc(ptr_line)))
-    if reg is not None and reg.subnets:
-        info_rows.append("<b>%s:</b> <code>%s</code>" % (esc(t("IPSCAN_SUBNETS")), esc(", ".join(reg.subnets[:3]))))
-    if flags_line:
-        info_rows.append("<b>%s:</b> %s" % (esc(t("IPSCAN_FLAGS")), esc(flags_line)))
-
-    html_body = "<b>%s:</b> <code>%s</code>\n<blockquote>%s</blockquote>" % (
-        esc(t("IPSCAN_TITLE")),
-        header_ip,
-        "\n".join(info_rows),
-    )
-    title = ("%s - %s" % (target, rkn_state)) if rkn_state else target
-    desc_parts = [part for part in (cc or country, isp if isp != "-" else "", asn_code) if part]
-    desc = " | ".join(desc_parts) or t("IPSCAN_TITLE")
-    return title[:120], desc[:240], html_body
-
-
-def scanning_screen(target: str, lang: str = i18n.DEFAULT_LANGUAGE) -> ui.ScreenRich:
-    t = i18n.translator(lang)
-    shown = target if target and target != "self" else t("IPSCAN_SELF_TITLE")
-    blocks = [ui.quote(ui.muted(t("IPSCAN_SCANNING_BODY", target=shown)))]
-    return ui.screen(t("IPSCAN_SCANNING_TITLE"), shown, blocks, [], icon="loading")
-
-
-def rich_report(data: dict[str, Any], lang: str = i18n.DEFAULT_LANGUAGE) -> tuple[ui.ScreenRich, list[list[dict[str, Any]]]]:
-    t = i18n.translator(lang)
-    target = str(data.get("target") or "self")
-    if data.get("reg_code") == "bad":
-        kbd = inline_keyboard_rows("self", lang, rescan=False)
-        blocks = [ui.quote(ui.bold(t("IPSCAN_ERR_BAD")))]
-        buttons = [
-            ui.row(
-                ui.button(t("IPSCAN_BTN_START"), "ipscan:run:self", icon="scan"),
-                ui.inline_button(t("IPSCAN_BTN_OTHER"), "", icon="radar"),
-            )
-        ]
-        return ui.screen(t("IPSCAN_REPORT_TITLE"), target, blocks, buttons, icon="warn"), kbd
-
+    kind = str(data.get("kind") or "")
+    reg: Any = data.get("registry")
+    live: chebur.Live | None = data.get("live")
+    answer: chebur.Answer | None = data.get("answer")
+    reg_code = str(data.get("reg_code") or "")
+    meta: dict[str, Any] = data.get("meta") or {}
+    ports_info: dict[str, Any] = data.get("ports") or {"open": [], "best_ms": 0}
     shown_ip = str(data.get("ip") or "")
-    reg: chebur.Registry | None = data.get("registry")
-    meta: dict[str, Any] = dict(data.get("meta") or {})
-    ports: list[tuple[int, int]] = list(data.get("ports") or [])
 
-    if reg is not None:
-        rkn_state = t("IPSCAN_BLOCKED") if reg.blocked else t("IPSCAN_CLEAN")
-        complaints = reg.complaint_total()
-        peak = reg.complaint_peak()
-        extra_parts = [t("IPSCAN_COMPLAINTS", count=complaints)]
-        if peak > 0:
-            extra_parts.append(t("IPSCAN_PEAK", peak=peak))
-        rkn_line = "%s (%s)" % (rkn_state, ", ".join(extra_parts))
-        top_icon = "warn" if reg.blocked else "ok"
-    else:
-        rkn_line = t("IPSCAN_ERR_RATE") if data.get("reg_code") == "rate" else t("IPSCAN_ERR_NET")
-        top_icon = "radar"
+    kbd = after_scan_keyboard_rows(lang)
 
-    country = str(meta.get("country") or (reg.geo.country if reg else "") or "")
-    cc = str(meta.get("countryCode") or "")
-    region = str(meta.get("regionName") or "")
-    city = str(meta.get("city") or "")
-    loc_parts = []
-    if country:
-        loc_parts.append("%s (%s)" % (country, cc) if cc else country)
-    if region and region not in {country, city}:
-        loc_parts.append(region)
-    if city and city != country:
-        loc_parts.append(city)
-    location = ", ".join(loc_parts) or (reg.geo.location if reg and reg.geo.location else "-")
-
-    tz_val = str(meta.get("timezone") or "").strip()
-    isp = str(meta.get("isp") or (reg.geo.organisation if reg else "") or "-")
-    org = str(meta.get("org") or "").strip()
-    asn_raw = str(meta.get("as") or (reg.geo.asn if reg else "") or "").strip()
-    as_name = str(meta.get("asname") or "").strip()
-    asn_display = asn_raw or "-"
-    if as_name and as_name.lower() not in asn_display.lower():
-        asn_display = "%s (%s)" % (asn_display, as_name)
-
-    reverse_val = str(meta.get("reverse") or (reg.reverse[0] if reg and reg.reverse else "") or "")
-    cdn_val = ", ".join(_cdn_list(reg))
-    ptr_parts = [item for item in (reverse_val, cdn_val) if item]
-    ptr_line = " / ".join(ptr_parts)
-
-    yes = t("UI_YES")
-    no = t("UI_NO")
-    flags_line = ""
-    if meta:
-        flags_line = "%s: %s | %s: %s | %s: %s" % (
-            t("IPSCAN_HOSTING"),
-            yes if meta.get("hosting") else no,
-            t("IPSCAN_PROXY"),
-            yes if meta.get("proxy") else no,
-            t("IPSCAN_MOBILE"),
-            yes if meta.get("mobile") else no,
+    if kind == "bad":
+        err_screen = ui.screen(
+            t("IPSCAN_REPORT_TITLE"),
+            ui.muted(t("IPSCAN_SUBTITLE")),
+            [ui.quote(ui.bold(t("IPSCAN_ERR_BAD")))],
+            [],
+            icon="warn",
         )
+        return err_screen, kbd
 
-    rows_data: list[tuple[str, str, str]] = [
+    rkn_label, rkn_blocked, rkn_icon = _format_rkn_status(reg, reg_code, t)
+    verdict = _answer_verdict(answer, reg, live)
+    st_key = _status_key(verdict)
+    verdict_val = t(st_key)
+    verdict_bad = st_key in {"CHK_ST_REGISTRY", "CHK_ST_TSPU", "CHK_ST_SNI", "CHK_ST_DNS", "CHK_ST_CDN", "CHK_ST_PARTIAL"}
+    rows: list[tuple[str, str, str]] = [
         ("target", t("IPSCAN_TARGET"), ui.code(target)),
     ]
-    if shown_ip and shown_ip != target:
-        rows_data.append(("world", t("IPSCAN_RESOLVED_IP"), ui.code(shown_ip)))
-    elif shown_ip:
-        rows_data.append(("world", t("IPSCAN_RESOLVED_IP"), ui.code(shown_ip)))
-    rows_data.append(("warn" if (reg and reg.blocked) else "shield", t("IPSCAN_RKN"), ui.code(rkn_line)))
-    rows_data.append(("world", t("IPSCAN_COUNTRY"), ui.code(location)))
-    if tz_val:
-        rows_data.append(("clock", t("IPSCAN_TIMEZONE"), ui.code(tz_val)))
-    rows_data.append(("server", t("IPSCAN_ISP"), ui.code(isp)))
-    if org and org != isp:
-        rows_data.append(("server", t("IPSCAN_ORG"), ui.code(org)))
-    rows_data.append(("tag", t("IPSCAN_ASN"), ui.code(asn_display)))
-    if ptr_line:
-        rows_data.append(("link", t("IPSCAN_PTR"), ui.code(ptr_line)))
-    if flags_line:
-        rows_data.append(("info", t("IPSCAN_FLAGS"), ui.code(flags_line)))
-    if "ports" in data and data.get("kind") in ("ip", "domain"):
-        if ports:
-            ports_str = ", ".join("%d (%s)" % (p, t("IPSCAN_LATENCY_MS", ms=ms)) for p, ms in ports)
-            best_ms = min(ms for _, ms in ports)
-            rows_data.append(("plug", t("IPSCAN_OPEN_PORTS"), ui.code(ports_str)))
-            rows_data.append(("speed", t("IPSCAN_PING"), ui.code(t("IPSCAN_LATENCY_MS", ms=best_ms))))
-        else:
-            rows_data.append(("plug", t("IPSCAN_OPEN_PORTS"), ui.code(t("IPSCAN_PORTS_NONE"))))
-
-    blocks = [
-        ui.quote(ui.bold("%s: %s" % (t("IPSCAN_RKN"), rkn_line))),
-        ui.table(rows_data, (t("UI_PARAM"), t("UI_VALUE"))),
-    ]
-    if reg is not None and reg.subnets:
-        blocks.append(ui.long_block(t("IPSCAN_SUBNETS"), "\n".join(reg.subnets[:16])))
-    if reg is not None and len(reg.ips) > 1:
-        blocks.append(ui.long_block(t("IPSCAN_IPS_LIST", count=len(reg.ips)), "\n".join(reg.ips[:24])))
-
-    cb_target = safe_cb_target(target if target else shown_ip)
-    kbd = inline_keyboard_rows(cb_target, lang, rescan=True)
-    buttons = [
-        ui.row(
-            ui.button(t("IPSCAN_BTN_RESCAN"), "ipscan:run:%s" % cb_target, icon="refresh"),
-            ui.inline_button(t("IPSCAN_BTN_OTHER"), "", icon="scan"),
-        )
-    ]
     if shown_ip:
-        copy_btn = ui.copy_row(t("IPSCAN_BTN_COPY_IP"), shown_ip, icon="copy")
-        if copy_btn:
-            buttons.append(copy_btn)
-    subtitle = ("%s (%s)" % (target, shown_ip)) if shown_ip and shown_ip != target else (shown_ip or t("IPSCAN_SUBTITLE"))
-    return ui.screen(t("IPSCAN_REPORT_TITLE"), subtitle, blocks, buttons, icon=top_icon), kbd
+        rows.append(("globe", t("IPSCAN_RESOLVED_IP"), ui.code(shown_ip)))
+    rows.append(("warn" if verdict_bad else "ok", t("CHK_VERDICT"), ui.code(verdict_val)))
+    rows.append((rkn_icon, t("IPSCAN_RKN"), ui.code(rkn_label)))
+
+    loc = _format_location(reg, meta)
+    if loc:
+        rows.append(("globe", t("IPSCAN_COUNTRY"), ui.code(loc)))
+    tz = str(meta.get("timezone") or "").strip()
+    if tz:
+        rows.append(("clock", t("IPSCAN_TIMEZONE"), ui.code(tz)))
+
+    isp = str(meta.get("isp") or "").strip()
+    org = str(meta.get("org") or "").strip()
+    _r_asn, r_org = _reg_asn_and_org(reg)
+    if isp:
+        rows.append(("server", t("IPSCAN_ISP"), ui.code(isp)))
+    if org and org.lower() != isp.lower():
+        rows.append(("server", t("IPSCAN_ORG"), ui.code(org)))
+    elif not isp and r_org:
+        rows.append(("server", t("IPSCAN_ISP"), ui.code(r_org)))
+
+    as_num, as_name = _format_asn(reg, meta)
+    if as_num or as_name:
+        as_full = f"{as_num} ({as_name})" if (as_num and as_name and as_name.lower() != isp.lower()) else (as_num or as_name)
+        rows.append(("tag", t("IPSCAN_ASN"), ui.code(as_full)))
+
+    reverse = str(meta.get("reverse") or _reg_reverse(reg) or "").strip()
+    cdn = _reg_cdn(reg)
+    ptr_parts = [p for p in (reverse, cdn) if p]
+    if ptr_parts:
+        rows.append(("link", t("IPSCAN_PTR"), ui.code(" / ".join(ptr_parts))))
+
+    if meta:
+        yes = t("CHK_NET_YES")
+        no = t("CHK_NET_NO")
+        flag_str = (
+            f"{t('IPSCAN_HOSTING')}: {yes if meta.get('hosting') else no} | "
+            f"{t('IPSCAN_PROXY')}: {yes if meta.get('proxy') else no} | "
+            f"{t('IPSCAN_MOBILE')}: {yes if meta.get('mobile') else no}"
+        )
+        rows.append(("shield", t("IPSCAN_FLAGS"), ui.code(flag_str)))
+
+    if kind in ("ip", "domain") and shown_ip:
+        label_map = dict(COMMON_PORTS)
+        if isinstance(ports_info, dict):
+            raw_open = list(ports_info.get("open") or [])
+            best_ms = int(ports_info.get("best_ms") or 0)
+        elif isinstance(ports_info, list):
+            raw_open = []
+            best_ms = 0
+            for entry in ports_info:
+                if isinstance(entry, tuple) and len(entry) >= 2:
+                    p_num = int(entry[0])
+                    p_lbl = str(entry[1]) if len(entry) >= 3 else label_map.get(p_num, "")
+                    p_ms = int(entry[2] if len(entry) >= 3 else entry[1])
+                    raw_open.append((p_num, p_lbl, p_ms))
+                    if best_ms == 0 or (0 < p_ms < best_ms):
+                        best_ms = p_ms
+        else:
+            raw_open = []
+            best_ms = 0
+        if raw_open:
+            ports_txt = ", ".join(f"{p}/{lbl}" if lbl else str(p) for p, lbl, _ms in raw_open)
+            rows.append(("bolt", t("IPSCAN_OPEN_PORTS"), ui.code(ports_txt)))
+        else:
+            rows.append(("dot", t("IPSCAN_OPEN_PORTS"), ui.code(t("IPSCAN_PORTS_NONE"))))
+        if best_ms > 0:
+            rows.append(("gauge", t("IPSCAN_PING"), ui.code(t("IPSCAN_LATENCY_MS", ms=best_ms))))
+
+    blocks: list[str] = [
+        _verdict_quote(verdict, target, reg, live, reg_code, t),
+        ui.table(rows),
+    ]
+
+    if live is not None and live.results:
+        done = len(live.results)
+        total = live.online or done
+        share_pct = f"{round(live.share() * 100)}%"
+        live_rows: list[tuple[str, str, str]] = [
+            ("bolt", t("CHK_PROBES"), ui.code(f"{done} / {total}")),
+            ("warn" if live.blocking() else "ok", t("CHK_SHARE"), ui.code(share_pct)),
+        ]
+        counts = live.counts()
+        for v_key, v_ico in (
+            ("tspu_block", "warn"),
+            ("sni_block", "warn"),
+            ("dns_spoofing", "warn"),
+            ("cdn_block", "warn"),
+            ("ok", "ok"),
+            ("uncertain", "info"),
+        ):
+            if counts.get(v_key):
+                live_rows.append((v_ico, _verdict_label(v_key, lang, t), ui.code(str(counts[v_key]))))
+        blocks.append(ui.heading(t("CHK_LIVE_TITLE"), icon="bolt"))
+        blocks.append(ui.table(live_rows))
+        bad_isps = _blocking_providers(live)
+        if bad_isps:
+            shown_isps = ", ".join(bad_isps[:8])
+            blocks.append(ui.quote(ui.bold(t("CHK_PROVIDERS", value=shown_isps))))
+
+        region_rows: list[tuple[str, str, str]] = []
+        for item in live.results[:36]:
+            reg_name = item.region or "-"
+            prov_name = item.provider or "?"
+            asn_part = f" ({item.asn})" if item.asn else ""
+            left_col = f"{reg_name} / {prov_name}{asn_part}"
+            verdicts = item.verdicts or ["uncertain"]
+            v_labels = [_verdict_label(v, lang, t) for v in verdicts]
+            verdict_txt = ", ".join(v_labels)
+            if item.dpi_hop is not None:
+                verdict_txt = f"{verdict_txt} ({t('IPSCAN_DPI_HOP', hop=item.dpi_hop)})"
+            is_blk = bool(set(verdicts) & set(chebur.BLOCKING))
+            r_ico = "warn" if is_blk else ("ok" if "ok" in verdicts else "info")
+            region_rows.append((r_ico, left_col, ui.code(verdict_txt)))
+        blocks.append(
+            ui.details(
+                t("IPSCAN_REGIONS_SUMMARY", count=len(live.results)),
+                ui.table(region_rows, (t("IPSCAN_COL_REGION"), t("IPSCAN_COL_VERDICT"))),
+                open_=False,
+            )
+        )
+
+    subnets = _reg_subnets(reg)
+    if subnets:
+        blocks.append(ui.long_block(t("IPSCAN_SUBNETS"), "\n".join(subnets[:16])))
+    reg_ips = list(getattr(reg, "ips", None) or []) if reg is not None else []
+    if len(reg_ips) > 1:
+        blocks.append(ui.long_block(t("IPSCAN_IPS_LIST", count=len(reg_ips)), "\n".join(reg_ips[:24])))
+
+    subtitle = f"{target} ({shown_ip})" if (shown_ip and shown_ip != target) else (shown_ip or target)
+    screen = ui.screen(
+        t("IPSCAN_REPORT_TITLE"),
+        ui.muted(subtitle),
+        blocks,
+        [],
+        icon="warn" if (verdict_bad or rkn_blocked) else "radar",
+    )
+    return screen, kbd
 
 
 async def inline_results(
@@ -463,36 +674,51 @@ async def inline_results(
     lang: str = i18n.DEFAULT_LANGUAGE,
     default_target: str = "",
 ) -> list[dict]:
+    _ = default_target
     t = i18n.translator(lang)
-    candidate, _matched = extract_target(query)
+    candidate = extract_candidate(query)
+    nonce = secrets.token_hex(4)
+
     if candidate == "self":
-        preset = str(default_target or "").strip()
-        if preset and preset not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
-            try:
-                host, kind = chebur.clean_target(preset)
-                data = await asyncio.to_thread(scan_sync, host, kind)
-                title, desc, html_body = format_card(data, lang)
-                kbd = inline_keyboard_rows(host, lang, rescan=False)
-                return [inline.html_article("ipscan:%s" % safe_cb_target(host), title, desc, html_body, src, reply_markup=kbd)]
-            except chebur.CheburError:
-                pass
-        body = "<b>%s</b>\n<blockquote>%s\n%s</blockquote>" % (
-            esc(t("IPSCAN_SELF_TITLE")),
-            esc(t("IPSCAN_HINT_BODY")),
-            esc(t("IPSCAN_READY_NOTE")),
-        )
-        kbd = inline_keyboard_rows("self", lang, rescan=False)
-        return [inline.html_article("ipscan:self", t("IPSCAN_SELF_TITLE"), t("IPSCAN_SELF_DESC"), body, src, reply_markup=kbd)]
+        card = ready_screen("self", lang)
+        kbd = start_keyboard_rows("self", lang)
+        return [
+            inline.rich_article(
+                f"ipscan:{nonce}:self",
+                t("IPSCAN_LAUNCH_TITLE"),
+                t("IPSCAN_LAUNCH_DESC"),
+                card,
+                src,
+                reply_markup=kbd,
+            )
+        ]
 
     try:
-        host, kind = chebur.clean_target(candidate)
+        host, _kind = chebur.clean_target(candidate)
     except chebur.CheburError:
-        body = "<b>%s</b>\n<blockquote>%s</blockquote>" % (esc(t("IPSCAN_TITLE")), esc(t("IPSCAN_ERR_BAD")))
-        kbd = inline_keyboard_rows("self", lang, rescan=False)
-        return [inline.html_article("ipscan:self", t("IPSCAN_TITLE"), t("IPSCAN_ERR_BAD"), body, src, reply_markup=kbd)]
+        card = ready_screen("self", lang)
+        kbd = start_keyboard_rows("self", lang)
+        return [
+            inline.rich_article(
+                f"ipscan:{nonce}:self",
+                t("IPSCAN_LAUNCH_TITLE"),
+                t("IPSCAN_ERR_BAD"),
+                card,
+                src,
+                reply_markup=kbd,
+            )
+        ]
 
-    data = await asyncio.to_thread(scan_sync, host, kind)
-    title, desc, html_body = format_card(data, lang)
-    kbd = inline_keyboard_rows(host, lang, rescan=False)
-    rid = "ipscan:%s" % safe_cb_target(host)
-    return [inline.html_article(rid, title, desc, html_body, src, reply_markup=kbd)]
+    cb_target = safe_cb_target(host)
+    card = ready_screen(host, lang)
+    kbd = start_keyboard_rows(cb_target, lang)
+    return [
+        inline.rich_article(
+            f"ipscan:{nonce}:{cb_target}",
+            t("IPSCAN_LAUNCH_TARGET_TITLE", target=host),
+            t("IPSCAN_LAUNCH_DESC"),
+            card,
+            src,
+            reply_markup=kbd,
+        )
+    ]

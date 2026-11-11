@@ -987,6 +987,31 @@ class Bot:
             }
         return None
 
+    @staticmethod
+    def pack_inline_id(mt_id: dict[str, Any]) -> str:
+        kind = str(mt_id.get("_") or "")
+        try:
+            if kind == "inputBotInlineMessageID":
+                raw = struct.pack(
+                    "<iqq",
+                    int(mt_id["dc_id"]),
+                    int(mt_id["id"]),
+                    int(mt_id["access_hash"]),
+                )
+                return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+            if kind == "inputBotInlineMessageID64":
+                raw = struct.pack(
+                    "<iqiq",
+                    int(mt_id["dc_id"]),
+                    int(mt_id["owner_id"]),
+                    int(mt_id["id"]),
+                    int(mt_id["access_hash"]),
+                )
+                return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        except Exception:
+            return ""
+        return ""
+
     def extract_inline_id(self, evt: object) -> Any:
         direct = getattr(evt, "inline_message_id", None)
         if direct:
@@ -1010,52 +1035,87 @@ class Bot:
                     return sub_mid
         return None
 
-    async def edit_inline_rich(self, inline_id: Any, rich: Any, fallback_kbd: list[list[dict[str, Any]]] | None = None) -> bool:
+    async def edit_inline_rich(
+        self,
+        inline_id: Any,
+        rich: Any,
+        reply_markup: list[list[dict[str, Any]]] | None = None,
+        fallback_kbd: list[list[dict[str, Any]]] | None = None,
+    ) -> bool:
         if inline_id is None or self.app is None:
             return False
-        hook = getattr(self.app, "edit_inline_rich", None)
-        if callable(hook):
-            await hook(inline_id, rich, reply_markup=fallback_kbd)
+        markup = reply_markup if reply_markup is not None else fallback_kbd
+        if not isinstance(self.app, GoyGram) and inspect.getattr_static(self.app, "edit_inline_rich", None) is not None:
+            hook = getattr(self.app, "edit_inline_rich")
+            await hook(inline_id, rich, reply_markup=markup)
             return True
         mt_id = inline_id if isinstance(inline_id, dict) else None
         if mt_id is None and isinstance(inline_id, str) and getattr(self.app, "bot", None) is None:
             mt_id = self.unpack_inline_id(inline_id)
         if mt_id is not None and callable(getattr(self.app, "mt_req", None)):
             payload_mt = rich.to_tl() if hasattr(rich, "to_tl") else {"_": "inputRichMessageHTML", "html": str(rich)}
+            req_kw: dict[str, Any] = {
+                "id": mt_id,
+                "message": "",
+                "rich_message": payload_mt,
+            }
+            if markup:
+                req_kw["reply_markup"] = inline.inline_kbd(markup, "mt")
             try:
-                await self.app.mt_req("messages.editInlineBotMessage", id=mt_id, message="", rich_message=payload_mt)
+                await self.app.mt_req("messages.editInlineBotMessage", **req_kw)
                 return True
             except Exception as exc:
-                log.debug("mt inline rich edit failed, falling back to entities: %s", exc)
-                try:
-                    from goygram.sugar import html_to_entities
-
-                    html_text = rich.to_html() if hasattr(rich, "to_html") else str(rich)
-                    plain, ents = html_to_entities(html_text)
-                    data: dict[str, Any] = {"id": mt_id, "no_webpage": True, "message": plain[:4000]}
-                    if ents:
-                        data["entities"] = ents
-                    if fallback_kbd:
-                        data["reply_markup"] = inline.inline_kbd(fallback_kbd, "mt")
-                    await self.app.mt_req("messages.editInlineBotMessage", **data)
+                if "MESSAGE_NOT_MODIFIED" in str(exc):
                     return True
-                except Exception as exc2:
-                    log.warning("mt inline fallback edit failed: %s", exc2)
-        if isinstance(inline_id, str) and callable(getattr(self.app, "bot_req", None)):
+                log.debug("mt inline rich edit failed, retrying without message field: %s", exc)
+                req_kw_no_msg = {k: v for k, v in req_kw.items() if k != "message"}
+                try:
+                    await self.app.mt_req("messages.editInlineBotMessage", **req_kw_no_msg)
+                    return True
+                except Exception as exc_retry:
+                    if "MESSAGE_NOT_MODIFIED" in str(exc_retry):
+                        return True
+                    log.debug("mt inline rich retry failed: %s", exc_retry)
+        bot_inline_id = inline_id if isinstance(inline_id, str) else ""
+        if not bot_inline_id and isinstance(mt_id, dict) and getattr(self.app, "bot", None) is not None:
+            bot_inline_id = self.pack_inline_id(mt_id)
+        if bot_inline_id and callable(getattr(self.app, "bot_req", None)):
             payload_bot = rich.to_msg() if hasattr(rich, "to_msg") else {"html": str(rich)}
+            bot_kw: dict[str, Any] = {
+                "inline_message_id": bot_inline_id,
+                "rich_message": payload_bot,
+            }
+            if markup:
+                bot_kw["reply_markup"] = inline.inline_kbd(markup, "bot")
             try:
-                await self.app.bot_req("editMessageText", inline_message_id=inline_id, rich_message=payload_bot)
+                await self.app.bot_req("editMessageText", **bot_kw)
                 return True
             except Exception as exc:
+                if "message is not modified" in str(exc).lower():
+                    return True
                 log.warning("bot inline rich edit failed: %s", exc)
+        if mt_id is not None and callable(getattr(self.app, "mt_req", None)):
+            try:
+                from goygram.sugar import html_to_entities
+
+                html_text = rich.to_html() if hasattr(rich, "to_html") else str(rich)
+                plain, ents = html_to_entities(html_text)
+                data: dict[str, Any] = {"id": mt_id, "no_webpage": True, "message": plain[:4000]}
+                if ents:
+                    data["entities"] = ents
+                if markup:
+                    data["reply_markup"] = inline.inline_kbd(markup, "mt")
+                await self.app.mt_req("messages.editInlineBotMessage", **data)
+                return True
+            except Exception as exc2:
+                log.warning("mt inline fallback edit failed: %s", exc2)
         return False
 
-    async def run_inline_ipscan(self, inline_id: Any, raw_target: str, force: bool = False) -> None:
-        if force or str(raw_target or "").strip().lower() in {"", "self", "ip"}:
-            await self.edit_inline_rich(inline_id, ipscan.scanning_screen(raw_target, self.language))
+    async def run_inline_ipscan(self, inline_id: Any, raw_target: str, force: bool = True) -> None:
+        await self.edit_inline_rich(inline_id, ipscan.scanning_screen(raw_target, self.language))
         report = await ipscan.full_scan_async(raw_target, default_target=self.default_scan_target(), force=force)
         card, kbd = ipscan.rich_report(report, self.language)
-        await self.edit_inline_rich(inline_id, card, fallback_kbd=kbd)
+        await self.edit_inline_rich(inline_id, card, reply_markup=kbd)
 
     async def run_callback_ipscan(self, inline_id: Any, chat_id: int, msg_id: int, raw_target: str) -> None:
         loading = ipscan.scanning_screen(raw_target, self.language)
@@ -1066,7 +1126,7 @@ class Bot:
         report = await ipscan.full_scan_async(raw_target, default_target=self.default_scan_target(), force=True)
         card, kbd = ipscan.rich_report(report, self.language)
         if inline_id is not None:
-            await self.edit_inline_rich(inline_id, card, fallback_kbd=kbd)
+            await self.edit_inline_rich(inline_id, card, reply_markup=kbd)
         elif chat_id and msg_id:
             await self.render(chat_id, msg_id, card)
 
@@ -1122,11 +1182,6 @@ class Bot:
         rid = str(payload.get("result_id") or raw_upd.get("id") or "")
         query = str(payload.get("query") or raw_upd.get("query") or getattr(evt, "query", "") or "")
         if rid.startswith("ipscan:"):
-            inline_id = self.extract_inline_id(evt)
-            target_part = rid.partition(":")[2].strip()
-            raw_target = query.strip() if (not target_part or target_part == "self") and query.strip() else (target_part or "self")
-            if inline_id is not None:
-                await self.run_inline_ipscan(inline_id, raw_target, force=False)
             return
         kind, token, index = inline.parse_option_id(rid)
         if not kind:

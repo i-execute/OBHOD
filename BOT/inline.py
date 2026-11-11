@@ -305,6 +305,47 @@ def html_article(
     return out
 
 
+def rich_article(
+    rid: str,
+    title: str,
+    description: str,
+    rich: Any,
+    src: str,
+    reply_markup: list[list[dict[str, Any]]] | None = None,
+) -> dict:
+    ident = rid if len(rid) <= 64 else rid[:64]
+    kbd = inline_kbd(reply_markup, src) if reply_markup else None
+    if src == "mt":
+        payload_mt = rich.to_tl() if hasattr(rich, "to_tl") else {"_": "inputRichMessageHTML", "html": str(rich)}
+        msg: dict[str, Any] = {
+            "_": "inputBotInlineMessageRichMessage",
+            "rich_message": payload_mt,
+        }
+        if kbd is not None:
+            msg["reply_markup"] = kbd
+        return {
+            "_": "inputBotInlineResult",
+            "id": ident,
+            "type": "article",
+            "title": title[:120],
+            "description": description[:240],
+            "send_message": msg,
+        }
+    payload_bot = rich.to_msg() if hasattr(rich, "to_msg") else {"html": str(rich)}
+    out: dict[str, Any] = {
+        "type": "article",
+        "id": ident,
+        "title": title[:120],
+        "description": description[:240],
+        "input_message_content": {
+            "rich_message": payload_bot,
+        },
+    }
+    if kbd is not None:
+        out["reply_markup"] = kbd
+    return out
+
+
 def parse_query(query: str) -> tuple[str, str]:
     raw = CONTROL.sub("", str(query or "")).strip()
     if not raw:

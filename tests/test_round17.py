@@ -151,14 +151,26 @@ def test_round17_inline_ip_scanner_combines_chebur_and_ip_meta(tmp_path: Path, m
         chebur,
         "check",
         lambda host, timeout=3.5: chebur.Registry(
-            query=host,
+            target=host,
+            kind="domain",
             ips=["77.88.55.242"],
             blocked=False,
             subnets=["77.88.0.0/18"],
-            cdn=["Yandex CDN"],
+            cdn={"provider": "Yandex CDN"},
             reverse=["ya.ru"],
             complaints=[chebur.Complaint("2026-11-04", 2)],
             geo=chebur.Geo(country="RU", asn="AS13238", organisation="YANDEX LLC"),
+            context="ctx_yaru",
+        ),
+    )
+    monkeypatch.setattr(
+        chebur,
+        "probe",
+        lambda ctx, deadline=18.0: chebur.Live(
+            target="ya.ru",
+            online=1,
+            finished=True,
+            results=[chebur.Probe(provider="MTS", region="Moscow", asn="AS8359", verdicts=["ok"])],
         ),
     )
     monkeypatch.setattr(
@@ -178,6 +190,7 @@ def test_round17_inline_ip_scanner_combines_chebur_and_ip_meta(tmp_path: Path, m
             "mobile": False,
         },
     )
+    monkeypatch.setattr(ipscan, "probe_ports", lambda ip_addr: {"open": [(443, "TLS", 9)], "best_ms": 9})
 
     answered: list[list[dict]] = []
 
@@ -194,12 +207,22 @@ def test_round17_inline_ip_scanner_combines_chebur_and_ip_meta(tmp_path: Path, m
     assert len(answered[0]) == 1
     card = answered[0][0]
     assert card["id"].startswith("ipscan:")
-    msg = card["send_message"]["message"]
-    assert "ya.ru" in msg
-    assert "77.88.55.242" in msg
-    assert "AS13238" in msg
-    assert "Yandex" in msg
-    assert card["send_message"].get("entities")
+    assert card["send_message"]["_"] == "inputBotInlineMessageRichMessage"
+    launch_html = card["send_message"]["rich_message"]["html"]
+    assert "AS13238" not in launch_html
+    assert "Yandex" not in launch_html
+    rows = card["send_message"]["reply_markup"]["rows"]
+    assert len(rows) == 1 and len(rows[0]["buttons"]) == 1
+
+    report = ipscan.full_scan_sync("ya.ru", force=True)
+    rich_card, after_kbd = ipscan.rich_report(report, "ru")
+    rep_html = rich_card.build()
+    assert "ya.ru" in rep_html
+    assert "77.88.55.242" in rep_html
+    assert "AS13238" in rep_html
+    assert "Yandex" in rep_html
+    assert "<details><summary>" in rep_html
+    assert len(after_kbd) == 1 and "switch_inline_query_current_chat" in after_kbd[0][0]
 
 
 def test_round17_tui_inline_disabled_warning_text_and_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
