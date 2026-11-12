@@ -630,15 +630,12 @@ def test_the_subs_screen_keeps_one_link_and_folds_the_rest() -> None:
     bot.state.xray = state
     html = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).build()
     assert len(bot.xray.sub_rows()) == 1
-    assert html.count("xr:subs:apply") == 1
+    assert html.count("xr:subs:apply") == 0
     assert "https://obhod-test.tail1234.ts.net:8443/" in html
-    assert html.count("<details><summary>") == 2
+    assert html.count("<details><summary>") == 1
     assert "<pre>https://obhod-test.tail1234.ts.net:8443/" in html
-    head = html.split("<details>")[0]
-    assert head.count("vless://") == 0
+    assert html.count("vless://") == 0
     bundle = bot.xray.sub_bundle("obhod-test.tail1234.ts.net")
-    tail = html.split("<details><summary>")[-1]
-    assert tail.count("vless://") == len(bundle.links)
     assert len(bundle.links) >= 1
     assert "/json" not in html
 

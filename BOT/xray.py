@@ -692,6 +692,7 @@ class XrayInbound:
     xhttp_mode: str = "auto"
     service_name: str = ""
     multi_mode: bool = False
+    dirty: bool = False
     encryption: VlessEncryption = field(default_factory=VlessEncryption)
 
     def client(self, email: str) -> XrayClient | None:
@@ -765,19 +766,24 @@ class XrayInbound:
         if self.network == "raw":
             stream["tcpSettings"] = {"acceptProxyProtocol": False, "header": {"type": "none"}}
         if self.network == "grpc":
-            stream["grpcSettings"] = {"serviceName": self.service_name or self.tag or self.remark, "multiMode": bool(self.multi_mode)}
+            stream["grpcSettings"] = {"serviceName": self.service_name or self.tag or "grpc", "multiMode": bool(self.multi_mode)}
         if self.network == "xhttp":
             settings: dict[str, Any] = {"path": self.path or "/", "mode": self.xhttp_mode or "auto"}
             if self.host_header:
                 settings["host"] = self.host_header
             stream["xhttpSettings"] = settings
         if self.security == "reality":
-            names = [item for item in {self.sni, self.host_header} if item]
+            names: list[str] = []
+            primary_sni = (self.sni or "").strip() or DEFAULT_SNI
+            names.append(primary_sni)
+            extra_host = (self.host_header or "").strip()
+            if extra_host and extra_host not in names and HOST_RE.match(extra_host):
+                names.append(extra_host)
             reality: dict[str, Any] = {
                 "show": False,
                 "xver": 0,
                 "dest": self.dest,
-                "serverNames": names or [DEFAULT_SNI],
+                "serverNames": names,
                 "privateKey": self.reality_private,
                 "shortIds": self.short_ids or [""],
                 "spiderX": self.spider_x or "/",
@@ -833,6 +839,7 @@ class XrayInbound:
             "xhttp_mode": self.xhttp_mode,
             "service_name": self.service_name,
             "multi_mode": bool(self.multi_mode),
+            "dirty": bool(self.dirty),
             "encryption": self.encryption.to_dict(),
         }
 
@@ -868,6 +875,7 @@ class XrayInbound:
             xhttp_mode=str(data.get("xhttp_mode", "auto") or "auto"),
             service_name=str(data.get("service_name", "")),
             multi_mode=bool(data.get("multi_mode", False)),
+            dirty=bool(data.get("dirty", False)),
             encryption=VlessEncryption.from_dict(data.get("encryption")),
         )
 
@@ -979,7 +987,7 @@ def client_stream(inbound: XrayInbound) -> dict[str, Any]:
         stream["tcpSettings"] = {"acceptProxyProtocol": False, "header": {"type": "none"}}
     elif inbound.network == "grpc":
         stream["grpcSettings"] = {
-            "serviceName": inbound.service_name or inbound.tag or inbound.remark,
+            "serviceName": inbound.service_name or inbound.tag or "grpc",
             "multiMode": bool(inbound.multi_mode),
         }
     elif inbound.network == "xhttp":
@@ -1032,7 +1040,7 @@ def client_config(inbound: XrayInbound, client: XrayClient, address: str, port: 
         "streamSettings": client_stream(inbound),
         "tag": "proxy",
     }
-    mux = mux_block(client.flow if inbound.network == "raw" else "")
+    mux = mux_block(client.flow) if inbound.network == "raw" else {}
     if mux:
         outbound["mux"] = mux
     return {
@@ -1133,6 +1141,40 @@ def config_text(
     )
 
 
+def inbound_api_port(inbound_id: int) -> int:
+    ident = max(1, int(inbound_id or 1))
+    return 62800 + (ident % 2000)
+
+
+def inbound_daemon_config(
+    inbound: XrayInbound,
+    log_dir: str = "",
+    api_port: int = 0,
+    log_level: str = "warning",
+    dns_servers: list[str] | None = None,
+) -> str:
+    clean_dir = str(log_dir or "").strip().rstrip("/")
+    access_path = f"{clean_dir}/access.log" if clean_dir else ""
+    error_path = f"{clean_dir}/error.log" if clean_dir else ""
+    resolved_api = int(api_port) if int(api_port or 0) > 0 else inbound_api_port(inbound.id)
+    servers = [str(item).strip() for item in (dns_servers or []) if str(item).strip()]
+    config: dict[str, Any] = {
+        "log": log_block(log_level, access_path, error_path),
+        "api": api_block(API_TAG),
+        "inbounds": [api_inbound(API_TAG, resolved_api), inbound.to_json()],
+        "outbounds": outbound_block(),
+        "routing": routing_block(API_TAG, DNS_TAG if servers else ""),
+        "policy": policy_block((0,)),
+        "stats": {},
+    }
+    if servers:
+        config["dns"] = dns_block(servers, DNS_TAG)
+        config["outbounds"] = config["outbounds"] + [
+            {"protocol": "dns", "settings": {"nonIPQuery": "drop", "rewriteAddress": API_LISTEN}, "tag": DNS_TAG}
+        ]
+    return json.dumps(config, ensure_ascii=False, indent=2, sort_keys=False)
+
+
 def _remark_suffix(inbound: XrayInbound, email: str = "") -> str:
     base = inbound.remark or "vless-%d" % inbound.port
     if not email:
@@ -1149,7 +1191,7 @@ def _stream_params(inbound: XrayInbound, params: dict[str, str]) -> None:
     if inbound.network == "raw":
         params["headerType"] = "none"
     if inbound.network == "grpc":
-        params["serviceName"] = inbound.service_name or inbound.tag
+        params["serviceName"] = inbound.service_name or inbound.tag or "grpc"
         params["mode"] = "multi" if inbound.multi_mode else "gun"
     if inbound.network == "xhttp":
         params["path"] = inbound.path or "/"

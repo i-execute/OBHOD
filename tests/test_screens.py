@@ -201,6 +201,7 @@ def render_all(lang: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, object]]:
         ("logs", screens.logs_screen(view, ["line"], 50)),
         ("busy", screens.busy_screen("busy", lang, ["step"])),
         ("xray_home", xscreens.home(xview)),
+        ("xray_inbounds_list", xscreens.inbounds_list_screen(xview)),
         ("xray_new", xscreens.new_menu(xview)),
         ("xray_wiz_scan", xscreens.wiz_scan_screen(xview, "raw", [result])),
         ("xray_wiz_sec", xscreens.wiz_sec_screen(xview, "raw", result)),

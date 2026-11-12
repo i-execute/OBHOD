@@ -31,6 +31,7 @@ from .xray import (
     XrayState,
     current_funnel_port,
     gen_short_id,
+    inbound_daemon_config,
     link_for,
     new_inbound,
     other_funnel_port,
@@ -277,6 +278,10 @@ class XrayPanel:
             await self.ensure_core_probed()
             await self.render(chat_id, msg_id, xscreens.home(self.view()))
             return
+        if head == "list":
+            page = int(arg1) if arg1.isdigit() else 0
+            await self.render(chat_id, msg_id, xscreens.inbounds_list_screen(self.view(), page))
+            return
         if head == "check":
             await self.check(chat_id, msg_id)
             return
@@ -303,6 +308,15 @@ class XrayPanel:
             return
         if head == "in":
             await self.open_inbound(chat_id, msg_id, arg1)
+            return
+        if head == "instart":
+            await self.start_inbound(chat_id, msg_id, arg1)
+            return
+        if head == "instop":
+            await self.stop_inbound(chat_id, msg_id, arg1)
+            return
+        if head == "inapply":
+            await self.apply_inbound_changes(chat_id, msg_id, arg1)
             return
         if head == "edit":
             await self.render(chat_id, msg_id, xscreens.input_screen(self.view(), arg2, arg1, f"xr:in:{arg1}"))
@@ -410,8 +424,11 @@ class XrayPanel:
             except Exception as exc:
                 log.debug("auto ddos sync skipped: %s", exc)
 
-    async def sync_live_and_subs(self) -> None:
-        await self.auto_apply_live()
+    def mark_inbound_dirty(self, inbound: XrayInbound) -> None:
+        if inbound.enable:
+            inbound.dirty = True
+
+    async def push_subs_live(self) -> None:
         subs_sync_fn = getattr(self.bot, "subs_sync", None)
         if callable(subs_sync_fn):
             try:
@@ -420,6 +437,54 @@ class XrayPanel:
                     await res
             except Exception as exc:
                 log.debug("subs sync skipped: %s", exc)
+        if bool(self.state.tunnel_enabled and self.state.public_base()):
+            host = self.state.address(self.address())
+            if host and hasattr(self.control, "sub_sync"):
+                self.state.ensure_sub_all()
+                port = self.ensure_random_sub_port()
+                domain = (self.state.tunnel_host or "").split(":", 1)[0]
+                registry = self.state.sub_registry(host, [])
+                try:
+                    if not self.state.sub_enabled and hasattr(self.control, "sub_install"):
+                        await self.control.sub_install(self.bot.state.ssh, port, domain)
+                        self.state.sub_enabled = True
+                    await self.control.sub_sync(self.bot.state.ssh, registry, port, domain)
+                    self.save()
+                except Exception as exc:
+                    log.debug("remote sub_sync skipped: %s", exc)
+
+    async def deploy_inbound_daemon(self, inbound: XrayInbound) -> None:
+        cfg_text = inbound_daemon_config(
+            inbound,
+            log_level=self.state.log_level,
+            dns_servers=list(self.state.dns_servers or []),
+        )
+        self.register_ddos_port(inbound.port)
+        if hasattr(self.control, "inbound_apply"):
+            applied = await self.control.inbound_apply(
+                self.bot.state.ssh,
+                inbound.id,
+                cfg_text,
+                remark=inbound.remark,
+                version=self.state.install_version(),
+            )
+            self.core = state_report(applied)
+            self.bot.state.last_probe = dict(self.core)
+        ddos_state = getattr(self.bot, "ddos_state", None)
+        guard = getattr(self.bot, "guard", None)
+        if ddos_state is not None and getattr(ddos_state, "enabled", False) and guard is not None:
+            try:
+                from .guard import ddos_argv, ddos_call
+
+                policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+                self.bot.ddos_state = await ddos_call(guard, self.bot.state.ssh, ddos_argv("install", policy), 60)
+            except Exception as exc:
+                log.debug("auto ddos sync skipped: %s", exc)
+
+    async def sync_live_and_subs(self) -> None:
+        if not (self.core or {}).get("daemons"):
+            await self.auto_apply_live()
+        await self.push_subs_live()
 
     async def wizard_action(self, chat_id: int, msg_id: int, action: str, arg1: str = "", arg2: str = "") -> None:
         if action == "net":
@@ -553,6 +618,8 @@ class XrayPanel:
             if self.picked_sni:
                 inbound.sni = self.picked_sni
         inbound.ensure_credential()
+        inbound.enable = False
+        inbound.dirty = False
         self.state.add(inbound)
         self.state.switch_security(inbound.id, kind)
         if kind_has_mldsa(kind):
@@ -569,7 +636,6 @@ class XrayPanel:
         self.state.ensure_sub_all()
         self.register_ddos_port(port)
         self.save()
-        await self.sync_live_and_subs()
         notice = t("NOTICE_INBOUND_CREATED")
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
 
@@ -638,14 +704,64 @@ class XrayPanel:
         inbound = self.get(ident)
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(), inbound))
 
+    async def start_inbound(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        t = self.tr()
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_INBOUND_START"), self.bot.state.language))
+        try:
+            await self.deploy_inbound_daemon(inbound)
+        except (RpcError, XrayError) as exc:
+            err_msg = exc.message if isinstance(exc, RpcError) else str(exc)
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=err_msg), inbound))
+            return
+        inbound.enable = True
+        inbound.dirty = False
+        self.state.ensure_sub_all()
+        self.save()
+        await self.push_subs_live()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_STARTED")), inbound))
+
+    async def stop_inbound(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        t = self.tr()
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_INBOUND_STOP"), self.bot.state.language))
+        if hasattr(self.control, "inbound_stop"):
+            try:
+                stopped = await self.control.inbound_stop(self.bot.state.ssh, inbound.id)
+                self.core = state_report(stopped)
+                self.bot.state.last_probe = dict(self.core)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=exc.message), inbound))
+                return
+        inbound.enable = False
+        inbound.dirty = False
+        self.save()
+        await self.push_subs_live()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_STOPPED")), inbound))
+
+    async def apply_inbound_changes(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        t = self.tr()
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_INBOUND_RESTART"), self.bot.state.language))
+        try:
+            await self.deploy_inbound_daemon(inbound)
+        except (RpcError, XrayError) as exc:
+            err_msg = exc.message if isinstance(exc, RpcError) else str(exc)
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=err_msg), inbound))
+            return
+        inbound.enable = True
+        inbound.dirty = False
+        self.state.ensure_sub_all()
+        self.save()
+        await self.push_subs_live()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_APPLIED")), inbound))
+
     async def toggle(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
-        inbound.enable = not inbound.enable
-        self.save()
-        await self.sync_live_and_subs()
-        t = self.tr()
-        notice = t("NOTICE_INBOUND_ON") if inbound.enable else t("NOTICE_INBOUND_OFF")
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
+        if inbound.enable:
+            await self.stop_inbound(chat_id, msg_id, ident)
+        else:
+            await self.start_inbound(chat_id, msg_id, ident)
 
     async def regen_keys(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
@@ -663,8 +779,8 @@ class XrayPanel:
             private, public = x25519_keypair()
         self.state.set_reality_keys(inbound.id, private, public)
         inbound.short_ids = [gen_short_id()]
+        self.mark_inbound_dirty(inbound)
         self.save()
-        await self.sync_live_and_subs()
         await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_KEYS_REGEN")), inbound))
 
     def ensure_random_sub_port(self) -> int:
@@ -981,7 +1097,7 @@ class XrayPanel:
             return
         await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_KEYS"), self.bot.state.language))
         try:
-            data = await self.control.vlessenc(self.bot.state.ssh)
+            data = await self.control.vlessenc(self.bot.state.ssh, auto_install=True)
         except RpcError as exc:
             await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=exc.message), inbound))
             return
@@ -996,6 +1112,7 @@ class XrayPanel:
             await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=t("XR_ENC_NO_PAIR", combo=wanted)), inbound))
             return
         inbound.encryption = chosen
+        self.mark_inbound_dirty(inbound)
         self.save()
         await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(notice=t("XR_ENC_APPLIED", combo=wanted)), inbound))
 
@@ -1008,16 +1125,18 @@ class XrayPanel:
             seed = ""
             verify = ""
             try:
-                seed, verify = await self.control.mldsa65(self.bot.state.ssh)
+                seed, verify = await self.control.mldsa65(self.bot.state.ssh, auto_install=True)
             except RpcError as exc:
                 await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(error=exc.message), inbound))
                 return
             self.state.set_mldsa65(inbound.id, seed, verify)
+            self.mark_inbound_dirty(inbound)
             self.save()
             await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(notice=self.tr()("NOTICE_MI_MLDSA_GENERATED")), inbound))
             return
         if action == "clear":
             self.state.clear_mldsa65(inbound.id)
+            self.mark_inbound_dirty(inbound)
             self.save()
             await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(notice=self.tr()("NOTICE_MLDSA_REMOVED")), inbound))
             return
@@ -1026,10 +1145,21 @@ class XrayPanel:
     async def delete_inbound(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
         remark = inbound.remark
+        if hasattr(self.control, "inbound_remove"):
+            try:
+                removed = await self.control.inbound_remove(self.bot.state.ssh, inbound.id)
+                self.core = state_report(removed)
+                self.bot.state.last_probe = dict(self.core)
+            except RpcError as exc:
+                log.debug("inbound_remove skipped: %s", exc)
         self.state.remove(ident)
         self.save()
-        await self.sync_live_and_subs()
-        await self.render(chat_id, msg_id, xscreens.home(self.view(notice=self.tr()("NOTICE_INBOUND_DELETED", remark=remark))))
+        await self.push_subs_live()
+        notice = self.tr()("NOTICE_INBOUND_DELETED", remark=remark)
+        if self.state.inbounds:
+            await self.render(chat_id, msg_id, xscreens.inbounds_list_screen(self.view(notice=notice)))
+        else:
+            await self.render(chat_id, msg_id, xscreens.home(self.view(notice=notice)))
 
     async def show_links(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
@@ -1066,6 +1196,7 @@ class XrayPanel:
             await self.ensure_core_probed()
             await self.refresh_traffic()
             await self.refresh_tunnel_meta()
+            await self.push_subs_live()
             if not self.state.tunnel_enabled and self.state.tunnel_approval_url and not self.state.tunnel_expired:
                 port = int(self.state.sub_port or 0)
                 if port in {0, 80, 443}:
@@ -1435,8 +1566,8 @@ class XrayPanel:
                     await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=exc.message), inbound))
                     return
                 self.state.set_mldsa65(inbound.id, seed, verify)
+            self.mark_inbound_dirty(inbound)
             self.save()
-            await self.sync_live_and_subs()
             notice = t("XR_SUBSCAN_PICKED_NOTICE", dest=inbound.dest, sni=inbound.sni)
             await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
             return
@@ -1465,8 +1596,8 @@ class XrayPanel:
                     await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(), inbound.network, item, ctx=ctx))
                     return
                 self.state.adopt_scan(inbound.id, host, sni, port)
+                self.mark_inbound_dirty(inbound)
                 self.save()
-                await self.sync_live_and_subs()
                 await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
                 return
             if ctx == "custom":
@@ -1890,18 +2021,12 @@ class XrayPanel:
         except (PanelError, XrayError, InlineError, ModelError, ValueError) as exc:
             await self.send(chat_id, self.error_screen(ident, ctx, str(exc)))
             return
+        edited_inbound = self.inbound_of_ctx(ctx) if ident not in GLOBAL_FIELDS else None
+        if edited_inbound is not None:
+            self.mark_inbound_dirty(edited_inbound)
         self.save()
-        if ident not in GLOBAL_FIELDS:
-            await self.sync_live_and_subs()
-        elif ident in {"xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
-            subs_sync_fn = getattr(self.bot, "subs_sync", None)
-            if callable(subs_sync_fn):
-                try:
-                    res = subs_sync_fn()
-                    if inspect.isawaitable(res):
-                        await res
-                except Exception as exc:
-                    log.debug("subs sync skipped: %s", exc)
+        if ident in {"xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
+            await self.push_subs_live()
         if ident == "xr_subnet_cidr":
             clean = list(self.pending_subnet_targets)[:CANDIDATE_LIMIT]
             self.pending_subnet_targets = []

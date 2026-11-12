@@ -137,7 +137,8 @@ def test_subs_screen_shows_path_format() -> None:
     item.state.tunnel_host = "obhod-test.tail1234.ts.net:8443"
     item.state.tunnel_enabled = True
     named = xscreens.subs_screen(item, []).to_html()
-    assert named.count("xr:subs:apply") == 1
+    assert named.count("xr:subs:apply") == 0
+    assert "xr:dom:off" in named
     assert i18n.t("XR_SUBS_NO_DOMAIN") not in named
 
 
@@ -152,7 +153,8 @@ def test_subs_screen_keeps_one_link_in_a_collapsed_block() -> None:
     state.add(inbound)
     bundle = subs.aggregate(state, [], "203.0.113.10", 30960)
     html = xscreens.subs_screen(xscreens.XrayView(state=state, lang="en", bundle=bundle, address="203.0.113.10"), []).to_html()
-    assert html.count("<details>") == 2
+    assert html.count("<details>") == 1
+    assert html.count("vless://") == 0
     assert subs.url_of(bundle, "203.0.113.10", 30960, state.public_base()) in html
     assert "/json" not in html
 

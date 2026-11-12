@@ -271,6 +271,8 @@ def test_task8_revoke_owner_and_reinstall_freeturn_and_xray_cores(tmp_path: Path
     assert bool(bot.xray.core.get("installed")) is False
     assert len(bot.state.xray.inbounds) == 1
     asyncio.run(bot.xray.route(7, 11, "xr:home"))
+    assert "xr:core" in str(bot.rendered[-1].to_msg())
+    asyncio.run(bot.xray.route(7, 11, "xr:core"))
     assert "xr:core:install" in str(bot.rendered[-1].to_msg())
     asyncio.run(bot.xray.core_action(7, 11, "install", ""))
     assert bot.xray.core.get("installed") is True

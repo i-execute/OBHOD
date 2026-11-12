@@ -349,6 +349,37 @@ class XrayControl:
         response.raise_for_status()
         return CoreState.from_dict(response.data)
 
+    async def inbound_apply(
+        self,
+        cfg: SshSettings,
+        inbound_id: int,
+        config: str,
+        remark: str = "",
+        version: str = DEFAULT_VERSION,
+    ) -> CoreState:
+        payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
+        flag, stdin = payload_arg("config-b64", payload)
+        argv = [
+            "inbound-apply",
+            f"--id={int(inbound_id)}",
+            f"--remark={str(remark or '')[:64]}",
+            f"--version={version}",
+            flag,
+        ]
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 600.0), stdin=stdin)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def inbound_stop(self, cfg: SshSettings, inbound_id: int) -> CoreState:
+        response = await self.call(cfg, ["inbound-stop", f"--id={int(inbound_id)}"], timeout=120)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def inbound_remove(self, cfg: SshSettings, inbound_id: int) -> CoreState:
+        response = await self.call(cfg, ["inbound-remove", f"--id={int(inbound_id)}"], timeout=120)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
     async def test_config(self, cfg: SshSettings, config: str) -> tuple[bool, str]:
         payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
         flag, stdin = payload_arg("config-b64", payload)

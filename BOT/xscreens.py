@@ -148,44 +148,70 @@ def home(view: XrayView) -> Any:
     state = view.state
     blocks = banner(view, t)
     blocks.append(f"<p>{core_line(view, t)}</p>")
-    if view.core and not view.installed:
-        blocks.append(quote(bold(t("XR_SUBS_NO_XRAY_NOTE"))))
-    pairs = [
-        ("info", t("XR_HOME_INBOUNDS"), code(len(state.inbounds))),
-        ("link", t("XR_HOME_SUBS"), code(t("UI_ON") if state.sub_enabled else t("UI_OFF"))),
-        ("settings", t("XR_HOME_ENCRYPTION"), code(state.encryption_label())),
-    ]
-    if state.public_base():
-        pairs.append(("world", t("DOM_TITLE"), code(state.public_base())))
-    blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if state.inbounds:
         rows = []
         for item in state.inbounds:
-            mark = t("UI_ON") if item.enable else t("UI_OFF")
-            rows.append(("xray", f"{item.id} {item.remark}", f"{item.port} {item.network} {item.security} {mark}"))
-        blocks.append(table(rows, (t("XR_HOME_TABLE"), t("XR_HOME_TABLE2"))))
+            icon_name = "ok" if item.enable else "stop"
+            status_text = t("XR_DAEMON_RUNNING") if item.enable else t("XR_DAEMON_STOPPED")
+            rows.append((icon_name, str(item.port), f"{transport_title(item.network)} - {status_text}"))
+        blocks.append(table(rows, (t("SUM_PORT"), t("SUM_NETWORK"))))
     else:
         blocks.append(quote(muted(t("XR_HOME_EMPTY"))))
-    core_installed = bool((view.core or {}).get("installed"))
-    core_quick_btn = (
-        button(t("XR_CORE_PURGE"), "xr:core:purge", icon="delete")
-        if core_installed
-        else button(t("XR_CORE_INSTALL"), "xr:core:install", icon="box")
-    )
     buttons = [
-        row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
+        row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("XR_BTN_INBOUNDS_LIST"), "xr:list", icon="folder")),
+        row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
+        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
-    for start in range(0, min(len(state.inbounds), 6), 3):
-        chunk = state.inbounds[start : start + 3]
-        buttons.append(row(*[button(t("XR_BTN_OPEN", remark=item.remark), f"xr:in:{item.id}", icon="module") for item in chunk]))
-    buttons.extend(
-        [
-            row(button(t("NAV_CORE"), "xr:core", icon="xray"), core_quick_btn),
-            row(button(t("XR_SUBSCAN_BTN"), "xr:subscan:new", icon="radar"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
-            back_row("nav:home", view.lang),
-        ]
-    )
     return screen(t("XR_TITLE"), t("XR_SUBTITLE"), blocks, buttons, icon="xray")
+
+
+def inbounds_list_screen(view: XrayView, page: int = 0) -> Any:
+    t = view.tr()
+    state = view.state
+    blocks = banner(view, t)
+    items = list(state.inbounds)
+    if not items:
+        blocks.append(quote(muted(t("XR_HOME_EMPTY"))))
+        buttons = [
+            row(button(t("XR_BTN_NEW"), "xr:new", icon="add")),
+            back_row("xr:home", view.lang),
+        ]
+        return screen(t("XR_LIST_TITLE"), t("XR_LIST_SUBTITLE"), blocks, buttons, icon="folder")
+    per_page = 10
+    total_pages = max(1, (len(items) + per_page - 1) // per_page)
+    cur_page = max(0, min(int(page or 0), total_pages - 1))
+    chunk = items[cur_page * per_page : (cur_page + 1) * per_page]
+    rows = []
+    for item in chunk:
+        icon_name = "ok" if item.enable else "stop"
+        rows.append((icon_name, str(item.port), f"{item.remark} ({transport_title(item.network)})"))
+    blocks.append(table(rows, (t("SUM_PORT"), t("SUM_NETWORK"))))
+    buttons: list[str] = []
+    for idx in range(0, len(chunk), 2):
+        pair = chunk[idx : idx + 2]
+        buttons.append(
+            row(
+                *[
+                    button(
+                        item.remark or f"#{item.id}",
+                        f"xr:in:{item.id}",
+                        icon="ok" if item.enable else "stop",
+                    )
+                    for item in pair
+                ]
+            )
+        )
+    if total_pages > 1:
+        nav_btns = []
+        if cur_page > 0:
+            nav_btns.append(button("<", f"xr:list:{cur_page - 1}", icon="back"))
+        if cur_page + 1 < total_pages:
+            nav_btns.append(button(">", f"xr:list:{cur_page + 1}", icon="compass"))
+        if nav_btns:
+            buttons.append(row(*nav_btns))
+    buttons.append(row(button(t("XR_BTN_NEW"), "xr:new", icon="add")))
+    buttons.append(back_row("xr:home", view.lang))
+    return screen(t("XR_LIST_TITLE"), t("XR_LIST_SUBTITLE"), blocks, buttons, icon="folder")
 
 
 def transport_title(network: str) -> str:
@@ -450,6 +476,10 @@ def field_pairs(inbound: XrayInbound, names: tuple[str, ...], lang: str) -> list
 def inbound_screen(view: XrayView, inbound: XrayInbound) -> Any:
     t = view.tr()
     blocks = banner(view, t)
+    if not inbound.enable and not view.error:
+        blocks.append(quote(bold(t("XR_INBOUND_READY_NOTE"))))
+    elif inbound.enable and inbound.dirty and not view.error:
+        blocks.append(quote(bold(t("XR_INBOUND_DIRTY_NOTE"))))
     blocks.append(f"<h3>{bold(inbound.remark)}</h3>")
     blocks.append(table(summary(inbound, view.lang), (t("UI_PARAM"), t("UI_VALUE"))))
     fields = relevant_fields(inbound.security, inbound.network)
@@ -471,12 +501,26 @@ def inbound_screen(view: XrayView, inbound: XrayInbound) -> Any:
         blocks.append(long_block(t("XR_LINKS_TITLE"), direct_link))
         copy_btn = copy_row(t("SUB_COPY"), direct_link, icon="copy") or ""
     buttons = []
+    if not inbound.enable:
+        buttons.append(row(button(t("XR_BTN_START_INBOUND"), f"xr:instart:{inbound.id}", icon="ok")))
+    elif inbound.dirty:
+        buttons.append(
+            row(
+                button(t("XR_BTN_APPLY_CHANGES"), f"xr:inapply:{inbound.id}", icon="refresh"),
+                button(t("XR_BTN_STOP_INBOUND"), f"xr:instop:{inbound.id}", icon="stop"),
+            )
+        )
+    else:
+        buttons.append(row(button(t("XR_BTN_STOP_INBOUND"), f"xr:instop:{inbound.id}", icon="stop")))
     if copy_btn:
         buttons.append(copy_btn)
     buttons.extend(
         [
-            row(button(t("XR_SUBSCAN_BTN"), f"xr:subscan:{inbound.id}", icon="radar"), button(t("NAV_SUBS"), "xr:subs", icon="link")),
-            row(button(t("XR_BTN_PORT"), f"xr:edit:{inbound.id}:xr_port", icon="plug"), button(t("XR_BTN_NAME"), f"xr:edit:{inbound.id}:xr_remark", icon="tag")),
+            row(
+                inline_button(t("XR_BTN_PORT"), inline.prefill("xr_port", str(inbound.id)), icon="plug"),
+                inline_button(t("XR_BTN_NAME"), inline.prefill("xr_remark", str(inbound.id)), icon="tag"),
+            ),
+            row(button(t("XR_SUBSCAN_BTN"), f"xr:subscan:{inbound.id}", icon="radar")),
             field_row(inbound, view.lang),
         ]
     )
@@ -484,9 +528,8 @@ def inbound_screen(view: XrayView, inbound: XrayInbound) -> Any:
         buttons.append(row(button(t("XR_BTN_REALITY_KEYS"), f"xr:keys:{inbound.id}", icon="key"), button(t("XR_BTN_MLDSA"), f"xr:mldsa:{inbound.id}", icon="shield")))
     buttons.extend(
         [
-            row(button(t("XR_ENC_TITLE"), f"xr:enc:{inbound.id}", icon="lock")),
-            row(button(t("XR_BTN_TOGGLE"), f"xr:toggle:{inbound.id}", icon="update"), button(t("UI_DELETE"), f"xr:del:{inbound.id}", icon="delete")),
-            back_row("xr:home", view.lang),
+            row(button(t("XR_ENC_TITLE"), f"xr:enc:{inbound.id}", icon="lock"), button(t("UI_DELETE"), f"xr:del:{inbound.id}", icon="delete")),
+            back_row("xr:list", view.lang),
         ]
     )
     return screen(t("XR_INBOUND_TITLE"), t("XR_INBOUND_SUBTITLE", ident=inbound.id), blocks, buttons, icon="module")
@@ -606,14 +649,6 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     core_known = bool(view.core)
     xray_missing = bool(core_known and not view.installed)
     enabled_inbounds = [item for item in state.inbounds if item.enable]
-    no_inbounds = len(enabled_inbounds) == 0
-    live_unapplied = bool(
-        core_known
-        and view.installed
-        and "inbounds" in view.core
-        and int(view.core.get("inbounds") or 0) == 0
-        and len(enabled_inbounds) > 0
-    )
     approval_url = str(getattr(state, "tunnel_approval_url", "") or "").strip()
     domain_ok = bool(state.tunnel_enabled and not state.tunnel_expired and state.public_base())
     has_live_node = bool(state.tunnel_key_expiry and not state.tunnel_expired)
@@ -661,29 +696,27 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         blocks.append(quote(muted(t("XR_SUBS_PERMANENT_NOTE"))))
     copy_btn = ""
     setup_btn = ""
-    sub_link_ready = bool(
-        bundle is not None
-        and links
-        and domain_ok
-        and not xray_missing
-        and not no_inbounds
-        and not live_unapplied
-    )
-    if xray_missing:
+    if xray_missing and len(enabled_inbounds) == 0:
         blocks.append(quote(bold(t("XR_SUBS_NO_XRAY_NOTE"))))
         setup_btn = row(button(t("XR_SUBS_INSTALL_XRAY"), "xr:core:install", icon="box"))
-    elif no_inbounds:
+    elif len(state.inbounds) == 0:
         blocks.append(quote(bold(t("XR_SUBS_NO_INBOUNDS_NOTE"))))
         setup_btn = row(button(t("XR_SUBS_CREATE_INBOUND"), "xr:new", icon="add"))
-    elif live_unapplied:
-        blocks.append(quote(bold(t("XR_SUBS_UNAPPLIED_NOTE"))))
-        setup_btn = row(button(t("XR_SUBS_APPLY_XRAY"), "xr:core:apply", icon="save"))
-    elif sub_link_ready:
+    elif len(enabled_inbounds) == 0:
+        blocks.append(quote(bold(t("XR_SUBS_INBOUNDS_OFF_NOTE"))))
+        setup_btn = row(button(t("XR_BTN_INBOUNDS_LIST"), "xr:list", icon="folder"))
+    elif domain_ok:
         host = state.address(view.address)
-        url = subs.url_of(bundle, host, state.sub_port, state.public_base())
-        blocks.append(long_block(t("XR_SUBS_JSON_TITLE"), url))
-        blocks.append(long_block(t("XR_SUBS_LINKS_TITLE"), "\n".join(links[:LINK_PREVIEW])))
-        copy_btn = copy_row(t("SUB_COPY"), url, icon="copy")
+        if bundle is not None:
+            url = subs.url_of(bundle, host, state.sub_port, state.public_base())
+        else:
+            sub_id, sub_key = state.ensure_sub_all()
+            url = f"{state.public_base().rstrip('/')}/{sub_id}/{sub_key}"
+        if url:
+            blocks.append(long_block(t("XR_SUBS_JSON_TITLE"), url))
+            copy_btn = copy_row(t("SUB_COPY"), url, icon="copy")
+        if not host and not links:
+            blocks.append(quote(muted(t("XR_SUBS_NO_IP_NOTE"))))
     if not domain_ok and not has_live_node:
         blocks.append(tailscale_guide_block(t, open_=bool(state.tunnel_expired)))
     buttons = []
@@ -695,7 +728,7 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     if has_approve_btn:
         buttons.append(row(link_button(t("TAILSCALE_APPROVE_BTN"), approval_url, icon="ok")))
     if domain_ok:
-        buttons.append(row(button(t("XR_SUBS_APPLY"), "xr:subs:apply", icon="save"), button(t("DOM_OFF"), "xr:dom:off", icon="stop")))
+        buttons.append(row(button(t("DOM_OFF"), "xr:dom:off", icon="stop")))
     elif not state.tunnel_expired:
         buttons.append(row(button(t("DOM_UP"), "xr:dom:up", icon="world")))
     if not has_approve_btn and not domain_ok:

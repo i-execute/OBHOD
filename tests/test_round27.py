@@ -175,11 +175,13 @@ def test_subs_screen_blocks_dummy_links_and_uses_json_endpoint(tmp_path: Path, m
     inb = new_inbound("vless", 443, "xhttp", "reality")
     inb.sni = "dl.google.com"
     inb.dest = "dl.google.com:443"
+    inb.enable = False
     bot.state.xray.add(inb)
-    html_unapplied = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).to_html()
-    assert "xr:core:apply" in html_unapplied
-    assert "/json</pre>" not in html_unapplied
+    html_unstarted = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).to_html()
+    assert "xr:list" in html_unstarted
+    assert "/json</pre>" not in html_unstarted
 
+    inb.enable = True
     bot.xray.core = {"installed": True, "running": True, "inbounds": 1}
     html_ready = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).to_html()
     assert "https://node-a.tail1234.ts.net:8443/" in html_ready

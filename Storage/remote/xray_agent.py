@@ -68,6 +68,9 @@ SHARE = path_of("/usr/local/share/xray")
 UNIT_DIR = path_of("/etc/systemd/system")
 UNIT = os.path.join(UNIT_DIR, "xray.service")
 STATE = path_of("/var/lib/xray-manager")
+INB_CONF_ROOT = path_of("/etc/obhod/xray/inbounds")
+INB_LOG_ROOT = path_of("/var/log/obhod/xray")
+INB_STATE_ROOT = path_of("/var/lib/obhod/xray/inbounds")
 
 
 def note(text):
@@ -95,8 +98,10 @@ def sha256_bytes(payload):
 
 
 def run(argv, timeout=180, check=False):
+    env = dict(os.environ)
+    env.setdefault("XRAY_LOCATION_ASSET", SHARE)
     try:
-        proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, env=env)
     except subprocess.TimeoutExpired as exc:
         raw_out = exc.stdout or b""
         if isinstance(raw_out, str):
@@ -298,7 +303,7 @@ def write_unit():
             "Environment=GODEBUG=" + GODEBUG,
             "ExecStart=" + CORE + " run -c " + CONF,
             "Restart=on-failure",
-            "RestartPreventExitStatus=23",
+            "RestartSec=2s",
             "PrivateTmp=true",
             "PrivateDevices=true",
             "ProtectHome=true",
@@ -643,6 +648,21 @@ def restore_config(backup):
     return True
 
 
+def ensure_log_dirs(config):
+    if not isinstance(config, dict):
+        return
+    log_cfg = config.get("log")
+    if not isinstance(log_cfg, dict):
+        return
+    for field_name in ("access", "error"):
+        raw_path = str(log_cfg.get(field_name) or "").strip()
+        if not raw_path or raw_path == "none":
+            continue
+        parent = os.path.dirname(raw_path)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent, mode=0o750, exist_ok=True)
+
+
 def write_config(payload):
     if not payload:
         raise ScriptError("config_missing", "no configuration was supplied", "config")
@@ -655,13 +675,254 @@ def write_config(payload):
     ok, text = test_config(payload)
     if not ok:
         raise ScriptError("config_invalid", text[:600] or "the core rejected the configuration", "config")
+    ensure_log_dirs(config)
     backup_config()
     write_bytes_atomic(CONF, payload, 0o600)
     note("the configuration is written")
     return config
 
 
+def valid_inbound_id(raw_value):
+    try:
+        ident = int(str(raw_value or "").strip())
+    except (TypeError, ValueError):
+        raise ScriptError("bad_arg", "inbound id must be a positive integer", "args") from None
+    if ident < 1 or ident > 100000:
+        raise ScriptError("bad_arg", "inbound id is out of range", "args")
+    return ident
+
+
+def inb_unit_name(ident):
+    return "obhod-xray-%d.service" % int(ident)
+
+
+def inb_unit_path(ident):
+    return os.path.join(UNIT_DIR, inb_unit_name(ident))
+
+
+def inb_conf_dir(ident):
+    return os.path.join(INB_CONF_ROOT, "inbound-%d" % int(ident))
+
+
+def inb_conf_path(ident):
+    return os.path.join(inb_conf_dir(ident), "config.json")
+
+
+def inb_log_dir(ident):
+    return os.path.join(INB_LOG_ROOT, "inbound-%d" % int(ident))
+
+
+def inb_state_dir(ident):
+    return os.path.join(INB_STATE_ROOT, "inbound-%d" % int(ident))
+
+
+def inb_pid_path(ident):
+    return os.path.join(inb_state_dir(ident), "xray.pid")
+
+
+def list_inbound_ids():
+    found = set()
+    if os.path.isdir(INB_CONF_ROOT):
+        for entry in os.listdir(INB_CONF_ROOT):
+            if entry.startswith("inbound-"):
+                tail = entry[len("inbound-") :]
+                if tail.isdigit() and int(tail) > 0:
+                    found.add(int(tail))
+    if os.path.isdir(UNIT_DIR):
+        for entry in os.listdir(UNIT_DIR):
+            if entry.startswith("obhod-xray-") and entry.endswith(".service"):
+                tail = entry[len("obhod-xray-") : -len(".service")]
+                if tail.isdigit() and int(tail) > 0:
+                    found.add(int(tail))
+    return sorted(found)
+
+
+def inb_daemon_state(ident):
+    unit_file = inb_unit_path(ident)
+    if has_systemd():
+        if not os.path.isfile(unit_file):
+            return "absent"
+        code, text = run(["systemctl", "is-active", inb_unit_name(ident)], timeout=15)
+        token = text.strip().splitlines()[0] if text.strip() else ""
+        return token or "inactive"
+    pid_path = inb_pid_path(ident)
+    if not os.path.isfile(pid_path):
+        return "inactive"
+    try:
+        with open(pid_path, "r", encoding="utf-8") as handle:
+            pid = int(handle.read().strip() or 0)
+    except (OSError, ValueError):
+        return "inactive"
+    if pid <= 0:
+        return "inactive"
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return "inactive"
+    return "active"
+
+
+def stop_inbound_daemon(ident):
+    unit_file = inb_unit_path(ident)
+    if has_systemd() and os.path.isfile(unit_file):
+        run(["systemctl", "stop", inb_unit_name(ident)], timeout=60)
+        run(["systemctl", "disable", inb_unit_name(ident)], timeout=60)
+    pid_path = inb_pid_path(ident)
+    if os.path.isfile(pid_path):
+        try:
+            with open(pid_path, "r", encoding="utf-8") as handle:
+                pid = int(handle.read().strip() or 0)
+        except (OSError, ValueError):
+            pid = 0
+        if pid > 0:
+            try:
+                os.kill(pid, 15)
+                for _ in range(30):
+                    try:
+                        os.kill(pid, 0)
+                    except OSError:
+                        break
+                    time.sleep(0.2)
+            except OSError:
+                pass
+        try:
+            os.unlink(pid_path)
+        except OSError:
+            pass
+
+
+def write_inbound_unit(ident, remark=""):
+    if not os.path.isdir(UNIT_DIR):
+        os.makedirs(UNIT_DIR, exist_ok=True)
+    safe_remark = re.sub(r"[^A-Za-z0-9._ -]+", "", str(remark or ""))[:48].strip()
+    desc = ("OBHOD Xray Inbound #%d (%s)" % (ident, safe_remark)) if safe_remark else ("OBHOD Xray Inbound #%d" % ident)
+    c_path = inb_conf_path(ident)
+    l_dir = inb_log_dir(ident)
+    c_dir = inb_conf_dir(ident)
+    body = "\n".join(
+        [
+            "[Unit]",
+            "Description=" + desc,
+            "Documentation=https://github.com/XTLS/Xray-core",
+            "After=network.target network-online.target nss-lookup.target",
+            "Wants=network-online.target",
+            "",
+            "[Service]",
+            "User=root",
+            "WorkingDirectory=" + c_dir,
+            "Environment=XRAY_LOCATION_ASSET=" + SHARE,
+            "Environment=GODEBUG=" + GODEBUG,
+            "ExecStartPre=/bin/mkdir -p " + l_dir,
+            "ExecStart=" + CORE + " run -c " + c_path,
+            "Restart=on-failure",
+            "RestartSec=2s",
+            "PrivateTmp=true",
+            "NoNewPrivileges=true",
+            "LimitNOFILE=1048576",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        ]
+    )
+    write_bytes_atomic(inb_unit_path(ident), body.encode("utf-8"), 0o644)
+
+
+def start_inbound_daemon(ident, remark=""):
+    c_dir = inb_conf_dir(ident)
+    l_dir = inb_log_dir(ident)
+    s_dir = inb_state_dir(ident)
+    os.makedirs(c_dir, mode=0o700, exist_ok=True)
+    os.makedirs(l_dir, mode=0o750, exist_ok=True)
+    os.makedirs(s_dir, mode=0o700, exist_ok=True)
+    if has_systemd():
+        write_inbound_unit(ident, remark)
+        run(["systemctl", "daemon-reload"], timeout=60)
+        run(["systemctl", "enable", inb_unit_name(ident)], timeout=60)
+        code, text = run(["systemctl", "restart", inb_unit_name(ident)], timeout=90)
+        if code != 0:
+            raise ScriptError("start_failed", "systemctl restart %s: %s" % (inb_unit_name(ident), text[:400]), "start")
+        return
+    log_path = os.path.join(s_dir, "xray.log")
+    env = dict(os.environ)
+    env["XRAY_LOCATION_ASSET"] = SHARE
+    env["GODEBUG"] = GODEBUG
+    with open(log_path, "ab") as log_fh:
+        proc = subprocess.Popen(
+            [CORE, "run", "-c", inb_conf_path(ident)],
+            stdout=log_fh,
+            stderr=log_fh,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
+    write_bytes_atomic(inb_pid_path(ident), str(proc.pid).encode("utf-8"), 0o600)
+    time.sleep(0.8)
+    if proc.poll() is not None:
+        raise ScriptError("start_failed", "the inbound daemon exited right after start", "start")
+
+
+def stop_legacy_monolith():
+    if os.path.isfile(UNIT) or os.path.isfile(pid_file()):
+        stop_core()
+        if has_systemd() and os.path.isfile(UNIT):
+            run(["systemctl", "disable", "xray.service"], timeout=60)
+
+
+def read_inbound_config(ident):
+    target = inb_conf_path(ident)
+    if not os.path.isfile(target):
+        return {}
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
+
+
 def state_report():
+    daemon_ids = list_inbound_ids()
+    if daemon_ids:
+        ports = []
+        active_count = 0
+        daemon_map = {}
+        for ident in daemon_ids:
+            st = inb_daemon_state(ident)
+            daemon_map[str(ident)] = st
+            cfg = read_inbound_config(ident)
+            inb_ports = listen_ports(cfg)
+            for p in inb_ports:
+                if p not in ports:
+                    ports.append(p)
+            if st == "active":
+                active_count += 1
+        listening = [port for port in ports if port_open(port)]
+        service = "active" if active_count > 0 else "inactive"
+        mptcp = mptcp_state()
+        return {
+            "installed": os.path.isfile(CORE),
+            "version": core_version(),
+            "pinned": PINNED,
+            "core_path": CORE,
+            "config_path": INB_CONF_ROOT,
+            "config_exists": bool(daemon_ids),
+            "config_digest": "",
+            "inbounds": active_count,
+            "port": ports[0] if ports else 0,
+            "ports": ports,
+            "listening": listening,
+            "service": service,
+            "unit": any(os.path.isfile(inb_unit_path(i)) for i in daemon_ids),
+            "daemons": daemon_map,
+            "systemd": has_systemd(),
+            "arch": machine(),
+            "asset": asset_for(machine()),
+            "min_core": MIN_CORE_TAG,
+            "advisory": MIN_CORE_ADVISORY,
+            "core_ok": not core_too_old(core_version()),
+            "mptcp": mptcp,
+            "mptcp_warnings": mptcp_warnings(mptcp),
+        }
     config = read_config()
     ports = listen_ports(config)
     service = unit_state()
@@ -681,6 +942,7 @@ def state_report():
         "listening": listening,
         "service": service,
         "unit": os.path.isfile(UNIT),
+        "daemons": {},
         "systemd": has_systemd(),
         "arch": machine(),
         "asset": asset_for(machine()),
@@ -909,10 +1171,115 @@ def cmd_start(flags, rest):
     return state_report(), None
 
 
+def cmd_inbound_apply(flags, rest):
+    ident = valid_inbound_id(flags.get("id"))
+    remark = str(flags.get("remark", ""))[:64]
+    payload = payload_of(flags, "config_b64")
+    if not payload:
+        raise ScriptError("config_missing", "no configuration was supplied", "config")
+    version = version_of(flags)
+    if not os.path.isfile(CORE):
+        pinned_with_fallback(
+            version,
+            str(flags.get("url", "")),
+            str(flags.get("sha256", "")),
+            False,
+            str(flags.get("tag", "")),
+            str(flags.get("fallback_url", "")),
+            str(flags.get("fallback_sha256", "")),
+        )
+    try:
+        config = json.loads(payload.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise ScriptError("config_invalid", "the configuration is not json", "config") from None
+    if not isinstance(config, dict) or not config.get("inbounds"):
+        raise ScriptError("config_invalid", "the configuration has no inbound", "config")
+    c_dir = inb_conf_dir(ident)
+    l_dir = inb_log_dir(ident)
+    s_dir = inb_state_dir(ident)
+    os.makedirs(c_dir, mode=0o700, exist_ok=True)
+    os.makedirs(l_dir, mode=0o750, exist_ok=True)
+    os.makedirs(s_dir, mode=0o700, exist_ok=True)
+    log_cfg = config.get("log") if isinstance(config.get("log"), dict) else {}
+    log_cfg["access"] = os.path.join(l_dir, "access.log")
+    log_cfg["error"] = os.path.join(l_dir, "error.log")
+    config["log"] = log_cfg
+    final_payload = json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8")
+    ok, text = test_config(final_payload)
+    if not ok:
+        raise ScriptError("config_invalid", text[:600] or "the core rejected the configuration", "config")
+    ensure_log_dirs(config)
+    stop_legacy_monolith()
+    stop_inbound_daemon(ident)
+    c_path = inb_conf_path(ident)
+    if os.path.isfile(c_path):
+        try:
+            with open(c_path, "rb") as prev_fh:
+                write_bytes_atomic(c_path + ".bak", prev_fh.read(), 0o600)
+        except OSError:
+            pass
+    write_bytes_atomic(c_path, final_payload, 0o600)
+    start_inbound_daemon(ident, remark)
+    ports = listen_ports(config)
+    deadline = time.time() + 12
+    while time.time() < deadline:
+        if all(port_open(port) for port in ports):
+            break
+        time.sleep(0.35)
+    open_ufw_ports(ports)
+    data = state_report()
+    data["applied"] = True
+    data["inbound_id"] = ident
+    data["unit_name"] = inb_unit_name(ident)
+    data["conf_dir"] = c_dir
+    data["log_dir"] = l_dir
+    return data, None
+
+
+def cmd_inbound_stop(flags, rest):
+    ident = valid_inbound_id(flags.get("id"))
+    stop_inbound_daemon(ident)
+    data = state_report()
+    data["inbound_id"] = ident
+    return data, None
+
+
+def cmd_inbound_remove(flags, rest):
+    ident = valid_inbound_id(flags.get("id"))
+    stop_inbound_daemon(ident)
+    unit_file = inb_unit_path(ident)
+    if os.path.isfile(unit_file):
+        try:
+            os.unlink(unit_file)
+        except OSError:
+            pass
+        if has_systemd():
+            run(["systemctl", "daemon-reload"], timeout=60)
+    for folder in (inb_conf_dir(ident), inb_log_dir(ident), inb_state_dir(ident)):
+        if os.path.isdir(folder):
+            shutil.rmtree(folder, ignore_errors=True)
+    data = state_report()
+    data["inbound_id"] = ident
+    return data, None
+
+
 def cmd_logs(flags, rest):
     tail = int(str(flags.get("tail", "120")))
     lines = []
-    if has_systemd():
+    daemon_ids = list_inbound_ids()
+    if has_systemd() and daemon_ids:
+        units_args = []
+        for ident in daemon_ids:
+            units_args.extend(["-u", inb_unit_name(ident)])
+        code, text = run(["journalctl", *units_args, "-n", str(tail), "--no-pager"], timeout=60)
+        lines = [line for line in text.splitlines()]
+    if not lines and daemon_ids:
+        for ident in daemon_ids:
+            for candidate in (os.path.join(inb_log_dir(ident), "error.log"), os.path.join(inb_state_dir(ident), "xray.log")):
+                if os.path.isfile(candidate):
+                    with open(candidate, "r", encoding="utf-8", errors="replace") as handle:
+                        lines.extend(handle.read().splitlines()[-tail:])
+    if not lines and has_systemd():
         code, text = run(["journalctl", "-u", "xray.service", "-n", str(tail), "--no-pager"], timeout=60)
         lines = [line for line in text.splitlines()]
     log_path = os.path.join(STATE, "xray.log")
@@ -999,33 +1366,68 @@ def parse_stats(text):
     return found
 
 
+def api_endpoints():
+    endpoints = []
+    for ident in list_inbound_ids():
+        if inb_daemon_state(ident) != "active":
+            continue
+        cfg = read_inbound_config(ident)
+        for inbound in cfg.get("inbounds") or []:
+            if not isinstance(inbound, dict):
+                continue
+            try:
+                port = int(inbound.get("port") or 0)
+            except (TypeError, ValueError):
+                port = 0
+            if 1 <= port <= 65535 and (str(inbound.get("tag") or "") == "api" or str(inbound.get("protocol") or "") == "tunnel"):
+                ep = "127.0.0.1:%d" % port
+                if ep not in endpoints:
+                    endpoints.append(ep)
+    if endpoints:
+        return endpoints
+    single = api_endpoint()
+    return [single] if single else []
+
+
 def cmd_stats(flags, rest):
     if not os.path.isfile(CORE):
         raise ScriptError("not_installed", "the core is not installed", "stats")
-    server = api_endpoint()
-    if not server:
+    servers = api_endpoints()
+    if not servers:
         raise ScriptError("not_found", "the api inbound is not in the config, turn the api on in the core settings", "stats")
     pattern = str(flags.get("pattern", "user>>>"))[:64]
-    code, text = run([CORE, "api", "statsquery", "--server=" + server, "-pattern", pattern, "-reset=false"], timeout=60)
-    if code != 0 or not (text or "").strip():
-        code, text = run([CORE, "api", "stats", "--server=" + server, "-pattern", pattern, "-reset=false"], timeout=60)
-    if code != 0:
-        raise ScriptError("internal", "the stats query failed: " + (text or "").strip()[:200], "stats")
-    return {"stats": parse_stats(text), "server": server}, None
+    merged = {}
+    for server in servers:
+        code, text = run([CORE, "api", "statsquery", "--server=" + server, "-pattern", pattern, "-reset=false"], timeout=60)
+        if code != 0 or not (text or "").strip():
+            code, text = run([CORE, "api", "stats", "--server=" + server, "-pattern", pattern, "-reset=false"], timeout=60)
+        if code == 0:
+            for key, val in parse_stats(text).items():
+                merged[key] = merged.get(key, 0) + val
+    return {"stats": merged, "server": servers[0]}, None
 
 
 def cmd_uninstall(flags, rest):
     stop_core()
     removed = []
+    for ident in list_inbound_ids():
+        stop_inbound_daemon(ident)
+        u_path = inb_unit_path(ident)
+        if os.path.isfile(u_path):
+            try:
+                os.unlink(u_path)
+            except OSError:
+                pass
+            removed.append(u_path)
     if os.path.isfile(UNIT):
         if has_systemd():
             run(["systemctl", "disable", "xray.service"], timeout=60)
         os.unlink(UNIT)
-        if has_systemd():
-            run(["systemctl", "daemon-reload"], timeout=60)
         removed.append("unit")
+    if has_systemd():
+        run(["systemctl", "daemon-reload"], timeout=60)
     if flags.get("purge", False):
-        for target in (CONF_DIR, SHARE, STATE):
+        for target in (CONF_DIR, SHARE, STATE, INB_CONF_ROOT, INB_LOG_ROOT, INB_STATE_ROOT):
             if os.path.isdir(target):
                 shutil.rmtree(target, ignore_errors=True)
                 removed.append(target)
@@ -1039,10 +1441,26 @@ def _strip_quotes(text):
     return str(text or "").strip().rstrip(",").strip().strip('"').strip("'").strip()
 
 
+def _auto_install_core_for_keys(flags):
+    try:
+        code_obj = getattr(pinned_with_fallback, "__code__", None)
+        if code_obj is not None and code_obj.co_argcount <= 2:
+            pinned_with_fallback(flags, False)
+            return
+    except Exception:
+        pass
+    pinned_with_fallback(
+        version_of(flags),
+        str(flags.get("url", "")),
+        str(flags.get("sha256", "")),
+        False,
+    )
+
+
 def cmd_mldsa65(flags, rest):
     if not os.path.isfile(CORE):
         if flag_on(flags.get("auto_install") or flags.get("auto-install"), False):
-            pinned_with_fallback(flags, False)
+            _auto_install_core_for_keys(flags)
         else:
             raise ScriptError("not_installed", "the core is not installed", "keys")
     code, text = run([CORE, "mldsa65"], timeout=60)
@@ -1069,7 +1487,7 @@ def cmd_mldsa65(flags, rest):
 def cmd_vlessenc(flags, rest):
     if not os.path.isfile(CORE):
         if flag_on(flags.get("auto_install") or flags.get("auto-install"), False):
-            pinned_with_fallback(flags, False)
+            _auto_install_core_for_keys(flags)
         else:
             raise ScriptError("not_installed", "the core is not installed", "keys")
     code, text = run([CORE, "vlessenc"], timeout=60)
@@ -2122,6 +2540,9 @@ COMMANDS = {
     "probe": cmd_probe,
     "install-core": cmd_install,
     "apply": cmd_apply,
+    "inbound-apply": cmd_inbound_apply,
+    "inbound-stop": cmd_inbound_stop,
+    "inbound-remove": cmd_inbound_remove,
     "test-config": cmd_test,
     "restart": cmd_restart,
     "stop": cmd_stop,

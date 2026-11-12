@@ -115,6 +115,21 @@ class FakeControl:
         self.calls.append(["apply", config])
         return self._state()
 
+    async def inbound_apply(self, cfg: Any, inbound_id: int, config: str, remark: str = "", version: str = "") -> Any:
+        self.calls.append(["inbound-apply", str(inbound_id), config])
+        self.core["installed"] = True
+        self.core["service"] = "active"
+        self.core["inbounds"] = max(1, int(self.core.get("inbounds") or 0))
+        return self._state()
+
+    async def inbound_stop(self, cfg: Any, inbound_id: int) -> Any:
+        self.calls.append(["inbound-stop", str(inbound_id)])
+        return self._state()
+
+    async def inbound_remove(self, cfg: Any, inbound_id: int) -> Any:
+        self.calls.append(["inbound-remove", str(inbound_id)])
+        return self._state()
+
     async def restart(self, cfg: Any) -> Any:
         self.calls.append(["restart"])
         return self._state()
