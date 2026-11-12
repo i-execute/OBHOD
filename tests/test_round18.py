@@ -132,11 +132,12 @@ def test_pasting_tailnet_key_raises_random_port_inbound_and_permanent_domain_wit
 
     html = bot.sent[-1].to_html()
     pattern = re.compile(
-        r"https://[a-z0-9.-]+\.ts\.net:(?:8443|10000)/([A-Za-z0-9_-]{%d})/([A-Za-z0-9_-]{%d})/json"
+        r"https://[a-z0-9.-]+\.ts\.net:(?:8443|10000)/([A-Za-z0-9_-]{%d})/([A-Za-z0-9_-]{%d})(?=</pre>)"
         % (SUB_SEGMENT_LEN, SUB_SEGMENT_LEN)
     )
     match = pattern.search(html)
     assert match is not None, html
+    assert "/json" not in html
     assert "freeturn://" not in html
 
 

@@ -135,11 +135,11 @@ class FakeControl:
         self.calls.append(["x25519"])
         return "PRIVATEKEY", "PUBLICKEY"
 
-    async def mldsa65(self, cfg: Any) -> tuple[str, str]:
+    async def mldsa65(self, cfg: Any, auto_install: bool = False) -> tuple[str, str]:
         self.calls.append(["mldsa65"])
         return "SEEDVALUE", "VERIFYVALUE"
 
-    async def vlessenc(self, cfg: Any) -> dict[str, Any]:
+    async def vlessenc(self, cfg: Any, auto_install: bool = False) -> dict[str, Any]:
         self.calls.append(["vlessenc"])
         items = [
             {"auth": "X25519", "decryption": "mlkem768x25519plus.native.600s." + "a" * 43, "encryption": "mlkem768x25519plus.native.0rtt." + "b" * 43},

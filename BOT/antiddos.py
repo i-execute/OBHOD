@@ -19,15 +19,15 @@ MAX_WINDOW = 3600
 MIN_BURST = 1
 MIN_RATE = 1
 
-SYN_RATE = 60
-SYN_BURST = 40
-CONN_RATE = 120
-CONN_BURST = 60
+SYN_RATE = 180
+SYN_BURST = 240
+CONN_RATE = 300
+CONN_BURST = 360
 UDP_RATE = 400
 UDP_BURST = 200
 ICMP_RATE = 20
 ICMP_BURST = 10
-SCAN_RATE = 24
+SCAN_RATE = 60
 BAN_TIMEOUT = 3600
 SET_SIZE = 65536
 
@@ -195,7 +195,7 @@ def nft_table(policy: Policy) -> str:
         "    ct state new update @%s { ip saddr limit rate over %d/second burst %d packets }" % (SET_CONN, policy.conn_rate, policy.conn_burst),
         "    udp dport %s update @%s { ip saddr limit rate over %d/second burst %d packets }" % (ports_set(policy), SET_UDP, policy.udp_rate, policy.udp_burst),
         "    icmp type echo-request update @%s { ip saddr limit rate over %d/second burst %d packets }" % (SET_ICMP, policy.icmp_rate, policy.icmp_burst),
-        "    tcp dport %s tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets }"
+        "    tcp dport != %s tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets }"
         % (ports_set(policy), SET_SCAN, SCAN_RATE, SCAN_RATE),
         "    counter accept",
         "  }",

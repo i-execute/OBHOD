@@ -381,13 +381,19 @@ class XrayControl:
         response.raise_for_status()
         return str(response.data.get("private", "") or ""), str(response.data.get("public", "") or "")
 
-    async def mldsa65(self, cfg: SshSettings) -> tuple[str, str]:
-        response = await self.call(cfg, ["mldsa65"], timeout=90)
+    async def mldsa65(self, cfg: SshSettings, auto_install: bool = False) -> tuple[str, str]:
+        argv = ["mldsa65"]
+        if auto_install:
+            argv.append("--auto-install=true")
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 300.0) if auto_install else 90)
         response.raise_for_status()
         return str(response.data.get("seed", "") or ""), str(response.data.get("verify", "") or "")
 
-    async def vlessenc(self, cfg: SshSettings) -> dict[str, Any]:
-        response = await self.call(cfg, ["vlessenc"], timeout=90)
+    async def vlessenc(self, cfg: SshSettings, auto_install: bool = False) -> dict[str, Any]:
+        argv = ["vlessenc"]
+        if auto_install:
+            argv.append("--auto-install=true")
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 300.0) if auto_install else 90)
         response.raise_for_status()
         data = response.data if isinstance(response.data, dict) else {}
         out: dict[str, Any] = {str(key): value for key, value in data.items() if not isinstance(value, list)}

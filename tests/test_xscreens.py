@@ -30,8 +30,7 @@ def test_home_and_core_line() -> None:
 def test_new_menu_lists_only_supported_values() -> None:
     html = xscreens.new_menu(view()).to_html()
     for network in NETWORKS:
-        assert f"xr:new:{network}:reality" in html
-    assert "xr:subscan:new" in html
+        assert f"xr:wiz:net:{network}" in html
     for forbidden in (":tls", ":none", "vmess", "trojan", "shadowsocks", "ws", "httpupgrade"):
         assert forbidden not in html
 
@@ -154,8 +153,8 @@ def test_subs_screen_keeps_one_link_in_a_collapsed_block() -> None:
     bundle = subs.aggregate(state, [], "203.0.113.10", 30960)
     html = xscreens.subs_screen(xscreens.XrayView(state=state, lang="en", bundle=bundle, address="203.0.113.10"), []).to_html()
     assert html.count("<details>") == 2
-    assert subs.json_url_of(bundle, "203.0.113.10", 30960, state.public_base()) in html
-    assert "/json" in html
+    assert subs.url_of(bundle, "203.0.113.10", 30960, state.public_base()) in html
+    assert "/json" not in html
 
 
 def test_core_screen_with_and_without_state() -> None:

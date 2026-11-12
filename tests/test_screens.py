@@ -202,6 +202,8 @@ def render_all(lang: str = i18n.DEFAULT_LANGUAGE) -> list[tuple[str, object]]:
         ("busy", screens.busy_screen("busy", lang, ["step"])),
         ("xray_home", xscreens.home(xview)),
         ("xray_new", xscreens.new_menu(xview)),
+        ("xray_wiz_scan", xscreens.wiz_scan_screen(xview, "raw", [result])),
+        ("xray_wiz_sec", xscreens.wiz_sec_screen(xview, "raw", result)),
         ("xray_custom", xscreens.custom_menu(xview)),
         ("xray_inbound", xscreens.inbound_screen(xview, inbound)),
         ("xray_links", xscreens.links_screen(xview, inbound, "203.0.113.10", [("owner", "vless://uuid@host:443")])),

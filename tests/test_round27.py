@@ -182,7 +182,8 @@ def test_subs_screen_blocks_dummy_links_and_uses_json_endpoint(tmp_path: Path, m
 
     bot.xray.core = {"installed": True, "running": True, "inbounds": 1}
     html_ready = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).to_html()
-    assert "/json</pre>" in html_ready
+    assert "https://node-a.tail1234.ts.net:8443/" in html_ready
+    assert "/json</pre>" not in html_ready
     assert f"127.0.0.1:{bot.state.xray.sub_port}" in html_ready
     assert "xr:dom:port" not in html_ready
     assert "xr:subs:rotate" not in html_ready

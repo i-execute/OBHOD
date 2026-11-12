@@ -45,7 +45,7 @@ KIND_ALIASES = {
 }
 PQ_MODES = ("x25519mlkem768", "p256mlkem768")
 PQ_HYBRID = "x25519mlkem768"
-VLESS_AUTH_MLKEM_MIN = 300
+VLESS_AUTH_MLKEM_MIN = 64
 VLESS_MODES = ("native", "xorpub", "random")
 VLESS_AUTHS = ("x25519", "mlkem768")
 VLESS_COMBOS = tuple("%s/%s" % (mode, auth) for mode in VLESS_MODES for auth in VLESS_AUTHS)
@@ -71,8 +71,8 @@ SYNTHETIC_FINGERPRINTS = ("randomized",)
 MUX_CONCURRENCY = 8
 VISION_FLOW = "xtls-rprx-vision"
 VLESS_HANDSHAKE = "mlkem768x25519plus"
-DEFAULT_DEST = "www.cloudflare.com:443"
-DEFAULT_SNI = "www.cloudflare.com"
+DEFAULT_DEST = "dl.google.com:443"
+DEFAULT_SNI = "dl.google.com"
 DEFAULT_TAG_PREFIX = "in"
 PADDING_RE = re.compile(r"^[0-9]+-[0-9]+-[0-9]+$")
 TICKET_RE = re.compile(r"^([0-9]+s|[0-9]+-[0-9]+s)$")
@@ -537,7 +537,9 @@ class VlessEncryption:
     def auth_kind(self) -> str:
         if self.auth in VLESS_AUTHS:
             return self.auth
-        return "mlkem768" if len(self.private_key or "") > VLESS_AUTH_MLKEM_MIN else "x25519"
+        if len(self.private_key or "") > VLESS_AUTH_MLKEM_MIN or len(self.public_key or "") > VLESS_AUTH_MLKEM_MIN:
+            return "mlkem768"
+        return "x25519"
 
     def label(self) -> str:
         return "%s.%s.%s" % (VLESS_HANDSHAKE, self.mode, self.auth_kind())
@@ -558,9 +560,13 @@ class VlessEncryption:
             self.private_key = key
         self.public_key = encryption.split(".")[-1] if encryption else self.public_key
         wanted = str(auth or pair.get("auth", "") or "").strip().lower()
-        if wanted in VLESS_AUTHS:
+        if "ml-kem-768" in wanted or "mlkem768" in wanted:
+            self.auth = "mlkem768"
+        elif "x25519" in wanted:
+            self.auth = "x25519"
+        elif wanted in VLESS_AUTHS:
             self.auth = wanted
-        elif len(self.private_key) > VLESS_AUTH_MLKEM_MIN:
+        elif len(self.private_key) > VLESS_AUTH_MLKEM_MIN or len(self.public_key) > VLESS_AUTH_MLKEM_MIN:
             self.auth = "mlkem768"
         else:
             self.auth = "x25519"
@@ -751,7 +757,6 @@ class XrayInbound:
         return {
             "clients": [client.entry() for client in creds],
             "decryption": self.encryption.decryption(),
-            "fallbacks": [],
         }
 
     def stream(self) -> dict[str, Any]:
@@ -1257,8 +1262,7 @@ def summary(inbound: XrayInbound, language: str = i18n.DEFAULT_LANGUAGE) -> list
         ("xray", i18n.t("SUM_PROTOCOL", lang), inbound.protocol),
         ("plug", i18n.t("SUM_PORT", lang), str(inbound.port)),
         ("route", i18n.t("SUM_NETWORK", lang), inbound.network),
-        ("shield", i18n.t("SUM_SECURITY", lang), inbound.security),
-        ("users", i18n.t("SUM_CLIENTS", lang), str(len(inbound.clients))),
+        ("shield", i18n.t("SUM_SECURITY", lang), inbound.security_kind()),
         ("key", i18n.t("SUM_ENCRYPTION", lang), inbound.encryption.label()),
     ]
     fields = relevant_fields(inbound.security, inbound.network)

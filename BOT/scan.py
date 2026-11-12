@@ -1493,6 +1493,67 @@ def _is_ip(text: str) -> bool:
         return False
 
 
+FAST_SCAN_TARGETS = (
+    "dl.google.com:443",
+    "www.google.com:443",
+    "www.nvidia.com:443",
+    "www.amazon.com:443",
+    "aws.amazon.com:443",
+    "www.samsung.com:443",
+    "www.amd.com:443",
+    "www.intel.com:443",
+    "www.sony.com:443",
+    "www.ibm.com:443",
+    "www.cisco.com:443",
+    "www.oracle.com:443",
+    "www.mozilla.org:443",
+    "go.dev:443",
+    "brave.com:443",
+    "www.asus.com:443",
+    "www.docker.com:443",
+    "www.rust-lang.org:443",
+    "www.lenovo.com:443",
+    "www.dell.com:443",
+)
+
+
+def default_fast_targets(limit: int = 10) -> list[ScanResult]:
+    out: list[ScanResult] = []
+    for raw in FAST_SCAN_TARGETS[: max(1, int(limit))]:
+        host, port = split_target(raw)
+        out.append(
+            ScanResult(
+                target=raw,
+                host=host,
+                port=port,
+                feasible=True,
+                tls13=True,
+                tls_version="TLSv1.3",
+                h2=True,
+                x25519=True,
+                cert_valid=True,
+                days_left=90,
+                server_names=[host],
+                latency_ms=0,
+                cert_chain_bytes=0,
+                ml_dsa_ready=False,
+            )
+        )
+    return out
+
+
+def top_fastest_targets(results: list[ScanResult] | None, limit: int = 10, fallback_defaults: bool = False) -> list[ScanResult]:
+    cap = max(1, int(limit))
+    items = [item for item in (results or []) if item is not None]
+    good = [item for item in items if item.feasible]
+    good.sort(key=lambda r: (r.latency_ms if r.latency_ms > 0 else 10 ** 9, r.target))
+    if good:
+        return good[:cap]
+    if fallback_defaults:
+        return default_fast_targets(cap)
+    return []
+
+
 def best_candidate(results: list[ScanResult]) -> ScanResult | None:
     for item in results:
         if item.feasible:

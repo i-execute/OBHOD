@@ -180,18 +180,18 @@ def test_no_clients_anywhere_and_all_inbounds_hosted_on_single_sub(tmp_path: Pat
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port_num}{sub_path}", timeout=5) as resp_json:
-            assert resp_json.status == 200
-            parsed_json = json.loads(resp_json.read().decode("utf-8"))
-            assert isinstance(parsed_json, list)
-            assert len(parsed_json) == 3
-
-        raw_path = sub_path.removesuffix("/json")
-        with urllib.request.urlopen(f"http://127.0.0.1:{port_num}{raw_path}", timeout=5) as resp_b64:
+        assert not sub_path.endswith("/json")
+        with urllib.request.urlopen(f"http://127.0.0.1:{port_num}{sub_path}", timeout=5) as resp_b64:
             assert resp_b64.status == 200
             decoded_lines = base64.b64decode(resp_b64.read()).decode("utf-8").strip().splitlines()
             assert len(decoded_lines) == 3
             assert all(line.startswith("vless://") for line in decoded_lines)
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{port_num}{sub_path}/json", timeout=5) as resp_json:
+            assert resp_json.status == 200
+            parsed_json = json.loads(resp_json.read().decode("utf-8"))
+            assert isinstance(parsed_json, list)
+            assert len(parsed_json) == 3
     finally:
         srv.shutdown()
         srv.server_close()
@@ -254,9 +254,9 @@ def test_only_reality_inbounds_allowed_in_ui_and_panel(tmp_path: Path) -> None:
     bot, _ = make_bot(tmp_path)
 
     new_html = xscreens.new_menu(bot.xray.view()).to_html()
-    assert "xr:new:raw:reality" in new_html
-    assert "xr:new:xhttp:reality" in new_html
-    assert "xr:new:grpc:reality" in new_html
+    assert "xr:wiz:net:raw" in new_html
+    assert "xr:wiz:net:xhttp" in new_html
+    assert "xr:wiz:net:grpc" in new_html
     assert ":none" not in new_html
     assert ":tls" not in new_html
 

@@ -9,10 +9,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import i18n, inline, portguard, screens, subs, xscreens
+from . import antiddos, i18n, inline, portguard, screens, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
-from .scan import CONCURRENCY, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit, vps_subnet_cidr
+from .scan import CONCURRENCY, FAST_SCAN_TARGETS, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit, top_fastest_targets, vps_subnet_cidr
 from .xray import (
     DEFAULT_IGNOREIP,
     FINGERPRINTS,
@@ -109,6 +109,9 @@ class XrayPanel:
         self.funnel_watch_task: asyncio.Task[None] | None = None
         self.picked_dest: str = ""
         self.picked_sni: str = ""
+        self.wiz_network: str = "raw"
+        self.wiz_target: ScanResult | None = None
+        self.auto_scan_on_open: bool = os.geteuid() == 0
         self.last_subnet: str = ""
         self.pending_subnet_targets: list[str] = []
         self.tunnel_key = self.load_tunnel_key()
@@ -222,7 +225,7 @@ class XrayPanel:
         sub = self.state.subscription_of(email)
         if sub is None:
             return "", ""
-        return sub.json_path(), subs.json_url_of(sub, self.state.address(self.address()), self.state.sub_port, self.state.public_base())
+        return sub.path(), subs.url_of(sub, self.state.address(self.address()), self.state.sub_port, self.state.public_base())
 
     def next_port(self, extra: object = ()) -> int:
         used = set(self.state.ports()) | {int(item) for item in extra}
@@ -282,6 +285,9 @@ class XrayPanel:
                 await self.render(chat_id, msg_id, xscreens.new_menu(self.view()))
                 return
             await self.create_quick(chat_id, msg_id, arg2 or "reality", arg1, parts[4] if len(parts) > 4 else "")
+            return
+        if head == "wiz":
+            await self.wizard_action(chat_id, msg_id, arg1, arg2, parts[4] if len(parts) > 4 else "")
             return
         if head == "custom":
             if arg1 != "open" or not self.draft:
@@ -376,10 +382,14 @@ class XrayPanel:
         self.bot.state.last_probe = dict(self.core)
         self.save()
 
+    def register_ddos_port(self, port: int) -> None:
+        policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+        if int(port) not in policy.ports and len(policy.ports) < antiddos.MAX_PORTS:
+            policy.ports.append(int(port))
+        self.bot.state.ddos = policy.to_dict()
+
     async def auto_apply_live(self) -> None:
         if not isinstance(self.control, XrayControl) or os.geteuid() != 0:
-            return
-        if self.core and not self.core.get("installed"):
             return
         try:
             config = self.state.to_config()
@@ -389,6 +399,16 @@ class XrayPanel:
             self.save()
         except Exception as exc:
             log.debug("auto apply skipped: %s", exc)
+        ddos_state = getattr(self.bot, "ddos_state", None)
+        guard = getattr(self.bot, "guard", None)
+        if ddos_state is not None and getattr(ddos_state, "enabled", False) and guard is not None:
+            try:
+                from .guard import ddos_argv, ddos_call
+
+                policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+                self.bot.ddos_state = await ddos_call(guard, self.bot.state.ssh, ddos_argv("install", policy), 60)
+            except Exception as exc:
+                log.debug("auto ddos sync skipped: %s", exc)
 
     async def sync_live_and_subs(self) -> None:
         await self.auto_apply_live()
@@ -400,6 +420,158 @@ class XrayPanel:
                     await res
             except Exception as exc:
                 log.debug("subs sync skipped: %s", exc)
+
+    async def wizard_action(self, chat_id: int, msg_id: int, action: str, arg1: str = "", arg2: str = "") -> None:
+        if action == "net":
+            if arg1 not in NETWORKS:
+                raise PanelError(f"the network {arg1} is not supported")
+            self.wiz_network = arg1
+            self.wiz_target = None
+            if self.auto_scan_on_open and not any(item.feasible for item in self.results):
+                await self.run_wizard_scan(chat_id, msg_id, list(FAST_SCAN_TARGETS))
+                return
+            await self.render(chat_id, msg_id, xscreens.wiz_scan_screen(self.view(), self.wiz_network, self.results))
+            return
+        if action == "back":
+            await self.render(chat_id, msg_id, xscreens.wiz_scan_screen(self.view(), self.wiz_network or "raw", self.results))
+            return
+        if action == "scan":
+            if arg1 == "vps":
+                cidr = vps_subnet_cidr(self.address())
+                if not cidr:
+                    await self.render(
+                        chat_id,
+                        msg_id,
+                        xscreens.wiz_scan_screen(
+                            self.view(error="server public IPv4 is not detected; enter CIDR manually"),
+                            self.wiz_network or "raw",
+                            self.results,
+                        ),
+                    )
+                    return
+                self.last_subnet = cidr
+                await self.run_wizard_scan(chat_id, msg_id, [cidr])
+                return
+            self.last_subnet = ""
+            await self.run_wizard_scan(chat_id, msg_id, list(FAST_SCAN_TARGETS))
+            return
+        if action == "pick":
+            if not arg1.isdigit():
+                raise PanelError("the target number must be a number")
+            idx = int(arg1)
+            top_items = top_fastest_targets(self.results, limit=10, fallback_defaults=True)
+            if idx < 0 or idx >= len(top_items):
+                raise PanelError("the target was not found")
+            chosen = top_items[idx]
+            if chosen.latency_ms == 0 and chosen.cert_chain_bytes == 0 and self.auto_scan_on_open:
+                try:
+                    probed = await probe(chosen.host or chosen.target.rsplit(":", 1)[0], int(chosen.port or 443), chosen.host)
+                    if probed.feasible:
+                        chosen = probed
+                except (ScanError, OSError):
+                    pass
+            self.wiz_target = chosen
+            host = chosen.host or chosen.target.rsplit(":", 1)[0]
+            port = int(chosen.port or 443)
+            sni = (chosen.server_names[0] if chosen.server_names else "") or host
+            self.picked_dest = f"{host}:{port}" if ":" not in host else f"[{host}]:{port}"
+            self.picked_sni = sni
+            await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(), self.wiz_network or "raw", chosen, ctx="wiz"))
+            return
+        if action == "make":
+            await self.finish_wizard_inbound(chat_id, msg_id, arg1)
+            return
+        await self.render(chat_id, msg_id, xscreens.new_menu(self.view()))
+
+    async def run_wizard_scan(self, chat_id: int, msg_id: int, targets: list[str]) -> None:
+        clean = [item for item in targets if str(item).strip()][:CANDIDATE_LIMIT]
+        t = self.tr()
+        has_subnet = any("/" in item for item in clean) or len(clean) > 24
+        shown_count = 254 * sum(1 for item in clean if "/" in item) + sum(1 for item in clean if "/" not in item)
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.busy_screen(
+                t("BUSY_SCAN"),
+                self.bot.state.language,
+                [t("BUSY_SCAN_STEP_COUNT", count=shown_count), t("BUSY_SCAN_STEP_CHECKS")],
+            ),
+        )
+        try:
+            results = await scan_targets(
+                clean,
+                sni=self.state.scan_sni,
+                xver=int(self.state.scan_xver or 0),
+                candidates=self.state.candidates(),
+                concurrency=48 if has_subnet else CONCURRENCY,
+            )
+        except (OSError, ValueError, ScanError) as exc:
+            await self.render(chat_id, msg_id, xscreens.wiz_scan_screen(self.view(error=str(exc)), self.wiz_network or "raw", self.results))
+            return
+        self.results = results
+        self.save()
+        good = sum(1 for item in results if item.feasible)
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.wiz_scan_screen(self.view(notice=t("NOTICE_SCAN_DONE", good=good, total=len(results))), self.wiz_network or "raw", results),
+        )
+
+    async def finish_wizard_inbound(self, chat_id: int, msg_id: int, raw_kind: str) -> None:
+        t = self.tr()
+        network = self.wiz_network if self.wiz_network in NETWORKS else "raw"
+        try:
+            kind = canonical_kind(raw_kind or "reality")
+        except ValueError:
+            raise PanelError("the encryption is not supported") from None
+        if not kind.startswith("reality"):
+            raise PanelError("only reality inbounds are supported")
+        target = self.wiz_target
+        if target is not None:
+            ok, reason = security_fit(target, kind)
+            if not ok:
+                bad = t("XR_SCAN_SEC_BAD", security=xscreens.security_label(kind, self.bot.state.language))
+                msg = f"{bad}: {reason}" if reason else bad
+                await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(error=msg), network, target, ctx="wiz"))
+                return
+        foreign, _owners = await self.free_of_strangers()
+        port = self.next_port(foreign)
+        port, moved = await self.guard_port(port)
+        try:
+            inbound = new_inbound("vless", port, network, "reality")
+        except (XrayError, ValueError) as exc:
+            raise PanelError(str(exc)) from None
+        inbound.remark = f"{network}-reality-{port}"
+        if target is not None:
+            host = target.host or target.target.rsplit(":", 1)[0]
+            tport = int(target.port or 443)
+            sni = (target.server_names[0] if target.server_names else "") or host
+            inbound.dest = f"{host}:{tport}" if ":" not in host else f"[{host}]:{tport}"
+            inbound.sni = sni
+        elif self.picked_dest:
+            inbound.dest = self.picked_dest
+            if self.picked_sni:
+                inbound.sni = self.picked_sni
+        inbound.ensure_credential()
+        self.state.add(inbound)
+        self.state.switch_security(inbound.id, kind)
+        if kind_has_mldsa(kind):
+            try:
+                seed, verify = await self.control.mldsa65(self.bot.state.ssh, auto_install=True)
+            except RpcError as exc:
+                self.state.remove(inbound.id)
+                if target is not None:
+                    await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(error=exc.message), network, target, ctx="wiz"))
+                else:
+                    await self.render(chat_id, msg_id, xscreens.new_menu(self.view(error=exc.message)))
+                return
+            self.state.set_mldsa65(inbound.id, seed, verify)
+        self.state.ensure_sub_all()
+        self.register_ddos_port(port)
+        self.save()
+        await self.sync_live_and_subs()
+        notice = t("NOTICE_INBOUND_CREATED")
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
 
     async def create_quick(self, chat_id: int, msg_id: int, security: str, network: str, port: str = "") -> None:
         if network not in NETWORKS:
@@ -421,6 +593,7 @@ class XrayPanel:
         inbound.ensure_credential()
         self.state.add(inbound)
         self.state.ensure_sub_all()
+        self.register_ddos_port(number)
         self.save()
         await self.sync_live_and_subs()
         notice = self.tr()("NOTICE_INBOUND_CREATED")
@@ -868,7 +1041,7 @@ class XrayPanel:
         host = self.state.address(self.address())
         bundle = self.sub_bundle(host)
         if bundle is not None:
-            out.append((self.tr()("XR_SUBS_ALL"), bundle.json_path(), subs.json_url_of(bundle, host, self.state.sub_port, self.state.public_base())))
+            out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), subs.url_of(bundle, host, self.state.sub_port, self.state.public_base())))
         return out
 
     async def refresh_traffic(self) -> bool:
@@ -1233,7 +1406,39 @@ class XrayPanel:
         if arg1 == "cand":
             ctx = arg2 or "new"
             self.last_subnet = ""
-            await self.run_subnet_scan(chat_id, msg_id, list(self.state.candidates())[:CANDIDATE_LIMIT], ctx)
+            await self.run_subnet_scan(chat_id, msg_id, list(FAST_SCAN_TARGETS), ctx)
+            return
+        if arg1 == "sec":
+            ctx = arg2
+            inbound = self.get(ctx)
+            try:
+                kind = canonical_kind(arg3 or "reality")
+            except ValueError:
+                raise PanelError("the encryption is not supported") from None
+            target = self.wiz_target
+            if target is not None:
+                ok, reason = security_fit(target, kind)
+                if not ok:
+                    bad = t("XR_SCAN_SEC_BAD", security=xscreens.security_label(kind, self.bot.state.language))
+                    msg = f"{bad}: {reason}" if reason else bad
+                    await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(error=msg), inbound.network, target, ctx=ctx))
+                    return
+                host = target.host or target.target.rsplit(":", 1)[0]
+                port = int(target.port or 443)
+                sni = (target.server_names[0] if target.server_names else "") or host
+                self.state.adopt_scan(inbound.id, host, sni, port)
+            self.state.switch_security(inbound.id, kind)
+            if kind_has_mldsa(kind) and not (inbound.mldsa65_seed and inbound.mldsa65_verify):
+                try:
+                    seed, verify = await self.control.mldsa65(self.bot.state.ssh, auto_install=True)
+                except RpcError as exc:
+                    await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=exc.message), inbound))
+                    return
+                self.state.set_mldsa65(inbound.id, seed, verify)
+            self.save()
+            await self.sync_live_and_subs()
+            notice = t("XR_SUBSCAN_PICKED_NOTICE", dest=inbound.dest, sni=inbound.sni)
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
             return
         if arg1 == "pick":
             ctx = arg2 or "new"
@@ -1251,9 +1456,14 @@ class XrayPanel:
             dest = f"{host}:{port}"
             self.picked_dest = dest
             self.picked_sni = sni
+            self.wiz_target = item
             notice = t("XR_SUBSCAN_PICKED_NOTICE", dest=dest, sni=sni)
             if ctx.isdigit():
                 inbound = self.get(ctx)
+                ok, _ = security_fit(item, inbound.security_kind())
+                if not ok:
+                    await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(), inbound.network, item, ctx=ctx))
+                    return
                 self.state.adopt_scan(inbound.id, host, sni, port)
                 self.save()
                 await self.sync_live_and_subs()
@@ -1262,7 +1472,7 @@ class XrayPanel:
             if ctx == "custom":
                 await self.render(chat_id, msg_id, xscreens.custom_menu(self.view(notice=notice)))
                 return
-            await self.render(chat_id, msg_id, xscreens.new_menu(self.view(notice=notice)))
+            await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(notice=notice), self.wiz_network or "raw", item, ctx="wiz"))
             return
         await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(), self.results, ctx="new"))
 
@@ -1695,7 +1905,8 @@ class XrayPanel:
         if ident == "xr_subnet_cidr":
             clean = list(self.pending_subnet_targets)[:CANDIDATE_LIMIT]
             self.pending_subnet_targets = []
-            scan_ctx = ctx if (ctx in {"new", "custom"} or ctx.isdigit()) else "new"
+            scan_ctx = ctx if (ctx in {"wiz", "new", "custom"} or ctx.isdigit()) else "new"
+            is_single_host = len(clean) == 1 and "/" not in clean[0]
             has_subnet = any("/" in item for item in clean) or len(clean) > 24
             shown_count = 254 * sum(1 for item in clean if "/" in item) + sum(1 for item in clean if "/" not in item)
             t = self.tr()
@@ -1729,6 +1940,23 @@ class XrayPanel:
                 drop = getattr(self.bot, "drop_marker", None)
                 if callable(drop):
                     await drop(chat_id, busy_id)
+            if scan_ctx == "wiz":
+                if not err and is_single_host and results and results[0].feasible:
+                    chosen = results[0]
+                    self.wiz_target = chosen
+                    host = chosen.host or chosen.target.rsplit(":", 1)[0]
+                    port = int(chosen.port or 443)
+                    sni = (chosen.server_names[0] if chosen.server_names else "") or host
+                    self.picked_dest = f"{host}:{port}" if ":" not in host else f"[{host}]:{port}"
+                    self.picked_sni = sni
+                    await self.send(chat_id, xscreens.wiz_sec_screen(self.view(), self.wiz_network or "raw", chosen, ctx="wiz"))
+                    return
+                if not err and is_single_host and results and not results[0].feasible:
+                    err = results[0].reason or "the target is not suitable for Reality"
+                good = sum(1 for item in results if item.feasible)
+                shown_notice = "" if err else t("NOTICE_SCAN_DONE", good=good, total=len(results))
+                await self.send(chat_id, xscreens.wiz_scan_screen(self.view(notice=shown_notice, error=err), self.wiz_network or "raw", results))
+                return
             good = sum(1 for item in results if item.feasible)
             shown_notice = "" if err else t("NOTICE_SCAN_DONE", good=good, total=len(results))
             await self.send(chat_id, xscreens.subnet_scan_screen(self.view(notice=shown_notice, error=err), results, ctx=scan_ctx))
@@ -1775,6 +2003,8 @@ class XrayPanel:
 
     def back_target(self, ctx: str, ident: str = "") -> str:
         if ident == "xr_subnet_cidr":
+            if ctx == "wiz":
+                return "xr:wiz:back"
             scan_ctx = ctx if (ctx in {"new", "custom"} or ctx.isdigit()) else "new"
             return f"xr:subscan:{scan_ctx}"
         if ident == "xr_port" and ctx in {"-", "custom"}:

@@ -215,8 +215,8 @@ def test_show_links_and_subscription(tmp_path: Path) -> None:
     rows = item.sub_rows()
     assert len(rows) == 1
     _label, path, url = rows[0]
-    assert path.endswith("/json")
-    assert len(path) == 7 + SUB_SEGMENT_LEN * 2
+    assert not path.endswith("/json")
+    assert len(path) == 2 + SUB_SEGMENT_LEN * 2
     assert url.endswith(path)
     assert url.startswith("http://203.0.113.10:2096/")
     run(item.subs_action(1, 0, "rotate"))

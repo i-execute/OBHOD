@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import i18n, inline, subs
-from .scan import ML_DSA65_CHAIN_MIN, ScanResult, canonical_kind, kind_has_mldsa, security_fit, security_fits
+from .scan import ML_DSA65_CHAIN_MIN, ScanResult, canonical_kind, kind_has_mldsa, security_fit, security_fits, top_fastest_targets
 from .ui import (
     bold,
     bold_html,
@@ -188,29 +188,137 @@ def home(view: XrayView) -> Any:
     return screen(t("XR_TITLE"), t("XR_SUBTITLE"), blocks, buttons, icon="xray")
 
 
+def transport_title(network: str) -> str:
+    if network == "grpc":
+        return "gRPC"
+    return str(network or "raw").upper()
+
+
+def compact_target_rows(items: list[ScanResult]) -> list[tuple[str, str, str]]:
+    out: list[tuple[str, str, str]] = []
+    for idx, item in enumerate(items[:10]):
+        sni_name = (item.server_names[0] if item.server_names else "") or item.host or item.target
+        base_host = item.ip or item.host or item.target
+        if int(item.port or 443) != 443 and ":" not in base_host:
+            base_host = f"{base_host}:{item.port}"
+        elif base_host.endswith(":443"):
+            base_host = base_host[:-4]
+        sni_short = sni_name[:-4] if sni_name.endswith(":443") else sni_name
+        if item.ip and sni_short and sni_short != base_host:
+            left = f"{idx + 1}. {base_host} ({sni_short[:14]})"
+        else:
+            shown = sni_short or base_host
+            left = f"{idx + 1}. {shown[:24]}"
+        ping_part = f"{item.latency_ms} ms" if item.latency_ms > 0 else "-"
+        if item.pq_hybrid and item.ml_dsa_ready:
+            cert_part = "PQ+MLDSA"
+        elif item.ml_dsa_ready:
+            cert_part = "MLDSA"
+        elif item.pq_hybrid:
+            cert_part = "PQ"
+        else:
+            cert_part = "X25519"
+        out.append(("radar" if item.feasible else "warn", left, code(f"{ping_part} · {cert_part}")))
+    return out
+
+
+def target_pick_rows(prefix: str, count: int) -> list[str]:
+    total = max(0, min(int(count), 10))
+    rows_out: list[str] = []
+    if total > 0:
+        first = [button(str(idx + 1), f"{prefix}:{idx}", icon="target") for idx in range(0, min(5, total))]
+        rows_out.append(row(*first))
+    if total > 5:
+        second = [button(str(idx + 1), f"{prefix}:{idx}", icon="target") for idx in range(5, total)]
+        rows_out.append(row(*second))
+    return rows_out
+
+
 def new_menu(view: XrayView) -> Any:
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(muted(t("XR_NEW_REALITY_ONLY_NOTE"))))
-    cur_dest = view.picked_dest or DEFAULT_DEST
-    cur_sni = view.picked_sni or DEFAULT_SNI
-    blocks.append(
-        table(
-            [
-                ("target", field_label("dest", view.lang), code(cur_dest)),
-                ("world", field_label("sni", view.lang), code(cur_sni)),
-                ("shield", t("XR_HOME_ENCRYPTION"), code("mlkem768x25519plus")),
-            ],
-            (t("UI_PARAM"), t("UI_VALUE")),
-        )
-    )
     buttons = [
-        row(button(t("XR_SUBSCAN_BTN"), "xr:subscan:new", icon="radar")),
-        row(button("RAW + Reality", "xr:new:raw:reality", icon="add"), button("XHTTP + Reality", "xr:new:xhttp:reality", icon="add")),
-        row(button("gRPC + Reality", "xr:new:grpc:reality", icon="add"), button(t("XR_BTN_CUSTOM"), "xr:custom", icon="tools")),
+        row(
+            button("RAW", "xr:wiz:net:raw", icon="add"),
+            button("XHTTP", "xr:wiz:net:xhttp", icon="add"),
+            button("gRPC", "xr:wiz:net:grpc", icon="add"),
+        ),
         back_row("xr:home", view.lang),
     ]
-    return screen(t("XR_NEW_TITLE"), t("XR_NEW_SUBTITLE"), blocks, buttons, icon="add")
+    return screen(t("XR_NEW_TITLE"), t("XR_WIZ_STEP1_SUB"), blocks, buttons, icon="add")
+
+
+def wiz_scan_screen(view: XrayView, network: str = "raw", results: list[ScanResult] | None = None) -> Any:
+    t = view.tr()
+    state = view.state
+    blocks = banner(view, t)
+    rows = results if results is not None else [ScanResult.from_dict(item) for item in state.scan_results]
+    top_items = top_fastest_targets(rows, limit=10, fallback_defaults=True)
+    blocks.append(table(compact_target_rows(top_items), (t("XR_WIZ_COL_TARGET"), t("XR_WIZ_COL_PING"))))
+    buttons = target_pick_rows("xr:wiz:pick", len(top_items))
+    if view.vps_subnet:
+        buttons.append(
+            row(
+                button(t("XR_WIZ_FAST_BTN"), "xr:wiz:scan:fast", icon="scan"),
+                button(t("XR_SUBSCAN_VPS_BTN"), "xr:wiz:scan:vps", icon="radar"),
+            )
+        )
+    else:
+        buttons.append(row(button(t("XR_WIZ_FAST_BTN"), "xr:wiz:scan:fast", icon="scan")))
+    buttons.append(input_row(t("XR_WIZ_MANUAL_BTN"), "xr_subnet_cidr", "wiz", view.lang))
+    buttons.append(back_row("xr:new", view.lang))
+    title = f"{t('XR_WIZ_STEP2_TITLE')} · {transport_title(network)}"
+    return screen(title, t("XR_WIZ_STEP2_SUB"), blocks, buttons, icon="scan")
+
+
+def compatible_reality_kinds(result: ScanResult | None) -> list[str]:
+    if result is None:
+        return ["reality"]
+    out = [kind for kind, ok, _ in security_fits(result) if ok and kind.startswith("reality")]
+    return out or ["reality"]
+
+
+def wiz_sec_screen(view: XrayView, network: str, result: ScanResult, ctx: str = "wiz") -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    host = result.host or result.target.rsplit(":", 1)[0]
+    port = int(result.port or 443)
+    sni = (result.server_names[0] if result.server_names else "") or host
+    dest = f"{host}:{port}" if ":" not in host else f"[{host}]:{port}"
+    dest_view = f"{dest} ({result.latency_ms} ms)" if result.latency_ms > 0 else dest
+    chain_bytes = int(result.cert_chain_bytes or 0)
+    chain_view = (
+        t("XR_WIZ_MLDSA_OK", size=chain_bytes)
+        if result.ml_dsa_ready
+        else t("XR_WIZ_MLDSA_SHORT", size=chain_bytes)
+    )
+    pairs = [
+        ("route", t("XR_CUSTOM_NETWORK"), code(transport_title(network))),
+        ("target", t("XR_SUBSCAN_SELECTED"), code(f"{dest_view} · {sni}")),
+        ("shield", t("XR_WIZ_CHAIN_ROW"), code(chain_view)),
+    ]
+    blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
+    kinds = compatible_reality_kinds(result)
+    buttons: list[str] = []
+    action_prefix = "xr:wiz:make" if ctx == "wiz" else f"xr:subscan:sec:{ctx}"
+    for start in range(0, len(kinds), 2):
+        chunk = kinds[start : start + 2]
+        buttons.append(
+            row(
+                *[
+                    button(
+                        security_label(kind, view.lang),
+                        f"{action_prefix}:{kind}",
+                        icon=SECURITY_ICONS.get(kind, "lock"),
+                    )
+                    for kind in chunk
+                ]
+            )
+        )
+    back_to = "xr:wiz:back" if ctx == "wiz" else f"xr:subscan:{ctx}"
+    buttons.append(back_row(back_to, view.lang))
+    return screen(t("XR_WIZ_STEP3_TITLE"), t("XR_WIZ_STEP3_SUB"), blocks, buttons, icon="shield")
 
 
 def custom_menu(view: XrayView) -> Any:
@@ -248,7 +356,6 @@ def subnet_scan_screen(view: XrayView, results: list[ScanResult] | None = None, 
     t = view.tr()
     state = view.state
     blocks = banner(view, t)
-    blocks.append(quote(muted(t("XR_SUBSCAN_NOTE"))))
     cur_dest = view.picked_dest or DEFAULT_DEST
     cur_sni = view.picked_sni or DEFAULT_SNI
     if ctx.isdigit():
@@ -264,30 +371,20 @@ def subnet_scan_screen(view: XrayView, results: list[ScanResult] | None = None, 
     elif view.vps_subnet:
         meta_pairs.append(("world", "VPS /24", code(view.vps_subnet)))
     blocks.append(table(meta_pairs, (t("UI_PARAM"), t("UI_VALUE"))))
-    rows = results if results is not None else [ScanResult.from_dict(item) for item in state.scan_results]
-    usable: list[tuple[int, ScanResult]] = []
-    if rows:
-        pairs = []
-        for idx, item in enumerate(rows[:10]):
-            sni_name = (item.server_names[0] if item.server_names else "") or item.host or item.target
-            addr_label = f"{item.ip}:{item.port}" if item.ip else item.target
-            mark = t("XR_SCAN_FEASIBLE") if item.feasible else t("XR_SCAN_INFEASIBLE")
-            extra = "H2" if item.h2 else (item.tls_version or "-")
-            pairs.append(("radar" if item.feasible else "warn", addr_label, f"{sni_name} ({item.latency_ms} ms, {mark}, {extra})"))
-            if item.feasible or (item.tls13 and sni_name):
-                usable.append((idx, item))
-        blocks.append(table(pairs, (t("XR_SCAN_TARGET"), t("XR_SCAN_RESULT"))))
+    raw_rows = results if results is not None else [ScanResult.from_dict(item) for item in state.scan_results]
+    indexed_good = [(idx, item) for idx, item in enumerate(raw_rows) if item is not None and item.feasible]
+    indexed_good.sort(key=lambda pair: (pair[1].latency_ms if pair[1].latency_ms > 0 else 10 ** 9, pair[1].target))
+    top_pairs = indexed_good[:10]
+    buttons: list[str] = []
+    if top_pairs:
+        blocks.append(table(compact_target_rows([pair[1] for pair in top_pairs]), (t("XR_WIZ_COL_TARGET"), t("XR_WIZ_COL_PING"))))
+        first_row = [button(str(pos + 1), f"xr:subscan:pick:{ctx}:{orig_idx}", icon="target") for pos, (orig_idx, _) in enumerate(top_pairs[:5])]
+        buttons.append(row(*first_row))
+        if len(top_pairs) > 5:
+            second_row = [button(str(pos + 6), f"xr:subscan:pick:{ctx}:{orig_idx}", icon="target") for pos, (orig_idx, _) in enumerate(top_pairs[5:10])]
+            buttons.append(row(*second_row))
     else:
         blocks.append(quote(muted(t("XR_SUBSCAN_EMPTY"))))
-    buttons: list[str] = []
-    for start in range(0, min(len(usable), 6), 2):
-        chunk = usable[start : start + 2]
-        btn_items = []
-        for idx, item in chunk:
-            sni_name = (item.server_names[0] if item.server_names else "") or item.host or item.ip or item.target
-            short = sni_name[:17]
-            btn_items.append(button(f"#{idx + 1} {short}", f"xr:subscan:pick:{ctx}:{idx}", icon="ok"))
-        buttons.append(row(*btn_items))
     if view.vps_subnet:
         buttons.append(
             row(
@@ -298,7 +395,7 @@ def subnet_scan_screen(view: XrayView, results: list[ScanResult] | None = None, 
     else:
         buttons.append(row(button(t("XR_SUBSCAN_CAND_BTN"), f"xr:subscan:cand:{ctx}", icon="scan")))
     buttons.append(input_row(t("XR_SUBSCAN_INPUT_BTN"), "xr_subnet_cidr", ctx, view.lang))
-    back_to = "xr:custom" if ctx == "custom" else (f"xr:in:{ctx}" if ctx.isdigit() else "xr:new")
+    back_to = "xr:custom" if ctx == "custom" else (f"xr:in:{ctx}" if ctx.isdigit() else "xr:home")
     buttons.append(back_row(back_to, view.lang))
     return screen(t("XR_SUBSCAN_TITLE"), t("XR_SUBSCAN_SUBTITLE"), blocks, buttons, icon="scan")
 
@@ -583,7 +680,7 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         setup_btn = row(button(t("XR_SUBS_APPLY_XRAY"), "xr:core:apply", icon="save"))
     elif sub_link_ready:
         host = state.address(view.address)
-        url = subs.json_url_of(bundle, host, state.sub_port, state.public_base())
+        url = subs.url_of(bundle, host, state.sub_port, state.public_base())
         blocks.append(long_block(t("XR_SUBS_JSON_TITLE"), url))
         blocks.append(long_block(t("XR_SUBS_LINKS_TITLE"), "\n".join(links[:LINK_PREVIEW])))
         copy_btn = copy_row(t("SUB_COPY"), url, icon="copy")

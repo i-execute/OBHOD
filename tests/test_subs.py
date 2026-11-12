@@ -317,7 +317,7 @@ def test_the_subs_screen_shows_the_aggregate(tmp_path: Path) -> None:
 
     html = xscreens.subs_screen(bot.xray.view(), rows).build()
     assert "https://obhod-test.tail1234.ts.net:8443/" in html
-    assert "/json" in html
+    assert "/json" not in html
 
 
 def test_the_subs_screen_never_shows_a_loopback_link(tmp_path: Path) -> None:
@@ -640,7 +640,7 @@ def test_the_subs_screen_keeps_one_link_and_folds_the_rest() -> None:
     tail = html.split("<details><summary>")[-1]
     assert tail.count("vless://") == len(bundle.links)
     assert len(bundle.links) >= 1
-    assert "/json" in html
+    assert "/json" not in html
 
 
 def test_the_subs_screen_has_no_per_client_link() -> None:

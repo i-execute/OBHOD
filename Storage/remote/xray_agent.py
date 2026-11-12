@@ -851,6 +851,7 @@ def cmd_apply(flags, rest):
                 start_core()
                 raise ScriptError("start_failed", failure + ", the previous configuration is restored", "start")
             raise ScriptError("start_failed", failure, "start")
+        open_ufw_ports(ports)
     else:
         data = state_report()
     data["applied"] = True
@@ -860,6 +861,22 @@ def cmd_apply(flags, rest):
         if data["fallback"]:
             data["fallback_version"] = str(install.get("fallback_version", PINNED))
     return data, None
+
+
+def open_ufw_ports(ports):
+    ufw_bin = shutil.which("ufw")
+    if not ports or not ufw_bin:
+        return
+    code, status_text = run([ufw_bin, "status"], timeout=15)
+    if code != 0 or "status: active" not in (status_text or "").lower():
+        return
+    for item in ports:
+        try:
+            port_num = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= port_num <= 65535:
+            run([ufw_bin, "allow", f"{port_num}/tcp"], timeout=15)
 
 
 def cmd_test(flags, rest):
@@ -1018,9 +1035,16 @@ def cmd_uninstall(flags, rest):
     return {"removed": removed, "purge": flag_on(flags.get("purge"), False)}, None
 
 
+def _strip_quotes(text):
+    return str(text or "").strip().rstrip(",").strip().strip('"').strip("'").strip()
+
+
 def cmd_mldsa65(flags, rest):
     if not os.path.isfile(CORE):
-        raise ScriptError("not_installed", "the core is not installed", "keys")
+        if flag_on(flags.get("auto_install") or flags.get("auto-install"), False):
+            pinned_with_fallback(flags, False)
+        else:
+            raise ScriptError("not_installed", "the core is not installed", "keys")
     code, text = run([CORE, "mldsa65"], timeout=60)
     if code != 0:
         raise ScriptError("internal", "the core returned no ml-dsa-65 keys: " + text[:200], "keys")
@@ -1028,13 +1052,14 @@ def cmd_mldsa65(flags, rest):
     verify = ""
     for line in text.splitlines():
         token = line.strip()
-        lower = token.lower()
         if not token:
             continue
-        value = token.split(":", 1)[1].strip() if ":" in token else token.split()[-1]
-        if lower.startswith("seed") or lower.startswith("private"):
+        raw_key, sep, raw_val = token.partition(":")
+        key_clean = _strip_quotes(raw_key).lower()
+        value = _strip_quotes(raw_val) if sep else _strip_quotes(token.split()[-1])
+        if key_clean.startswith("seed") or key_clean.startswith("private"):
             seed = value
-        elif lower.startswith("verify") or lower.startswith("public"):
+        elif key_clean.startswith("verify") or key_clean.startswith("public"):
             verify = value
     if not seed or not verify:
         raise ScriptError("internal", "the ml-dsa-65 answer is not parseable: " + text[:200], "keys")
@@ -1043,7 +1068,10 @@ def cmd_mldsa65(flags, rest):
 
 def cmd_vlessenc(flags, rest):
     if not os.path.isfile(CORE):
-        raise ScriptError("not_installed", "the core is not installed", "keys")
+        if flag_on(flags.get("auto_install") or flags.get("auto-install"), False):
+            pinned_with_fallback(flags, False)
+        else:
+            raise ScriptError("not_installed", "the core is not installed", "keys")
     code, text = run([CORE, "vlessenc"], timeout=60)
     if code != 0:
         raise ScriptError("internal", "the core returned no vless encryption: " + text[:200], "keys")
@@ -1051,27 +1079,45 @@ def cmd_vlessenc(flags, rest):
     current = {"auth": "", "decryption": "", "encryption": ""}
     for line in text.splitlines():
         token = line.strip()
-        if not token:
+        if not token or token in {"{", "}"}:
             continue
-        lower = token.lower()
-        value = token.split(":", 1)[1].strip() if ":" in token else token.split()[-1]
-        if lower.startswith("authentication"):
+        raw_key, sep, raw_val = token.partition(":")
+        key_clean = _strip_quotes(raw_key).lower()
+        value = _strip_quotes(raw_val) if sep else _strip_quotes(token.split()[-1])
+        if key_clean.startswith("authentication"):
             if current["decryption"] or current["encryption"]:
                 items.append(current)
                 current = {"auth": "", "decryption": "", "encryption": ""}
-            current["auth"] = value
-        elif lower.startswith("decryption"):
+            low_val = value.lower()
+            if "ml-kem-768" in low_val or "mlkem768" in low_val:
+                current["auth"] = "ML-KEM-768"
+            elif "x25519" in low_val:
+                current["auth"] = "X25519"
+            else:
+                current["auth"] = value
+        elif key_clean.startswith("decryption"):
             current["decryption"] = value
-        elif lower.startswith("encryption") or lower.startswith("password"):
+        elif key_clean.startswith("encryption") or key_clean.startswith("password"):
             if not current["encryption"]:
                 current["encryption"] = value
     if current["decryption"] or current["encryption"]:
         items.append(current)
-    out = {"items": [item for item in items if item["decryption"] or item["encryption"]]}
-    out["decryption"] = out["items"][0]["decryption"] if out["items"] else ""
-    out["encryption"] = out["items"][0]["encryption"] if out["items"] else ""
-    if not out["items"]:
+    valid_items = [item for item in items if item["decryption"] or item["encryption"]]
+    if not valid_items:
         raise ScriptError("internal", "the core returned no vless encryption: " + text[:200], "keys")
+    chosen = valid_items[0]
+    wanted = str(flags.get("auth") or "").strip().lower()
+    if wanted:
+        target_auth = "ML-KEM-768" if ("mlkem" in wanted or "ml-kem" in wanted) else ("X25519" if "x25519" in wanted else "")
+        for candidate in valid_items:
+            if target_auth and candidate["auth"] == target_auth:
+                chosen = candidate
+                break
+    out = {
+        "items": valid_items,
+        "decryption": chosen["decryption"],
+        "encryption": chosen["encryption"],
+    }
     return out, None
 
 

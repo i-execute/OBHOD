@@ -97,25 +97,64 @@ def is_expensive(data: str) -> bool:
     return True
 
 
+_CACHED_PUBLIC_IP = ""
+_NAT_IPV4_NETS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),
+)
+
+
+def _is_non_routable_ipv4(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if addr.version != 4:
+        return True
+    if addr.is_loopback or addr.is_link_local or addr.is_unspecified or addr.is_multicast:
+        return True
+    return any(addr in net for net in _NAT_IPV4_NETS)
+
+
+def _probe_external_ipv4() -> str:
+    global _CACHED_PUBLIC_IP
+    if _CACHED_PUBLIC_IP:
+        return _CACHED_PUBLIC_IP
+    if os.geteuid() != 0:
+        return ""
+    import urllib.request
+
+    for endpoint in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        req = urllib.request.Request(endpoint, headers={"User-Agent": "curl/8.5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                raw = resp.read(64).decode("ascii", errors="ignore").strip()
+            candidate = ipaddress.ip_address(raw)
+        except Exception:
+            continue
+        if not _is_non_routable_ipv4(candidate):
+            _CACHED_PUBLIC_IP = str(candidate)
+            return _CACHED_PUBLIC_IP
+    return ""
+
+
 def public_address() -> str:
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError:
-        return ""
+        return _probe_external_ipv4()
     try:
         sock.settimeout(1.0)
         sock.connect(("198.51.100.1", 53))
         found = sock.getsockname()[0]
     except OSError:
-        return ""
+        return _probe_external_ipv4()
     finally:
         sock.close()
     try:
         parsed = ipaddress.ip_address(found)
     except ValueError:
-        return ""
-    if parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified or parsed.is_multicast:
-        return ""
+        return _probe_external_ipv4()
+    if _is_non_routable_ipv4(parsed):
+        return _probe_external_ipv4()
     return str(parsed)
 
 
