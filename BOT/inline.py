@@ -71,6 +71,8 @@ FIELDS: dict[str, Field] = {
     "dbg_ports": Field("dbg_ports", "FLD_DBG_PORTS", "FLH_DBG_PORTS", "22,80,443"),
     "dbg_chk_target": Field("dbg_chk_target", "FLD_DBG_CHK_TARGET", "FLH_DBG_CHK_TARGET", "31.77.12.187"),
     "dbg_hops": Field("dbg_hops", "FLD_DBG_HOPS", "FLH_DBG_HOPS", "12"),
+    "dbg_ddos_ban": Field("dbg_ddos_ban", "FLD_DBG_DDOS_BAN", "FLH_DBG_DDOS_BAN", "37.9.13.54"),
+    "dbg_ddos_allow": Field("dbg_ddos_allow", "FLD_DBG_DDOS_ALLOW", "FLH_DBG_DDOS_ALLOW", "203.0.113.10"),
     "xr_scan_targets": Field("xr_scan_targets", "FLD_XR_SCAN_TARGETS", "FLH_XR_SCAN_TARGETS", ""),
     "xr_scan_manual": Field("xr_scan_manual", "FLD_XR_SCAN_MANUAL", "FLH_XR_SCAN_MANUAL", "1.1.1.1:443"),
     "xr_subnet_cidr": Field("xr_subnet_cidr", "FLD_XR_SUBNET_CIDR", "FLH_XR_SUBNET_CIDR", "185.199.108.0/24"),

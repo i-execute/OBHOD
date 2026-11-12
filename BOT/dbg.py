@@ -468,6 +468,88 @@ class DebugPanel:
                 self.ddos_exposure = []
                 self.error = str(getattr(exc, "message", exc))[:160]
 
+    def _protected_rkn_ips(self) -> list[str]:
+        protected: list[str] = []
+        state = getattr(self.bot, "state", None)
+        if state is None:
+            return protected
+        candidates = (
+            getattr(getattr(state, "ssh", None), "host", ""),
+            getattr(getattr(state, "xray", None), "sub_address", ""),
+            getattr(getattr(getattr(state, "freeturn", None), "config", None), "host", ""),
+        )
+        for item in candidates:
+            cleaned = antiddos.clean_entry(str(item or ""), allow_private=True)
+            if cleaned and cleaned not in protected:
+                protected.append(cleaned)
+        return protected
+
+    async def auto_sync_rkn(self) -> tuple[int, int, int]:
+        policy = antiddos.Policy.from_dict(getattr(self.bot.state, "ddos", {}))
+        extra = [*self._protected_rkn_ips(), *policy.rkn_allow]
+        v4, v6, ok_sources, _errors = await asyncio.to_thread(
+            antiddos.fetch_rkn_subnets,
+            custom_sources=policy.custom_sources,
+            extra_protected=extra,
+            timeout=10.0,
+        )
+        zhex = antiddos.encode_rkn_zhex(v4, v6)
+        client = guard.GuardClient(self.bot.control)
+        cfg = getattr(self.bot.state, "ssh", None)
+        status = await guard.ddos_call(
+            client,
+            cfg,
+            ["rkn-sync", "--rkn_zhex=-"],
+            240,
+            stdin=zhex.encode("ascii"),
+        )
+        self.ddos = status
+        if hasattr(self.bot, "ddos_state"):
+            self.bot.ddos_state = status
+        self.note("dd", "rkn_sync", "%d+%d" % (len(v4), len(v6)))
+        return len(v4), len(v6), ok_sources
+
+    async def _mutate_ddos_entries(self, chat_id: int, field_name: str, raw_value: str, *, allow_private: bool) -> None:
+        t = self.tr()
+        token = str(raw_value or "").strip()
+        policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+        items = list(getattr(policy, field_name) or [])
+        if token.lower() in {"clear", "none", "reset"}:
+            items = []
+            notice = "%s: 0" % field_name
+        else:
+            remove_explicit = token.startswith("-")
+            if token[:1] in {"+", "-"}:
+                token = token[1:].strip()
+            cleaned = antiddos.clean_entry(token, allow_private=allow_private)
+            if not cleaned or (not allow_private and cleaned in self._protected_rkn_ips()):
+                await self.bot.send(chat_id, dscreens.ddos_screen(self.view(error=t("DDOS_BAD_ENTRY"))))
+                return
+            if remove_explicit or cleaned in items:
+                items = [entry for entry in items if entry != cleaned]
+                notice = "-%s" % cleaned
+            else:
+                items.append(cleaned)
+                notice = "+%s" % cleaned
+        setattr(policy, field_name, items)
+        policy.normalise()
+        self.bot.state.ddos = policy.to_dict()
+        if hasattr(self.bot, "save"):
+            self.bot.save()
+        if self.ddos is not None:
+            self.ddos.policy = policy
+        if self.ddos is not None and self.ddos.installed:
+            client = guard.GuardClient(self.bot.control)
+            cfg = getattr(self.bot.state, "ssh", None)
+            try:
+                self.ddos = await guard.ddos_call(client, cfg, guard.ddos_argv("install", policy), 240)
+                if hasattr(self.bot, "ddos_state"):
+                    self.bot.ddos_state = self.ddos
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+        self.note("dd", field_name, notice)
+        await self.bot.send(chat_id, dscreens.ddos_screen(self.view(notice=notice)))
+
     async def ddos_action(self, chat_id: int, msg_id: int, action: str) -> None:
         t = self.tr()
         self.ddos_busy = False
@@ -476,7 +558,7 @@ class DebugPanel:
             await self.ddos_refresh(probe=action == "open")
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
             return
-        if action not in ("install", "remove", "probe"):
+        if action not in ("install", "remove", "probe", "rkn", "rkn_sync"):
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
             return
         if action == "probe":
@@ -490,6 +572,46 @@ class DebugPanel:
             return
         if not self.cooled("dd:" + action, DDOS_COOLDOWN):
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DBG_LIMIT"))))
+            return
+        if action == "rkn":
+            policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+            policy.rkn_enabled = not policy.rkn_enabled
+            self.bot.state.ddos = policy.to_dict()
+            if hasattr(self.bot, "save"):
+                self.bot.save()
+            if self.ddos is not None:
+                self.ddos.rkn_enabled = policy.rkn_enabled
+                self.ddos.policy = policy
+            if self.ddos is not None and self.ddos.installed:
+                await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+                client = guard.GuardClient(self.bot.control)
+                cfg = getattr(self.bot.state, "ssh", None)
+                try:
+                    self.ddos = await guard.ddos_call(client, cfg, guard.ddos_argv("install", policy), 300)
+                    if hasattr(self.bot, "ddos_state"):
+                        self.bot.ddos_state = self.ddos
+                except Exception as exc:
+                    self.error = str(getattr(exc, "message", exc))[:160]
+                    self.note("dd", "rkn", "fail")
+                    await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+                    return
+            self.error = ""
+            self.note("dd", "rkn", "on" if policy.rkn_enabled else "off")
+            label = t("DDOS_BTN_RKN_ON") if policy.rkn_enabled else t("DDOS_BTN_RKN_OFF")
+            await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=label)))
+            return
+        if action == "rkn_sync":
+            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("DDOS_RKN_SYNCING")))
+            try:
+                v4_len, v6_len, ok_sources = await self.auto_sync_rkn()
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                self.note("dd", "rkn_sync", "fail")
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+                return
+            self.error = ""
+            msg = t("DDOS_RKN_SYNCED", v4=v4_len, v6=v6_len, sources=ok_sources)
+            await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=msg)))
             return
         await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
         client = guard.GuardClient(self.bot.control)
@@ -702,6 +824,12 @@ class DebugPanel:
             if ident == "dbg_hops":
                 self.hops = net.parse_hops(text)
                 await self.bot.send(chat_id, dscreens.trace_screen_view(self.view(notice=str(self.hops))))
+                return
+            if ident == "dbg_ddos_ban":
+                await self._mutate_ddos_entries(chat_id, "manual_bans", text, allow_private=False)
+                return
+            if ident == "dbg_ddos_allow":
+                await self._mutate_ddos_entries(chat_id, "rkn_allow", text, allow_private=True)
                 return
         except chebur.CheburError as exc:
             self.note("chk", "bad_arg", exc.code)

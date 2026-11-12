@@ -1,23 +1,70 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
+import zlib
 from dataclasses import dataclass, field
-from typing import Any
+from functools import lru_cache
+from typing import Any, Iterable
+
+from .rkn_seed import RKN_SEED_ZHEX, RKN_SOURCES
 
 LEVELS = ("ok", "warn", "bad")
+
+
+RKN_GUARD_AUTHOR = "Flecksis"
+RKN_GUARD_REPO = "https://github.com/Flecksis/rkn-guard"
+
 TABLE = "obhod_ddos"
 SET_SYN = "syn_flood"
 SET_CONN = "conn_flood"
 SET_UDP = "udp_flood"
 SET_ICMP = "icmp_flood"
 SET_SCAN = "port_scan"
+SET_RKN_V4 = "rkn_v4"
+SET_RKN_V6 = "rkn_v6"
+SET_ALLOW_V4 = "rkn_allow_v4"
+SET_ALLOW_V6 = "rkn_allow_v6"
+SET_BAN_V4 = "manual_ban_v4"
+SET_BAN_V6 = "manual_ban_v6"
 DEFAULT_PORTS = (22, 443)
 MAX_PORTS = 16
 MAX_SET_SIZE = 1 << 20
 MAX_WINDOW = 3600
 MIN_BURST = 1
 MIN_RATE = 1
+MIN_V4_PREFIX = 12
+MIN_V6_PREFIX = 28
+MIN_MANUAL_V4_PREFIX = 8
+MIN_MANUAL_V6_PREFIX = 24
+MAX_RKN_BYTES = 4 * 1024 * 1024
+MAX_ZHEX_CHARS = 524288
+MAX_CUSTOM_ENTRIES = 512
+MAX_CUSTOM_SOURCES = 16
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+PROTECTED_V4 = (
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("149.154.160.0/20"),
+    ipaddress.ip_network("91.108.4.0/22"),
+    ipaddress.ip_network("91.108.8.0/22"),
+    ipaddress.ip_network("91.108.56.0/22"),
+    ipaddress.ip_network("1.1.1.1/32"),
+    ipaddress.ip_network("1.0.0.1/32"),
+    ipaddress.ip_network("8.8.8.8/32"),
+    ipaddress.ip_network("8.8.4.4/32"),
+    ipaddress.ip_network("9.9.9.9/32"),
+)
+PROTECTED_V6 = (
+    ipaddress.ip_network("fd7a:115c:a1e0::/48"),
+    ipaddress.ip_network("2001:67c:4e8::/48"),
+    ipaddress.ip_network("2001:b28:f23d::/48"),
+    ipaddress.ip_network("2001:b28:f23f::/48"),
+)
 
 SYN_RATE = 180
 SYN_BURST = 240
@@ -100,6 +147,318 @@ def ports_text(raw: object) -> str:
     return ",".join(str(item) for item in ports)
 
 
+LOCAL_V4 = (
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("224.0.0.0/4"),
+    ipaddress.ip_network("240.0.0.0/4"),
+)
+LOCAL_V6 = (
+    ipaddress.ip_network("::/128"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+    ipaddress.ip_network("ff00::/8"),
+)
+
+
+def _is_non_global_or_unsafe(net: ipaddress._BaseNetwork) -> bool:
+    if net.is_loopback or net.is_link_local or net.is_multicast or net.is_unspecified:
+        return True
+    if isinstance(net, ipaddress.IPv4Network):
+        return any(net.overlaps(loc) for loc in LOCAL_V4)
+    return any(net.overlaps(loc) for loc in LOCAL_V6)
+
+
+def _extra_protected_nets(extra_protected: Iterable[str] | None) -> tuple[list[ipaddress.IPv4Network], list[ipaddress.IPv6Network]]:
+    p4 = list(PROTECTED_V4)
+    p6 = list(PROTECTED_V6)
+    for item in extra_protected or ():
+        token = str(item or "").strip()
+        if not token:
+            continue
+        try:
+            net = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            continue
+        if isinstance(net, ipaddress.IPv4Network):
+            p4.append(net)
+        else:
+            p6.append(net)
+    return p4, p6
+
+
+def clean_entry(raw: str, *, allow_private: bool = False) -> str:
+    token = str(raw or "").split("#", 1)[0].strip().lstrip("\ufeff")
+    if not token or CONTROL_RE.search(token):
+        return ""
+    try:
+        net = ipaddress.ip_network(token, strict=False)
+    except ValueError:
+        return ""
+    if net.is_unspecified or net.is_multicast:
+        return ""
+    if not allow_private:
+        if _is_non_global_or_unsafe(net):
+            return ""
+        if isinstance(net, ipaddress.IPv4Network):
+            if net.prefixlen < MIN_MANUAL_V4_PREFIX or any(net.overlaps(p) for p in PROTECTED_V4):
+                return ""
+        else:
+            if net.prefixlen < MIN_MANUAL_V6_PREFIX or any(net.overlaps(p) for p in PROTECTED_V6):
+                return ""
+    else:
+        if isinstance(net, ipaddress.IPv4Network) and net.prefixlen < MIN_MANUAL_V4_PREFIX:
+            return ""
+        if isinstance(net, ipaddress.IPv6Network) and net.prefixlen < MIN_MANUAL_V6_PREFIX:
+            return ""
+    if (isinstance(net, ipaddress.IPv4Network) and net.prefixlen == 32) or (
+        isinstance(net, ipaddress.IPv6Network) and net.prefixlen == 128
+    ):
+        return str(net.network_address)
+    return str(net)
+
+
+def parse_entries(raw: Any, *, allow_private: bool = False) -> list[str]:
+    if isinstance(raw, str):
+        items = [part.strip() for part in raw.replace(";", ",").replace("\n", ",").split(",") if part.strip()]
+    elif isinstance(raw, Iterable) and not isinstance(raw, (bytes, bytearray, dict)):
+        items = [str(part).strip() for part in raw if str(part).strip()]
+    else:
+        items = []
+    out: list[str] = []
+    for item in items:
+        cleaned = clean_entry(item, allow_private=allow_private)
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+            if len(out) >= MAX_CUSTOM_ENTRIES:
+                break
+    return out
+
+
+def entries_csv(entries: Iterable[str], *, allow_private: bool = False) -> str:
+    return ",".join(parse_entries(list(entries), allow_private=allow_private))
+
+
+def split_collapsed_entries(
+    entries: Iterable[str],
+    *,
+    allow_private: bool = False,
+    extra_protected: Iterable[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    p4, p6 = _extra_protected_nets(extra_protected)
+    v4: list[ipaddress.IPv4Network] = []
+    v6: list[ipaddress.IPv6Network] = []
+    for item in entries:
+        cleaned = clean_entry(item, allow_private=allow_private)
+        if not cleaned:
+            continue
+        net = ipaddress.ip_network(cleaned, strict=False)
+        if isinstance(net, ipaddress.IPv4Network):
+            if not allow_private and any(net.overlaps(p) for p in p4):
+                continue
+            v4.append(net)
+        else:
+            if not allow_private and any(net.overlaps(p) for p in p6):
+                continue
+            v6.append(net)
+    return (
+        [str(net) for net in ipaddress.collapse_addresses(v4)],
+        [str(net) for net in ipaddress.collapse_addresses(v6)],
+    )
+
+
+def sanitize_rkn_networks(
+    lines: Iterable[str],
+    *,
+    extra_protected: Iterable[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    p4, p6 = _extra_protected_nets(extra_protected)
+    v4: list[ipaddress.IPv4Network] = []
+    v6: list[ipaddress.IPv6Network] = []
+    for raw_line in lines:
+        token = str(raw_line or "").split("#", 1)[0].strip().lstrip("\ufeff")
+        if not token or CONTROL_RE.search(token):
+            continue
+        try:
+            net = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            continue
+        if _is_non_global_or_unsafe(net):
+            continue
+        if isinstance(net, ipaddress.IPv4Network):
+            if net.prefixlen < MIN_V4_PREFIX or any(net.overlaps(p) for p in p4):
+                continue
+            v4.append(net)
+        else:
+            if net.prefixlen < MIN_V6_PREFIX or any(net.overlaps(p) for p in p6):
+                continue
+            v6.append(net)
+    return (
+        [str(net) for net in ipaddress.collapse_addresses(v4)],
+        [str(net) for net in ipaddress.collapse_addresses(v6)],
+    )
+
+
+def encode_rkn_zhex(v4: Iterable[str], v6: Iterable[str]) -> str:
+    cv4, cv6 = sanitize_rkn_networks([*v4, *v6])
+    payload = json.dumps({"v4": cv4, "v6": cv6}, separators=(",", ":")).encode("utf-8")
+    return zlib.compress(payload, 9).hex()
+
+
+def decode_rkn_zhex(blob: str, *, extra_protected: Iterable[str] | None = None) -> tuple[list[str], list[str]]:
+    clean = str(blob or "").strip()
+    if not clean or len(clean) > MAX_ZHEX_CHARS:
+        return [], []
+    try:
+        compressed = bytes.fromhex(clean)
+        decomp = zlib.decompressobj()
+        raw = decomp.decompress(compressed, MAX_RKN_BYTES)
+        if decomp.unconsumed_tail:
+            return [], []
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, zlib.error, UnicodeDecodeError, json.JSONDecodeError):
+        return [], []
+    if not isinstance(parsed, dict):
+        return [], []
+    rv4 = parsed.get("v4") if isinstance(parsed.get("v4"), list) else []
+    rv6 = parsed.get("v6") if isinstance(parsed.get("v6"), list) else []
+    return sanitize_rkn_networks([*(str(x) for x in rv4), *(str(x) for x in rv6)], extra_protected=extra_protected)
+
+
+@lru_cache(maxsize=1)
+def _cached_seed() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    v4, v6 = decode_rkn_zhex(RKN_SEED_ZHEX)
+    return tuple(v4), tuple(v6)
+
+
+def seed_rkn_subnets(*, extra_protected: Iterable[str] | None = None) -> tuple[list[str], list[str]]:
+    v4, v6 = _cached_seed()
+    if not extra_protected:
+        return list(v4), list(v6)
+    return sanitize_rkn_networks([*v4, *v6], extra_protected=extra_protected)
+
+
+def normalize_source_url(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text or len(text) > 512 or CONTROL_RE.search(text) or any(ch.isspace() for ch in text):
+        return ""
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        return ""
+    host = parsed.hostname.lower().rstrip(".")
+    if host in {"localhost", "localhost.localdomain"} or host.endswith((".local", ".internal", ".lan")):
+        return ""
+    try:
+        addr = ipaddress.ip_address(host)
+        if not addr.is_global:
+            return ""
+    except ValueError:
+        pass
+    path = parsed.path or "/"
+    if host in {"github.com", "www.github.com"}:
+        parts = [seg for seg in path.split("/") if seg]
+        if len(parts) >= 5 and parts[2] == "blob":
+            owner, repo = parts[0], parts[1]
+            rest = parts[3:]
+            if len(rest) >= 3 and rest[0] == "refs" and rest[1] == "heads":
+                rest = rest[2:]
+            host = "raw.githubusercontent.com"
+            path = "/" + "/".join([owner, repo, *rest])
+    elif host == "raw.githubusercontent.com":
+        parts = [seg for seg in path.split("/") if seg]
+        if len(parts) >= 5 and parts[2] == "refs" and parts[3] == "heads":
+            path = "/" + "/".join([parts[0], parts[1], *parts[4:]])
+    port_suffix = f":{parsed.port}" if parsed.port and parsed.port != 443 else ""
+    return urllib.parse.urlunsplit(("https", host + port_suffix, path, parsed.query, ""))
+
+
+def parse_source_urls(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        items = [part.strip() for part in raw.replace(";", ",").replace("\n", ",").split(",") if part.strip()]
+    elif isinstance(raw, Iterable) and not isinstance(raw, (bytes, bytearray, dict)):
+        items = [str(part).strip() for part in raw if str(part).strip()]
+    else:
+        items = []
+    out: list[str] = []
+    for item in items:
+        url = normalize_source_url(item)
+        if url and url not in out:
+            out.append(url)
+            if len(out) >= MAX_CUSTOM_SOURCES:
+                break
+    return out
+
+
+class _NoHttpRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
+        target = normalize_source_url(urllib.parse.urljoin(req.full_url, newurl))
+        if not target:
+            raise urllib.error.HTTPError(req.full_url, code, "blocked redirect", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, target)
+
+
+def _download_source_lines(url: str, timeout: float) -> list[str]:
+    clean_url = normalize_source_url(url)
+    if not clean_url:
+        raise ValueError("invalid https source url")
+    opener = urllib.request.build_opener(_NoHttpRedirect)
+    request = urllib.request.Request(clean_url, headers={"User-Agent": "OBHOD-RKN-Guard/1.0"})
+    with opener.open(request, timeout=max(2.0, float(timeout))) as resp:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            block = resp.read(65536)
+            if not block:
+                break
+            total += len(block)
+            if total > MAX_RKN_BYTES:
+                raise ValueError("source list exceeds size limit")
+            chunks.append(block)
+    return b"".join(chunks).decode("utf-8", errors="replace").splitlines()
+
+
+def fetch_rkn_subnets(
+    *,
+    custom_sources: Iterable[str] | None = None,
+    extra_protected: Iterable[str] | None = None,
+    timeout: float = 10.0,
+) -> tuple[list[str], list[str], int, list[str]]:
+    sources: list[tuple[str, str]] = list(RKN_SOURCES)
+    for index, raw_url in enumerate(parse_source_urls(custom_sources or ()), start=1):
+        if all(existing_url != raw_url for _name, existing_url in sources):
+            sources.append((f"custom_{index}", raw_url))
+    collected: list[str] = []
+    ok_sources = 0
+    errors: list[str] = []
+    for name, url in sources:
+        try:
+            lines = _download_source_lines(url, timeout=timeout)
+        except Exception as exc:
+            errors.append(f"{name}: {type(exc).__name__}")
+            continue
+        collected.extend(lines)
+        ok_sources += 1
+    v4, v6 = sanitize_rkn_networks(collected, extra_protected=extra_protected)
+    if not v4 and not v6:
+        sv4, sv6 = seed_rkn_subnets(extra_protected=extra_protected)
+        return sv4, sv6, ok_sources, errors
+    return v4, v6, ok_sources, errors
+
+
+def _parse_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
 @dataclass
 class Policy:
     enabled: bool = True
@@ -114,6 +473,10 @@ class Policy:
     ban_timeout: int = BAN_TIMEOUT
     set_size: int = SET_SIZE
     ports: list[int] = field(default_factory=lambda: list(DEFAULT_PORTS))
+    rkn_enabled: bool = True
+    rkn_allow: list[str] = field(default_factory=list)
+    manual_bans: list[str] = field(default_factory=list)
+    custom_sources: list[str] = field(default_factory=list)
 
     def normalise(self) -> "Policy":
         self.syn_rate = clamp(self.syn_rate, MIN_RATE, 100000, SYN_RATE)
@@ -127,6 +490,10 @@ class Policy:
         self.ban_timeout = clamp(self.ban_timeout, 60, MAX_WINDOW * 24, BAN_TIMEOUT)
         self.set_size = clamp(self.set_size, 1024, MAX_SET_SIZE, SET_SIZE)
         self.ports = ports_of(",".join(str(item) for item in self.ports)) or list(DEFAULT_PORTS)
+        self.rkn_enabled = bool(self.rkn_enabled)
+        self.rkn_allow = parse_entries(self.rkn_allow, allow_private=True)
+        self.manual_bans = parse_entries(self.manual_bans, allow_private=False)
+        self.custom_sources = parse_source_urls(self.custom_sources)
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,13 +510,26 @@ class Policy:
             "ban_timeout": int(self.ban_timeout),
             "set_size": int(self.set_size),
             "ports": list(self.ports),
+            "rkn_enabled": bool(self.rkn_enabled),
+            "rkn_allow": list(self.rkn_allow),
+            "manual_bans": list(self.manual_bans),
+            "custom_sources": list(self.custom_sources),
         }
+
+    def allow_csv(self) -> str:
+        return entries_csv(self.rkn_allow, allow_private=True)
+
+    def bans_csv(self) -> str:
+        return entries_csv(self.manual_bans, allow_private=False)
+
+    def sources_csv(self) -> str:
+        return ",".join(parse_source_urls(self.custom_sources))
 
     @staticmethod
     def from_dict(raw: Any) -> "Policy":
         data = raw if isinstance(raw, dict) else {}
         policy = Policy(
-            enabled=bool(data.get("enabled", True)),
+            enabled=_parse_bool(data.get("enabled"), True),
             syn_rate=clamp(data.get("syn_rate"), MIN_RATE, 100000, SYN_RATE),
             syn_burst=clamp(data.get("syn_burst"), MIN_BURST, 100000, SYN_BURST),
             conn_rate=clamp(data.get("conn_rate"), MIN_RATE, 100000, CONN_RATE),
@@ -161,6 +541,10 @@ class Policy:
             ban_timeout=clamp(data.get("ban_timeout"), 60, MAX_WINDOW * 24, BAN_TIMEOUT),
             set_size=clamp(data.get("set_size"), 1024, MAX_SET_SIZE, SET_SIZE),
             ports=ports_of(raw.get("ports") if isinstance(raw, dict) else ""),
+            rkn_enabled=_parse_bool(data.get("rkn_enabled"), True),
+            rkn_allow=parse_entries(data.get("rkn_allow"), allow_private=True),
+            manual_bans=parse_entries(data.get("manual_bans"), allow_private=False),
+            custom_sources=parse_source_urls(data.get("custom_sources")),
         )
         return policy.normalise()
 
@@ -170,37 +554,96 @@ def ports_set(policy: Policy) -> str:
     return "{ " + ", ".join(str(item) for item in ports) + " }"
 
 
-def nft_table(policy: Policy) -> str:
-    policy = policy.normalise()
-    lines = [
-        "table inet %s {" % TABLE,
-        "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_SYN, policy.ban_timeout, policy.set_size),
-        "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_CONN, policy.ban_timeout, policy.set_size),
-        "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_UDP, policy.ban_timeout, policy.set_size),
-        "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_ICMP, policy.ban_timeout, policy.set_size),
-        "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_SCAN, policy.ban_timeout, policy.set_size),
-        "  chain input {",
-        "    type filter hook input priority raw; policy accept;",
-        '    iifname "lo" accept',
-        "    ct state invalid counter drop",
-        "    tcp flags & (fin|syn|rst|ack) == 0x0 counter drop",
-        "    tcp flags & (fin|syn|psh|rst|ack|urg) == (fin|syn|psh|urg) counter drop",
-        "    ip saddr @%s counter drop" % SET_SYN,
-        "    ip saddr @%s counter drop" % SET_CONN,
-        "    ip saddr @%s counter drop" % SET_UDP,
-        "    ip saddr @%s counter drop" % SET_ICMP,
-        "    ip saddr @%s counter drop" % SET_SCAN,
-        "    ct state new tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets } counter accept"
-        % (SET_SYN, policy.syn_rate, policy.syn_burst),
-        "    ct state new update @%s { ip saddr limit rate over %d/second burst %d packets }" % (SET_CONN, policy.conn_rate, policy.conn_burst),
-        "    udp dport %s update @%s { ip saddr limit rate over %d/second burst %d packets }" % (ports_set(policy), SET_UDP, policy.udp_rate, policy.udp_burst),
-        "    icmp type echo-request update @%s { ip saddr limit rate over %d/second burst %d packets }" % (SET_ICMP, policy.icmp_rate, policy.icmp_burst),
-        "    tcp dport != %s tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets }"
-        % (ports_set(policy), SET_SCAN, SCAN_RATE, SCAN_RATE),
-        "    counter accept",
-        "  }",
-        "}",
+def _render_interval_set(name: str, family_type: str, elements: list[str]) -> list[str]:
+    if not elements:
+        return []
+    out = [
+        "  set %s {" % name,
+        "    type %s;" % family_type,
+        "    flags interval;",
+        "    auto-merge;",
+        "    elements = {",
     ]
+    for index in range(0, len(elements), 8):
+        chunk = ", ".join(elements[index : index + 8])
+        suffix = "," if index + 8 < len(elements) else ""
+        out.append("      %s%s" % (chunk, suffix))
+    out.extend(["    }", "  }"])
+    return out
+
+
+def nft_table(
+    policy: Policy,
+    *,
+    rkn_v4: Iterable[str] | None = None,
+    rkn_v6: Iterable[str] | None = None,
+) -> str:
+    policy = policy.normalise()
+    allow_v4, allow_v6 = split_collapsed_entries(policy.rkn_allow, allow_private=True)
+    ban_v4, ban_v6 = split_collapsed_entries(policy.manual_bans, allow_private=False)
+    active_rkn_v4: list[str] = []
+    active_rkn_v6: list[str] = []
+    if policy.rkn_enabled:
+        if rkn_v4 is None and rkn_v6 is None:
+            active_rkn_v4, active_rkn_v6 = seed_rkn_subnets()
+        else:
+            active_rkn_v4, active_rkn_v6 = sanitize_rkn_networks([*(rkn_v4 or ()), *(rkn_v6 or ())])
+
+    lines = ["table inet %s {" % TABLE]
+    lines.extend(_render_interval_set(SET_ALLOW_V4, "ipv4_addr", allow_v4))
+    lines.extend(_render_interval_set(SET_ALLOW_V6, "ipv6_addr", allow_v6))
+    lines.extend(_render_interval_set(SET_BAN_V4, "ipv4_addr", ban_v4))
+    lines.extend(_render_interval_set(SET_BAN_V6, "ipv6_addr", ban_v6))
+    lines.extend(_render_interval_set(SET_RKN_V4, "ipv4_addr", active_rkn_v4))
+    lines.extend(_render_interval_set(SET_RKN_V6, "ipv6_addr", active_rkn_v6))
+    lines.extend(
+        [
+            "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_SYN, policy.ban_timeout, policy.set_size),
+            "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_CONN, policy.ban_timeout, policy.set_size),
+            "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_UDP, policy.ban_timeout, policy.set_size),
+            "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_ICMP, policy.ban_timeout, policy.set_size),
+            "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_SCAN, policy.ban_timeout, policy.set_size),
+            "  chain input {",
+            "    type filter hook input priority raw; policy accept;",
+            '    iifname "lo" accept',
+            "    ct state invalid counter drop",
+            "    tcp flags & (fin|syn|rst|ack) == 0x0 counter drop",
+            "    tcp flags & (fin|syn|psh|rst|ack|urg) == (fin|syn|psh|urg) counter drop",
+        ]
+    )
+    if allow_v4:
+        lines.append("    ip saddr @%s accept" % SET_ALLOW_V4)
+    if allow_v6:
+        lines.append("    ip6 saddr @%s accept" % SET_ALLOW_V6)
+    if ban_v4:
+        lines.append("    ip saddr @%s counter drop" % SET_BAN_V4)
+    if ban_v6:
+        lines.append("    ip6 saddr @%s counter drop" % SET_BAN_V6)
+    if active_rkn_v4:
+        lines.append("    ct state established,related ip saddr @%s accept" % SET_RKN_V4)
+        lines.append("    ip saddr @%s counter drop" % SET_RKN_V4)
+    if active_rkn_v6:
+        lines.append("    ct state established,related ip6 saddr @%s accept" % SET_RKN_V6)
+        lines.append("    ip6 saddr @%s counter drop" % SET_RKN_V6)
+    lines.extend(
+        [
+            "    ip saddr @%s counter drop" % SET_SYN,
+            "    ip saddr @%s counter drop" % SET_CONN,
+            "    ip saddr @%s counter drop" % SET_UDP,
+            "    ip saddr @%s counter drop" % SET_ICMP,
+            "    ip saddr @%s counter drop" % SET_SCAN,
+            "    ct state new tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets } counter accept"
+            % (SET_SYN, policy.syn_rate, policy.syn_burst),
+            "    ct state new update @%s { ip saddr limit rate over %d/second burst %d packets }" % (SET_CONN, policy.conn_rate, policy.conn_burst),
+            "    udp dport %s update @%s { ip saddr limit rate over %d/second burst %d packets }" % (ports_set(policy), SET_UDP, policy.udp_rate, policy.udp_burst),
+            "    icmp type echo-request update @%s { ip saddr limit rate over %d/second burst %d packets }" % (SET_ICMP, policy.icmp_rate, policy.icmp_burst),
+            "    tcp dport != %s tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets }"
+            % (ports_set(policy), SET_SCAN, SCAN_RATE, SCAN_RATE),
+            "    counter accept",
+            "  }",
+            "}",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -294,15 +737,21 @@ class Status:
     kernel: str = ""
     notice: str = ""
     error: str = ""
+    rkn_enabled: bool = True
+    rkn_v4_count: int = 0
+    rkn_v6_count: int = 0
+    rkn_updated: str = ""
 
     @staticmethod
     def from_dict(raw: Any) -> "Status":
         data = raw if isinstance(raw, dict) else {}
+        pol = Policy.from_dict(data.get("policy"))
+        rkn_flag = data.get("rkn_enabled", pol.rkn_enabled)
         status = Status(
             installed=bool(data.get("installed", False)),
             enabled=bool(data.get("enabled", True)),
             table=bool(data.get("table", False)),
-            policy=Policy.from_dict(data.get("policy")),
+            policy=pol,
             counters=parse_counters(data.get("counters")),
             syn_flood=parse_set(data.get("syn_flood")),
             conn_flood=parse_set(data.get("conn_flood")),
@@ -316,11 +765,28 @@ class Status:
             kernel=str(data.get("kernel", "") or "")[:32],
             notice=str(data.get("notice", "") or "")[:120],
             error=str(data.get("error", "") or "")[:160],
+            rkn_enabled=_parse_bool(rkn_flag, pol.rkn_enabled),
+            rkn_v4_count=clamp(data.get("rkn_v4_count"), 0, 1 << 24, 0),
+            rkn_v6_count=clamp(data.get("rkn_v6_count"), 0, 1 << 24, 0),
+            rkn_updated=str(data.get("rkn_updated", "") or "")[:40],
         )
         return status
 
     def dropped(self) -> int:
         return sum(value for key, value in self.counters.items() if "drop" in key)
+
+    def rkn_dropped(self) -> int:
+        return int(self.counters.get("rkn_drop", 0))
+
+    def manual_dropped(self) -> int:
+        return int(self.counters.get("manual_drop", 0))
+
+    def flood_dropped(self) -> int:
+        return sum(
+            value
+            for key, value in self.counters.items()
+            if "drop" in key and key not in {"rkn_drop", "manual_drop"}
+        )
 
     def offenders(self) -> list[str]:
         seen: list[str] = []
@@ -355,7 +821,7 @@ class Status:
             out.append("pps")
         if self.pressure() >= CONNTRACK_WARN:
             out.append("conntrack")
-        if self.dropped() >= DROP_WARN:
+        if self.flood_dropped() >= DROP_WARN:
             out.append("drops")
         return out
 
@@ -369,7 +835,7 @@ class Status:
             return "bad"
         if any(item in reasons for item in ("syn_flood", "udp_flood")) and len(self.syn_flood) >= SET_BAD:
             return "bad"
-        if self.pps >= PPS_BAD or self.pressure() >= CONNTRACK_BAD or self.dropped() >= DROP_BAD:
+        if self.pps >= PPS_BAD or self.pressure() >= CONNTRACK_BAD or self.flood_dropped() >= DROP_BAD:
             return "bad"
         if len(self.conn_flood) >= SET_BAD or len(self.scan) >= SET_BAD:
             return "bad"
@@ -412,6 +878,10 @@ class Status:
             "kernel": self.kernel,
             "notice": self.notice,
             "error": self.error,
+            "rkn_enabled": bool(self.rkn_enabled),
+            "rkn_v4_count": int(self.rkn_v4_count),
+            "rkn_v6_count": int(self.rkn_v6_count),
+            "rkn_updated": self.rkn_updated,
         }
 
 

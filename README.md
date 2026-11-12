@@ -21,3 +21,8 @@ Requires root on a systemd Linux host. Installs into `/opt/obhod`, keeps state i
 | VLESS | All platforms | [INCY](https://github.com/INCY-DEV/incy-platforms) |
 | FreeTurn | Android | [turn-proxy-android](https://github.com/hackdiaz-dev/turn-proxy-android) |
 | FreeTurn | iOS | [vk-turn-proxy-ios](https://github.com/anton48/vk-turn-proxy-ios) |
+
+## Credits
+
+- **RKN-Guard & Scanner Subnet Defense**: inspired by [rkn-guard](https://github.com/Flecksis/rkn-guard) by [@Flecksis](https://github.com/Flecksis), re-engineered natively on `nftables` (`table inet obhod_ddos`) with interval CIDR collapsing, offline seed fallback, allowlists, manual bans, and live background synchronization.
+

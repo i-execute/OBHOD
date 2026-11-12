@@ -435,6 +435,14 @@ class Bot:
             try:
                 await asyncio.sleep(span)
                 await self.notify_poll()
+                if (
+                    self.ddos_state is not None
+                    and self.ddos_state.installed
+                    and self.ddos_state.enabled
+                    and self.ddos_state.rkn_enabled
+                    and self.quiet("rkn_auto_sync", 43200.0)
+                ):
+                    await self.debug.auto_sync_rkn()
             except asyncio.CancelledError:
                 return
             except Exception as exc:
@@ -576,7 +584,7 @@ class Bot:
             outcomes["vk_fw"] = str(self.freeturn.guard.get("mode") or "skip")
         try:
             status = await ddos_call(self.guard, self.state.ssh, ddos_argv("status"), 60)
-            if not status.enabled:
+            if not status.installed or not status.table or not status.enabled:
                 policy = antiddos.Policy.from_dict(self.state.ddos)
                 status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
             self.ddos_state = status
@@ -1061,6 +1069,8 @@ class Bot:
             "dbg_ports": str(getattr(dbg, "scan_ports", "") or ""),
             "dbg_chk_target": str(getattr(dbg, "chk_target", "") or ""),
             "dbg_hops": str(getattr(dbg, "chk_hops", 12) or 12),
+            "dbg_ddos_ban": "",
+            "dbg_ddos_allow": "",
             "xr_log_level": xr.log_level,
             "xr_scan_targets": ", ".join(xr.scan_targets),
             "xr_scan_manual": "",

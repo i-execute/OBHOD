@@ -313,14 +313,25 @@ def ddos_argv(action: str, policy: antiddos.Policy | None = None) -> list[str]:
         return argv
     shaped = policy.normalise()
     argv.append("--enabled=%d" % (1 if shaped.enabled else 0))
+    argv.append("--rkn_enabled=%d" % (1 if shaped.rkn_enabled else 0))
     argv.append("--ports=" + ",".join(str(item) for item in shaped.ports))
+    if shaped.rkn_allow:
+        argv.append("--rkn_allow=" + shaped.allow_csv())
+    if shaped.manual_bans:
+        argv.append("--manual_bans=" + shaped.bans_csv())
     for name in ("syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size"):
         argv.append("--%s=%d" % (name, int(getattr(shaped, name))))
     return argv
 
 
-async def ddos_call(guard: "GuardClient", cfg: SshSettings, argv: list[str], timeout: float = 180.0) -> antiddos.Status:
-    response = await guard._call(cfg, DDOS_SCRIPT, "ddos script", argv, timeout)
+async def ddos_call(
+    guard: "GuardClient",
+    cfg: SshSettings,
+    argv: list[str],
+    timeout: float = 180.0,
+    stdin: bytes | None = None,
+) -> antiddos.Status:
+    response = await guard._call(cfg, DDOS_SCRIPT, "ddos script", argv, timeout, stdin=stdin)
     return antiddos.Status.from_dict(response.data)
 
 

@@ -556,6 +556,15 @@ def ddos_exposure_text(t: Any, findings: Any) -> str:
               "risky": "DDOS_EXPOSURE_RISKY", "proxy": "DDOS_EXPOSURE_PROXY", "unexpected": "DDOS_EXPOSURE_UNEXPECTED"}.get(code, "DDOS_EXPOSURE_EMPTY"))
 
 
+def _compact_entries(entries: list[str], cap: int = 4) -> str:
+    if not entries:
+        return "-"
+    shown = ", ".join(entries[:cap])
+    if len(entries) > cap:
+        return "%s (+%d)" % (shown, len(entries) - cap)
+    return shown
+
+
 def ddos_screen(view: DbgView) -> Any:
     t = view.tr()
     status = view.ddos
@@ -566,6 +575,7 @@ def ddos_screen(view: DbgView) -> Any:
             blocks.append(table([("scan", t("DDOS_EXPOSURE"), ddos_exposure_text(t, view.ddos_exposure))], (t("DDOS_EXPOSURE"), t("UI_VALUE"))))
         buttons = [
             row(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"), button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan")),
+            row(button(t("DDOS_BTN_RKN_SYNC"), "dbg:dd:rkn_sync", icon="refresh"), button(t("DDOS_BTN_REFRESH"), "dbg:dd:refresh", icon="refresh")),
             row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
         ]
         return screen(t("DDOS_TITLE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
@@ -575,20 +585,38 @@ def ddos_screen(view: DbgView) -> Any:
     except Exception:
         level = "ok"
     mark = {"ok": "shield", "warn": "warn", "bad": "fail"}.get(level, "shield")
-    state = [("shield", t("DDOS_STATE"), code(t("UI_ON") if status.enabled else t("UI_OFF"))),
-             (mark, t("DDOS_LEVEL"), code(ddos_level(t, status))),
-             ("box", t("DDOS_TABLE"), code(t("UI_ON") if status.table else t("UI_OFF"))),
-             ("speed", t("DDOS_PPS"), code(status.pps)),
-             ("link", t("DDOS_CONNS"), code(status.connections)),
-             ("chart", t("DDOS_CONNTRACK"), code("%d / %d" % (status.conntrack, status.conntrack_max))),
-             ("stop", t("DDOS_DROPS"), code(status.dropped())),
-             ("server", t("DDOS_KERNEL"), code(status.kernel or "-"))]
-    blocks.append(table(state, (t("DDOS_TITLE"), t("UI_VALUE"))))
     policy = status.policy
-    blocks.append(table([("clock", t("DDOS_SYN_RATE"), code(policy.syn_rate)),
-                         ("users", t("DDOS_CONN_RATE"), code(policy.conn_rate)),
-                         ("clock", t("DDOS_BAN_TIME"), code(t("DDOS_SECONDS", value=policy.ban_timeout))),
-                         ("plug", t("DDOS_PORTS"), code(",".join(str(item) for item in policy.ports)))], (t("DDOS_POLICY"), t("UI_VALUE"))))
+    rkn_on = bool(getattr(status, "rkn_enabled", policy.rkn_enabled))
+    v4_count = int(getattr(status, "rkn_v4_count", 0) or 0)
+    v6_count = int(getattr(status, "rkn_v6_count", 0) or 0)
+    if rkn_on and v4_count == 0 and v6_count == 0:
+        sv4, sv6 = antiddos.seed_rkn_subnets()
+        v4_count, v6_count = len(sv4), len(sv6)
+    state = [
+        ("shield", t("DDOS_STATE"), code(t("UI_ON") if status.enabled else t("UI_OFF"))),
+        (mark, t("DDOS_LEVEL"), code(ddos_level(t, status))),
+        ("box", t("DDOS_TABLE"), code(t("UI_ON") if status.table else t("UI_OFF"))),
+        ("shield", t("DDOS_RKN_STATE"), code(t("UI_ON") if rkn_on else t("UI_OFF"))),
+        ("world", t("DDOS_RKN_NETS"), code("%d IPv4, %d IPv6" % (v4_count, v6_count) if rkn_on else "-")),
+        ("stop", t("DDOS_RKN_DROPS"), code(status.rkn_dropped())),
+        ("speed", t("DDOS_PPS"), code(status.pps)),
+        ("link", t("DDOS_CONNS"), code(status.connections)),
+        ("chart", t("DDOS_CONNTRACK"), code("%d / %d" % (status.conntrack, status.conntrack_max))),
+        ("stop", t("DDOS_DROPS"), code(status.dropped())),
+        ("server", t("DDOS_KERNEL"), code(status.kernel or "-")),
+    ]
+    blocks.append(table(state, (t("DDOS_TITLE"), t("UI_VALUE"))))
+    policy_rows = [
+        ("clock", t("DDOS_SYN_RATE"), code(policy.syn_rate)),
+        ("users", t("DDOS_CONN_RATE"), code(policy.conn_rate)),
+        ("clock", t("DDOS_BAN_TIME"), code(t("DDOS_SECONDS", value=policy.ban_timeout))),
+        ("plug", t("DDOS_PORTS"), code(",".join(str(item) for item in policy.ports))),
+    ]
+    if policy.manual_bans:
+        policy_rows.append(("stop", t("DDOS_MANUAL_BANS"), code(_compact_entries(policy.manual_bans))))
+    if policy.rkn_allow:
+        policy_rows.append(("ok", t("DDOS_RKN_ALLOW"), code(_compact_entries(policy.rkn_allow))))
+    blocks.append(table(policy_rows, (t("DDOS_POLICY"), t("UI_VALUE"))))
     sets = [("speed", t("DDOS_SET_SYN"), code("%d" % len(status.syn_flood))),
             ("link", t("DDOS_SET_CONN"), code("%d" % len(status.conn_flood))),
             ("world", t("DDOS_SET_UDP"), code("%d" % len(status.udp_flood))),
@@ -607,8 +635,12 @@ def ddos_screen(view: DbgView) -> Any:
     if status.notice:
         blocks.append(quote(muted(str(status.notice)[:120])))
     blocks.append(quote(muted(t("DDOS_HINT"))))
+    rkn_btn_label = t("DDOS_BTN_RKN_ON") if rkn_on else t("DDOS_BTN_RKN_OFF")
     buttons = [
         row(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"), button(t("DDOS_BTN_REMOVE"), "dbg:dd:remove", icon="delete")),
+        row(button(rkn_btn_label, "dbg:dd:rkn", icon="shield"), button(t("DDOS_BTN_RKN_SYNC"), "dbg:dd:rkn_sync", icon="refresh")),
+        input_row(t("DDOS_BTN_BAN"), "dbg_ddos_ban", "-", view.lang),
+        input_row(t("DDOS_BTN_ALLOW"), "dbg_ddos_allow", "-", view.lang),
         row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:refresh", icon="refresh"), button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan")),
         row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
