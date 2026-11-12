@@ -14,9 +14,7 @@
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "f769499d19bf398f0933a7bc507cc97c19e6190eb9c0cce2b689839c7bdca49d",
     "Storage/remote/xray_agent.py": "3cabe76b5512e6c534cb818503c128c3c6b558aab470a4b117612caf7149911a",
-    "tools/obhod_watchdog.py": "ccd3378bfe06c60a0b91ccd9e2b4e3ab19d7196647a935877143031b59d04cbe",
-    "BOT/panel.py": "b7b33555cbcc4b9337d458a61a69d6747d4556495b7ef5a1873ef704a2c25bee",
-    "BOT/xscreens.py": "91aac263254e0cba1a6630210a152c3c6dfcce346134c26638d6698bb6a3458d"
+    "tools/obhod_watchdog.py": "ccd3378bfe06c60a0b91ccd9e2b4e3ab19d7196647a935877143031b59d04cbe"
   },
   "policy": [
     "dangerous_calls",
