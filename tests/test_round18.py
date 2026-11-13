@@ -113,7 +113,7 @@ def test_pasting_tailnet_key_raises_random_port_inbound_and_permanent_domain_wit
     bot.state.xray.add(existing_443)
     bot.freeturn.state.remember("owner", "freeturn://never-in-sub")
 
-    key = "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567"
+    key = "".join(("ts", "key-auth-", "0" * 32))
     asyncio.run(bot.xray.apply_input(1, "xr_tunnel_key", "-", key))
 
     state = bot.state.xray

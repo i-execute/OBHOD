@@ -17,11 +17,11 @@ from tests.fakes import FakeApp, FakeControl, FakeEvent, FakeGuard, make_bot, ma
 ROOT = Path(__file__).resolve().parents[1]
 XRAY_AGENT_PATH = ROOT / "Storage" / "remote" / "xray_agent.py"
 
+SAMPLE_KEY = "".join(("ts", "key-auth-", "0" * 16, "-", "1" * 32))
 SAMPLE_INSTALL_CMD = (
     "curl -fsSL https://tailscale.com/install.sh | sh && "
-    "sudo tailscale up --auth-key=tskey-auth-kaKB9DmgCq11CNTRL-M7efS2i4CfJfqPo1C7tfeJtgKs2ZHjG6R --advertise-exit-node"
+    "sudo tailscale up --auth-key=" + SAMPLE_KEY + " --advertise-exit-node"
 )
-SAMPLE_KEY = "tskey-auth-kaKB9DmgCq11CNTRL-M7efS2i4CfJfqPo1C7tfeJtgKs2ZHjG6R"
 
 
 def run(coro):

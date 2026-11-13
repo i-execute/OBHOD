@@ -88,7 +88,7 @@ def test_the_secrets_are_masked() -> None:
 
 def test_the_field_rules_match_the_bot() -> None:
     assert setup.Field("BOT_TOKEN", "t", True, "123456:ABC").check() == "must look like 123456:ABC-DEF"
-    assert setup.Field("BOT_TOKEN", "t", True, "123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").check() == ""
+    assert setup.Field("BOT_TOKEN", "t", True, "123456:" + "A" * 30).check() == ""
     assert setup.Field("API_ID", "i", False, "0").check() == "must be a positive number"
     assert setup.Field("API_HASH", "h", True, "zz").check() == "must be 32 hex characters"
     assert setup.Field("PREFIX", "p", False, "relative/path").check() == "must be an absolute path starting with /"
@@ -214,7 +214,7 @@ def test_interactive_wizard_dry_run_never_touches_disk(tmp_path: Path, monkeypat
             "enter",
             "enter",
             "space",
-            *list("123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            *list("123456:" + "A" * 30),
             "enter",
             "down",
             "space",

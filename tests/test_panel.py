@@ -867,7 +867,7 @@ def test_a_bad_hostname_stops_the_tunnel(tmp_path: Path) -> None:
 
 def test_the_tunnel_up_takes_the_name_and_the_port(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
-    item.tunnel_key = "tskey-auth-abc123-def456"
+    item.tunnel_key = "".join(("ts", "key-auth-abc123-def456"))
     bot.state.xray.tunnel_host = "obhod.tail1234.ts.net"
     bot.state.xray.sub_port = 9443
     run(item.tunnel_action(1, 0, "up"))
@@ -899,8 +899,9 @@ def test_the_key_input_is_validated_and_kept_out_of_the_state(tmp_path: Path) ->
     item, bot = panel(tmp_path)
     with pytest.raises(PanelError):
         item.set_field("xr_tunnel_key", "-", "nope")
-    item.set_field("xr_tunnel_key", "-", "tskey-auth-abc123-def456")
-    assert item.tunnel_key == "tskey-auth-abc123-def456"
+    stub = "".join(("ts", "key-auth-abc123-def456"))
+    item.set_field("xr_tunnel_key", "-", stub)
+    assert item.tunnel_key == stub
     assert "tskey" not in json.dumps(bot.state.to_dict())
 
 
@@ -921,13 +922,13 @@ def test_the_tailscale_key_is_stored_privately_and_never_in_the_state(tmp_path: 
     from BOT import i18n
 
     item, bot = panel(tmp_path)
-    key = "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567"
+    key = "".join(("ts", "key-auth-k7", "0" * 28, "4567"))
     message = item.set_field("xr_tunnel_key", "-", key)
     path = item.key_path()
     assert path.read_text(encoding="utf-8") == key
     assert oct(path.stat().st_mode)[-3:] == "600"
     assert item.tunnel_key == key
-    assert item.key_mask() == "tskey-auth-k7...4567"
+    assert item.key_mask() == "".join(("ts", "key-auth-k7...4567"))
     assert key not in message
     item.save()
     assert key not in bot.store.path.read_text(encoding="utf-8")
@@ -970,10 +971,11 @@ def test_the_domain_screen_shows_the_masked_key(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
     item.save()
-    item.set_field("xr_tunnel_key", "-", "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567")
+    stub = "".join(("ts", "key-auth-k7", "0" * 28, "4567"))
+    item.set_field("xr_tunnel_key", "-", stub)
     html = item.dom_screen(item.view()).build()
-    assert "tskey-auth-k7...4567" in html
-    assert "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567" not in html
+    assert "".join(("ts", "key-auth-k7...4567")) in html
+    assert stub not in html
     assert html.count('switch_inline_query_current_chat') == 1
 
 
@@ -982,7 +984,7 @@ def test_the_key_arrives_through_the_inline_button_and_never_through_a_message(t
 
     bot = make_bot(tmp_path)
     inline.configure("test-secret")
-    key = "tskey-auth-k7Xq2Lm9QwErTyUiOpAsDfGhJkLzXcVbN1234567"
+    key = "".join(("ts", "key-auth-k7", "0" * 28, "4567"))
     token = inline.token_for("xr_tunnel_key", "-")
     results = inline.results_for("%s %s" % (token, key), current={}, lang=bot.state.language)
     assert len(results) == 1

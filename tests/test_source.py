@@ -185,3 +185,23 @@ def test_no_non_post_quantum_names() -> None:
             if name in lowered:
                 offenders.append(f"{path.relative_to(ROOT)}: {name}")
     assert offenders == []
+
+
+def test_no_secret_scanning_literals_in_repo() -> None:
+    import re
+
+    ts_rx = re.compile(r"\btskey-(?:auth|client|api|oauth)-(?!xxxx\b)[A-Za-z0-9_]{6,}")
+    tg_rx = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
+    gh_rx = re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b")
+    pk_rx = re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")
+    offenders: list[str] = []
+    for path in TEXT_FILES:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), 1):
+            for label, rx in (("tskey", ts_rx), ("tg_token", tg_rx), ("gh_token", gh_rx), ("privkey", pk_rx)):
+                if rx.search(line):
+                    offenders.append(f"{path.relative_to(ROOT)}:{number}: {label}")
+    assert offenders == []
+

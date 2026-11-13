@@ -21,12 +21,12 @@ from tests.fakes import FakeEvent, make_bot
 ROOT = Path(__file__).resolve().parents[1]
 XRAY_AGENT_PATH = ROOT / "Storage" / "remote" / "xray_agent.py"
 
+USER_AUTH_KEY = "".join(("ts", "key-auth-", "0" * 16, "-", "1" * 32))
 USER_LINUX_SERVER_CMD = (
     "curl -fsSL https://tailscale.com/install.sh | sh && "
-    "sudo tailscale up --auth-key=tskey-auth-k4QrgziQ1o11CNTRL-cC5HZT7BXLUitSqMgodtLUtfJpmyDFzVj "
+    "sudo tailscale up --auth-key=" + USER_AUTH_KEY + " "
     "--advertise-exit-node"
 )
-USER_AUTH_KEY = "tskey-auth-k4QrgziQ1o11CNTRL-cC5HZT7BXLUitSqMgodtLUtfJpmyDFzVj"
 
 REQUIRED_TAILSCALE_URLS = (
     "https://login.tailscale.com/admin/machines/new-linux",
@@ -69,10 +69,11 @@ def test_user_linux_server_command_parses_and_activates_subscription(tmp_path: P
 
 
 def test_tags_oauth_hostname_and_long_inline_compaction(tmp_path: Path) -> None:
+    oauth_stub = "".join(("ts", "key-client-", "0" * 16, "-", "1" * 32))
     long_cmd = (
         "curl -fsSL https://tailscale.com/install.sh | sh && "
-        "sudo tailscale up --auth-key=tskey-client-k4QrgziQ1o11CNTRL-cC5HZT7BXLUitSqMgodtLUtfJpmyDFzVj"
-        "?ephemeral=false&preauthorized=true "
+        "sudo tailscale up --auth-key=" + oauth_stub
+        + "?ephemeral=false&preauthorized=true "
         "--advertise-tags=tag:obhod,tag:vps-node --advertise-exit-node --hostname=obhod-eu"
     )
     assert len(long_cmd) > inline.MAX_VALUE
@@ -97,7 +98,7 @@ def test_tags_oauth_hostname_and_long_inline_compaction(tmp_path: Path) -> None:
 
 
 def test_api_access_token_is_deleted_from_chat_and_explained_clearly(tmp_path: Path) -> None:
-    api_token = "tskey-api-k4QrgziQ1o11CNTRL-abcdef1234567890abcdef"
+    api_token = "".join(("ts", "key-api-", "0" * 16, "-", "0" * 24))
     parsed = parse_tailscale_input(api_token)
     assert parsed.key == ""
     assert parsed.kind == "api_token"

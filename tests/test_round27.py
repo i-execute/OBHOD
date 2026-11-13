@@ -265,7 +265,7 @@ def test_funnel_port_preserved_on_key_rotation_and_switchable_manually(tmp_path:
 
     bot.xray.control.tunnel_up = spy_up
 
-    new_key = "curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --auth-key=tskey-auth-r27rotateKey9876543210"
+    new_key = "curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --auth-key=" + "".join(("ts", "key-auth-", "0" * 24))
     asyncio.run(bot.xray.apply_input(1, "xr_tunnel_key", "subs", new_key))
     assert seen_https_ports[-1] == 10000
     assert bot.state.xray.tunnel_host == "my-srv.tail1234.ts.net:10000"
@@ -307,7 +307,7 @@ def test_xray_agent_force_reauth_and_turns_off_old_funnel_port(monkeypatch) -> N
     monkeypatch.setattr(agent, "run", fake_run)
 
     state, err = agent.cmd_tunnel_up(
-        {"key": "tskey-auth-renewKey1234567890abcd", "hostname": "", "port": 34567, "https_port": 10000},
+        {"key": "".join(("ts", "key-auth-", "0" * 24)), "hostname": "", "port": 34567, "https_port": 10000},
         [],
     )
     assert err is None

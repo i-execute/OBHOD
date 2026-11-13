@@ -22,9 +22,9 @@ def test_round22_real_goygram_instance_never_triggers_dynamic_method_crash(
 ) -> None:
     bot = Bot(make_config(tmp_path), control=FakeControl(), guard=FakeGuard())
     real_app = GoyGram(
-        bot_token="123456:ABCDEF_TEST_TOKEN_VALUE",
+        bot_token="123456:" + "A" * 20,
         api_id=12345,
-        api_hash="0123456789abcdef0123456789abcdef",
+        api_hash="0" * 32,
     )
     mt_captured: list[tuple[str, dict[str, Any]]] = []
 

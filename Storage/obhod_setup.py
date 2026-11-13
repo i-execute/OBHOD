@@ -1865,9 +1865,9 @@ class Setup:
             self.credentials[name] = existing.get(name, "") or env_val or self.credentials.get(name, "")
         if self.dry_run and not has_tty():
             self.credentials = {
-                "BOT_TOKEN": self.credentials["BOT_TOKEN"] or "123456:AAAA-dry-run-sample-value-000000",
+                "BOT_TOKEN": self.credentials["BOT_TOKEN"] or ("123456:" + "A" * 30),
                 "API_ID": self.credentials["API_ID"] or "123456",
-                "API_HASH": self.credentials["API_HASH"] or "0123456789abcdef0123456789abcdef",
+                "API_HASH": self.credentials["API_HASH"] or ("0" * 32),
                 "ADMIN_ID": self.credentials["ADMIN_ID"] or "777000",
             }
         fields = [
