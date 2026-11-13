@@ -306,7 +306,7 @@ SERVICES = {
     "27017": "mongodb",
     "10085": "xray-api",
 }
-PORT_KEYS = ("ports", "syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size", "enabled", "rkn_enabled", "rkn_allow", "manual_bans")
+PORT_KEYS = ("ports", "syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size", "enabled", "rkn_enabled", "rkn_allow", "manual_bans", "unbanned")
 
 
 SBIN_DIRS = ("/usr/local/sbin", "/usr/sbin", "/sbin")
@@ -633,6 +633,28 @@ def binary(flags, name, fallback):
     return shutil.which(override) or ""
 
 
+def ensure_nft(flags):
+    found = binary(flags, "nft", NFT)
+    if found or flags.get("nft"):
+        return found
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return ""
+    apt = shutil.which("apt-get")
+    dnf = shutil.which("dnf")
+    pacman = shutil.which("pacman")
+    apk = shutil.which("apk")
+    if apt:
+        run([apt, "update", "-qq"], timeout=60)
+        run([apt, "install", "-y", "-qq", "nftables"], timeout=120)
+    elif dnf:
+        run([dnf, "install", "-y", "-q", "nftables"], timeout=120)
+    elif pacman:
+        run([pacman, "-Sy", "--noconfirm", "nftables"], timeout=120)
+    elif apk:
+        run([apk, "add", "--no-cache", "nftables"], timeout=120)
+    return binary(flags, "nft", NFT)
+
+
 def policy_from(raw, flags):
     base = {
         "enabled": True,
@@ -650,6 +672,7 @@ def policy_from(raw, flags):
         "rkn_enabled": True,
         "rkn_allow": [],
         "manual_bans": [],
+        "unbanned": [],
     }
     for key in PORT_KEYS:
         if key in raw:
@@ -673,6 +696,7 @@ def policy_from(raw, flags):
         "rkn_enabled": truth(base.get("rkn_enabled"), True),
         "rkn_allow": parse_entries(base.get("rkn_allow"), allow_private=True),
         "manual_bans": parse_entries(base.get("manual_bans"), allow_private=False),
+        "unbanned": parse_entries(base.get("unbanned"), allow_private=True)[:64],
     }
     return policy
 
@@ -1012,7 +1036,7 @@ def status(flags):
 
 
 def apply_rules(flags, policy):
-    tool = binary(flags, "nft", NFT)
+    tool = ensure_nft(flags)
     target = rules_path(flags)
     body = rules_text(policy, flags)
     if not tool:
@@ -1102,6 +1126,53 @@ def rkn_sync(flags):
     payload = status(flags)
     payload["notice"] = "rkn lists synced"
     return payload
+
+
+def unban_cmd(flags):
+    raw_ip = str(flags.get("ip", "") or "")
+    cleaned = clean_entry(raw_ip, allow_private=True)
+    if not cleaned:
+        raise DDosError("bad_ip", "invalid IP or CIDR", "unban")
+    tool = binary(flags, "nft", NFT)
+    if tool:
+        try:
+            addr = ipaddress.IPv4Address(cleaned)
+            for set_name in SETS:
+                run([tool, "delete", "element", "inet", TABLE, set_name, "{ " + str(addr) + " }"], timeout=5)
+        except ValueError:
+            pass
+    policy = policy_from(read_json(conf_path(flags)), {})
+    policy["manual_bans"] = [item for item in (policy.get("manual_bans") or []) if item != cleaned]
+    allows = list(policy.get("rkn_allow") or [])
+    if cleaned not in allows and len(allows) < MAX_CUSTOM_ENTRIES:
+        allows.append(cleaned)
+    policy["rkn_allow"] = allows
+    unbanned = [cleaned, *[item for item in (policy.get("unbanned") or []) if item != cleaned]][:64]
+    policy["unbanned"] = unbanned
+    write_atomic(conf_path(flags), json.dumps(policy, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+    if os.path.isfile(rules_path(flags)) and policy.get("enabled", True):
+        apply_rules(flags, policy)
+    return status(flags)
+
+
+def reban_cmd(flags):
+    raw_ip = str(flags.get("ip", "") or "")
+    cleaned = clean_entry(raw_ip, allow_private=False)
+    if not cleaned:
+        raise DDosError("bad_ip", "invalid IP or CIDR", "reban")
+    policy = policy_from(read_json(conf_path(flags)), {})
+    policy["rkn_allow"] = [item for item in (policy.get("rkn_allow") or []) if item != cleaned]
+    policy["unbanned"] = [item for item in (policy.get("unbanned") or []) if item != cleaned]
+    bans = list(policy.get("manual_bans") or [])
+    if cleaned not in bans:
+        if len(bans) >= MAX_CUSTOM_ENTRIES:
+            raise DDosError("limit_reached", "entry list is full", "reban")
+        bans.append(cleaned)
+    policy["manual_bans"] = bans
+    write_atomic(conf_path(flags), json.dumps(policy, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+    if os.path.isfile(rules_path(flags)) and policy.get("enabled", True):
+        apply_rules(flags, policy)
+    return status(flags)
 
 
 def mutate_list_cmd(flags, field_name, add_mode, allow_private, stage_name):
@@ -1291,6 +1362,10 @@ def main(argv):
             payload = mutate_list_cmd(flags, "rkn_allow", True, True, "allow-add")
         elif command == "allow-del":
             payload = mutate_list_cmd(flags, "rkn_allow", False, True, "allow-del")
+        elif command == "unban":
+            payload = unban_cmd(flags)
+        elif command == "reban":
+            payload = reban_cmd(flags)
         elif command == "remove" or command == "uninstall":
             payload = remove(flags)
         elif command == "disable":

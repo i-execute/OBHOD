@@ -61,6 +61,8 @@ class DebugPanel:
         self.ddos: Any = None
         self.ddos_exposure: Any = None
         self.ddos_busy = False
+        self.ddos_page = 0
+        self.ddos_in_ips = False
 
     def make_centre(self) -> Any:
         centre = getattr(self.bot, "notify", None)
@@ -93,6 +95,8 @@ class DebugPanel:
             ddos=self.ddos,
             ddos_exposure=self.ddos_exposure,
             ddos_busy=self.ddos_busy,
+            ddos_page=self.ddos_page,
+            ddos_alerts=bool(self.notify.settings.on(notify.KIND_DDOS)),
             emoji=self.bot.emoji_enabled,
             lang=self.tr().language,
         )
@@ -157,7 +161,8 @@ class DebugPanel:
                 await self.notify_action(chat_id, msg_id, arg1)
                 return
             if head == "dd":
-                await self.ddos_action(chat_id, msg_id, arg1)
+                tail = data.split(":", 2)[2] if data.count(":") >= 2 else ""
+                await self.ddos_action(chat_id, msg_id, tail)
                 return
             if head == "hp":
                 await self.honeypot_action(chat_id, msg_id, arg1)
@@ -514,6 +519,7 @@ class DebugPanel:
         token = str(raw_value or "").strip()
         policy = antiddos.Policy.from_dict(self.bot.state.ddos)
         items = list(getattr(policy, field_name) or [])
+        target_screen = dscreens.ddos_ips_screen if self.ddos_in_ips else dscreens.ddos_screen
         if token.lower() in {"clear", "none", "reset"}:
             items = []
             notice = "%s: 0" % field_name
@@ -523,7 +529,7 @@ class DebugPanel:
                 token = token[1:].strip()
             cleaned = antiddos.clean_entry(token, allow_private=allow_private)
             if not cleaned or (not allow_private and cleaned in self._protected_rkn_ips()):
-                await self.bot.send(chat_id, dscreens.ddos_screen(self.view(error=t("DDOS_BAD_ENTRY"))))
+                await self.bot.send(chat_id, target_screen(self.view(error=t("DDOS_BAD_ENTRY"))))
                 return
             if remove_explicit or cleaned in items:
                 items = [entry for entry in items if entry != cleaned]
@@ -531,6 +537,11 @@ class DebugPanel:
             else:
                 items.append(cleaned)
                 notice = "+%s" % cleaned
+                if field_name == "manual_bans":
+                    policy.rkn_allow = [entry for entry in policy.rkn_allow if entry != cleaned]
+                    policy.unbanned = [entry for entry in policy.unbanned if entry != cleaned]
+                elif field_name == "rkn_allow":
+                    policy.manual_bans = [entry for entry in policy.manual_bans if entry != cleaned]
         setattr(policy, field_name, items)
         policy.normalise()
         self.bot.state.ddos = policy.to_dict()
@@ -548,15 +559,108 @@ class DebugPanel:
             except Exception as exc:
                 self.error = str(getattr(exc, "message", exc))[:160]
         self.note("dd", field_name, notice)
-        await self.bot.send(chat_id, dscreens.ddos_screen(self.view(notice=notice)))
+        await self.bot.send(chat_id, target_screen(self.view(notice=notice)))
+
+    def _resolve_ddos_token(self, token: str) -> str:
+        raw = str(token or "").strip()
+        if raw.startswith("@") and self.ddos is not None:
+            try:
+                idx = int(raw[1:])
+                records = self.ddos.ip_records()
+                if 0 <= idx < len(records):
+                    return records[idx].address
+            except (ValueError, IndexError):
+                return ""
+        return raw
+
+    async def _toggle_ddos_ip(self, chat_id: int, msg_id: int, mode: str, page_str: str, token: str) -> None:
+        t = self.tr()
+        try:
+            self.ddos_page = max(0, int(page_str or "0"))
+        except ValueError:
+            self.ddos_page = 0
+        self.ddos_in_ips = True
+        target = self._resolve_ddos_token(token)
+        allow_priv = mode == "ub"
+        cleaned = antiddos.clean_entry(target, allow_private=allow_priv)
+        if not cleaned or (mode == "rb" and cleaned in self._protected_rkn_ips()):
+            await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(error=t("DDOS_BAD_ENTRY"))))
+            return
+        policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+        if mode == "ub":
+            policy.manual_bans = [item for item in policy.manual_bans if item != cleaned]
+            if cleaned not in policy.rkn_allow:
+                policy.rkn_allow.append(cleaned)
+            policy.unbanned = [cleaned, *[item for item in policy.unbanned if item != cleaned]][:64]
+            cmd_name = "unban"
+            toast = t("DDOS_TOAST_UNBANNED", ip=cleaned)
+        else:
+            policy.rkn_allow = [item for item in policy.rkn_allow if item != cleaned]
+            policy.unbanned = [item for item in policy.unbanned if item != cleaned]
+            if cleaned not in policy.manual_bans:
+                policy.manual_bans.append(cleaned)
+            cmd_name = "reban"
+            toast = t("DDOS_TOAST_REBANNED", ip=cleaned)
+        policy.normalise()
+        self.bot.state.ddos = policy.to_dict()
+        if hasattr(self.bot, "save"):
+            self.bot.save()
+        if self.ddos is not None:
+            if mode == "ub":
+                for bucket in ("syn_flood", "conn_flood", "udp_flood", "icmp_flood", "scan"):
+                    cur = list(getattr(self.ddos, bucket, []) or [])
+                    if cleaned in cur:
+                        setattr(self.ddos, bucket, [item for item in cur if item != cleaned])
+            self.ddos.policy = policy
+        if self.ddos is not None and self.ddos.installed:
+            client = guard.GuardClient(self.bot.control)
+            cfg = getattr(self.bot.state, "ssh", None)
+            try:
+                self.ddos = await guard.ddos_call(client, cfg, [cmd_name, "--ip=" + cleaned], 120)
+                if hasattr(self.bot, "ddos_state"):
+                    self.bot.ddos_state = self.ddos
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+        self.note("dd", cmd_name, cleaned)
+        await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(notice=toast)))
 
     async def ddos_action(self, chat_id: int, msg_id: int, action: str) -> None:
         t = self.tr()
         self.ddos_busy = False
         if action in ("", "open", "refresh"):
+            self.ddos_in_ips = False
             await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
             await self.ddos_refresh(probe=action == "open")
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        if action == "ips" or action.startswith("ips:"):
+            self.ddos_in_ips = True
+            page_part = action.split(":", 1)[1] if ":" in action else "0"
+            try:
+                self.ddos_page = max(0, int(page_part))
+            except ValueError:
+                self.ddos_page = 0
+            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+            await self.ddos_refresh(probe=False)
+            await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view()))
+            return
+        if action.startswith("ub:") or action.startswith("rb:"):
+            parts = action.split(":", 2)
+            mode = parts[0]
+            page_part = parts[1] if len(parts) > 1 else "0"
+            token_part = parts[2] if len(parts) > 2 else ""
+            await self._toggle_ddos_ip(chat_id, msg_id, mode, page_part, token_part)
+            return
+        if action == "ntf":
+            new_val = not self.notify.settings.on(notify.KIND_DDOS)
+            self.notify.settings.enabled[notify.KIND_DDOS] = new_val
+            self.notify.settings.enabled[notify.KIND_PORTSCAN] = new_val
+            if new_val:
+                self.notify.settings.mute_until = 0.0
+            self.save_notify()
+            self.note("dd", "ntf", "on" if new_val else "off")
+            toast = t("DDOS_BTN_NTF_ON") if new_val else t("DDOS_BTN_NTF_OFF")
+            await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=toast)))
             return
         if action not in ("install", "remove", "probe", "rkn", "rkn_sync"):
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
@@ -570,7 +674,7 @@ class DebugPanel:
             self.note("dd", "probe", "ok")
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
             return
-        if not self.cooled("dd:" + action, DDOS_COOLDOWN):
+        if action != "rkn" and not self.cooled("dd:" + action, DDOS_COOLDOWN):
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DBG_LIMIT"))))
             return
         if action == "rkn":

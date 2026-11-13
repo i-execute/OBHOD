@@ -125,7 +125,7 @@ def home(view: View) -> Any:
     buttons = [row(button(card.label(t), card.route, icon=card.icon)) for card in cores.snapshot(state, view.core, view.ft_clients)]
     buttons.append(row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("NAV_SETTINGS"), "nav:settings", icon="settings")))
     buttons.append(row(button(t("NAV_UPDATE"), "upd:show", icon="update"), button(t("NAV_HELP"), "nav:help", icon="docs")))
-    buttons.append(row(button(t("UI_REFRESH"), "nav:home", icon="refresh")))
+    buttons.append(row(button(t("DDOS_BTN_OPEN"), "dbg:dd", icon="shield"), button(t("UI_REFRESH"), "nav:home", icon="refresh")))
     return screen(t("HOME_TITLE"), t("HOME_SUBTITLE"), blocks, buttons, icon="home")
 
 

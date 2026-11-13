@@ -319,6 +319,8 @@ def ddos_argv(action: str, policy: antiddos.Policy | None = None) -> list[str]:
         argv.append("--rkn_allow=" + shaped.allow_csv())
     if shaped.manual_bans:
         argv.append("--manual_bans=" + shaped.bans_csv())
+    if shaped.unbanned:
+        argv.append("--unbanned=" + shaped.unbanned_csv())
     for name in ("syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size"):
         argv.append("--%s=%d" % (name, int(getattr(shaped, name))))
     return argv

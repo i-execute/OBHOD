@@ -53,6 +53,10 @@ LOADING_SKIP = (
     "dbg:home",
     "dbg:emoji",
     "dbg:info",
+    "dbg:dd:ips",
+    "dbg:dd:ntf",
+    "dbg:dd:ub:",
+    "dbg:dd:rb:",
     "ft:home",
     "xr:home",
     "tools:home",
@@ -77,8 +81,8 @@ JOB_CACHE = 64
 CLICK_QUIET = 2.0
 ACTION_LOCK_QUIET = 5.0
 
-NAV_PREFIXES = ("nav:", "lang:", "set:")
-NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:info", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
+NAV_PREFIXES = ("nav:", "lang:", "set:", "dbg:dd:ips")
+NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:dd:ntf", "dbg:dd:refresh", "dbg:info", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
 
 def is_navigation(data: str) -> bool:
     if data.startswith(NAV_PREFIXES):
@@ -252,6 +256,8 @@ class Bot:
         self.notify_task: Any = None
         self.notify_seen_bans: set[str] = set()
         self.notify_seen_ssh: set[str] = set()
+        self.notify_seen_ddos: set[str] = set()
+        self.notify_seen_scan: set[str] = set()
         self.notify_poll_error = ""
         self.notify_poll_at = 0.0
         self.ddos_state: Any = None
@@ -430,7 +436,7 @@ class Bot:
             return
         self.notify_task = asyncio.create_task(self.notify_loop())
 
-    async def notify_loop(self, span: float = 120.0) -> None:
+    async def notify_loop(self, span: float = 30.0) -> None:
         while True:
             try:
                 await asyncio.sleep(span)
@@ -499,8 +505,38 @@ class Bot:
             self.notify_poll_error = type(exc).__name__
             status = None
         self.ddos_state = status
-        if status is not None and status.under_attack():
-            raised.extend(self.notify.force(notify.KIND_DDOS, (status.offenders() or ["0.0.0.0"])[0], status.headline()))
+        if status is not None:
+            self.debug.ddos = status
+            attack_ips = status.attack_ips()
+            new_attackers = [ip for ip in attack_ips if ip not in self.notify_seen_ddos]
+            self.notify_seen_ddos = set(attack_ips)
+            if status.under_attack() or new_attackers:
+                parts: list[str] = []
+                if status.syn_flood:
+                    parts.append("SYN:%d" % len(status.syn_flood))
+                if status.conn_flood:
+                    parts.append("CONN:%d" % len(status.conn_flood))
+                if status.udp_flood:
+                    parts.append("UDP:%d" % len(status.udp_flood))
+                if status.pps:
+                    parts.append("%d pps" % int(status.pps))
+                detail = " · ".join(parts) if parts else status.headline()
+                top_source = (new_attackers or status.offenders() or ["0.0.0.0"])[0]
+                raised.extend(self.notify.force(notify.KIND_DDOS, top_source, detail))
+            new_scanners = [ip for ip in status.scan if ip not in self.notify_seen_scan and ip not in attack_ips]
+            self.notify_seen_scan = set(status.scan)
+            if new_scanners:
+                now_ts = time.time()
+                scan_evt = notify.Event(
+                    notify.KIND_PORTSCAN,
+                    new_scanners[0],
+                    detail="nftables",
+                    count=len(status.scan),
+                    at=now_ts,
+                    ports=1,
+                    evidence=["nftables"],
+                )
+                raised.extend(self.notify.deliver(scan_evt, now_ts))
         self.notify_poll_at = time.time()
         for event in raised:
             await self.notify_send(event)
@@ -564,6 +600,27 @@ class Bot:
             await self.freeturn._auto_guard_vk(int(state.config.listen_port or 0))
         self.freeturn.save()
 
+    def expected_ddos_ports(self) -> list[int]:
+        raw: list[int] = list(antiddos.DEFAULT_PORTS)
+        ssh_port = int(getattr(getattr(self.state, "ssh", None), "port", 0) or 0)
+        if 1 <= ssh_port <= 65535:
+            raw.append(ssh_port)
+        xr = getattr(self.state, "xray", None)
+        if xr is not None:
+            sub_port = int(getattr(xr, "sub_port", 0) or 0)
+            if 1 <= sub_port <= 65535:
+                raw.append(sub_port)
+            for item in getattr(xr, "inbounds", []) or []:
+                port = int(getattr(item, "port", 0) or 0)
+                if 1 <= port <= 65535:
+                    raw.append(port)
+        ft_state = getattr(self.freeturn, "state", None)
+        if ft_state is not None and getattr(ft_state, "installed", False):
+            ft_port = int(getattr(getattr(ft_state, "config", None), "listen_port", 0) or 0)
+            if 1 <= ft_port <= 65535:
+                raw.append(ft_port)
+        return antiddos.ports_of(raw)
+
     async def auto_protect(self) -> dict[str, str]:
         outcomes: dict[str, str] = {}
         detected_ip = public_address()
@@ -583,13 +640,21 @@ class Bot:
             await self.freeturn._auto_guard_vk(int(ft_state.config.listen_port or 0))
             outcomes["vk_fw"] = str(self.freeturn.guard.get("mode") or "skip")
         try:
+            policy = antiddos.Policy.from_dict(self.state.ddos)
+            merged_ports = antiddos.ports_of([*policy.ports, *self.expected_ddos_ports()])
+            ports_changed = set(merged_ports) != set(policy.ports)
+            if ports_changed:
+                policy.ports = merged_ports
+                self.state.ddos = policy.to_dict()
+                self.save()
             status = await ddos_call(self.guard, self.state.ssh, ddos_argv("status"), 60)
-            if not status.installed or not status.table or not status.enabled:
-                policy = antiddos.Policy.from_dict(self.state.ddos)
+            if not status.installed or not status.table or not status.enabled or set(status.policy.ports) != set(policy.ports):
                 status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
             self.ddos_state = status
             self.debug.ddos = status
             outcomes["ddos"] = "on" if status.enabled else "off"
+            if self.app is not None and status.enabled and status.rkn_enabled and self.quiet("rkn_auto_sync", 43200.0):
+                await self.track(self.debug.auto_sync_rkn(), "rkn_boot_sync")
         except Exception as exc:
             log.debug("auto ddos skipped: %s", exc)
             outcomes["ddos"] = "skip"
@@ -1571,7 +1636,7 @@ class Bot:
                     await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
                 return
         if is_expensive(data):
-            if data != "dbg:chk:net" and not self.audit.first_time(int(getattr(evt, "from_id", 0) or 0), data, time.monotonic()):
+            if not data.startswith(("dbg:chk:net", "dbg:dd:rkn", "dbg:dd:ub:", "dbg:dd:rb:")) and not self.audit.first_time(int(getattr(evt, "from_id", 0) or 0), data, time.monotonic()):
                 await self.toast(evt, self.tr()("TOAST_REPEAT"), alert=True)
                 return
             if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "expensive", self.expensive_limit, 120.0):

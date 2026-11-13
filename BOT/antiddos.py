@@ -14,8 +14,6 @@ from typing import Any, Iterable
 from .rkn_seed import RKN_SEED_ZHEX, RKN_SOURCES
 
 LEVELS = ("ok", "warn", "bad")
-
-
 RKN_GUARD_AUTHOR = "Flecksis"
 RKN_GUARD_REPO = "https://github.com/Flecksis/rkn-guard"
 
@@ -476,6 +474,7 @@ class Policy:
     rkn_enabled: bool = True
     rkn_allow: list[str] = field(default_factory=list)
     manual_bans: list[str] = field(default_factory=list)
+    unbanned: list[str] = field(default_factory=list)
     custom_sources: list[str] = field(default_factory=list)
 
     def normalise(self) -> "Policy":
@@ -493,6 +492,7 @@ class Policy:
         self.rkn_enabled = bool(self.rkn_enabled)
         self.rkn_allow = parse_entries(self.rkn_allow, allow_private=True)
         self.manual_bans = parse_entries(self.manual_bans, allow_private=False)
+        self.unbanned = parse_entries(self.unbanned, allow_private=True)[:64]
         self.custom_sources = parse_source_urls(self.custom_sources)
         return self
 
@@ -513,6 +513,7 @@ class Policy:
             "rkn_enabled": bool(self.rkn_enabled),
             "rkn_allow": list(self.rkn_allow),
             "manual_bans": list(self.manual_bans),
+            "unbanned": list(self.unbanned),
             "custom_sources": list(self.custom_sources),
         }
 
@@ -521,6 +522,9 @@ class Policy:
 
     def bans_csv(self) -> str:
         return entries_csv(self.manual_bans, allow_private=False)
+
+    def unbanned_csv(self) -> str:
+        return entries_csv(self.unbanned, allow_private=True)
 
     def sources_csv(self) -> str:
         return ",".join(parse_source_urls(self.custom_sources))
@@ -544,6 +548,7 @@ class Policy:
             rkn_enabled=_parse_bool(data.get("rkn_enabled"), True),
             rkn_allow=parse_entries(data.get("rkn_allow"), allow_private=True),
             manual_bans=parse_entries(data.get("manual_bans"), allow_private=False),
+            unbanned=parse_entries(data.get("unbanned"), allow_private=True)[:64],
             custom_sources=parse_source_urls(data.get("custom_sources")),
         )
         return policy.normalise()
@@ -718,6 +723,13 @@ def parse_set(raw: Any, limit: int = 64) -> list[str]:
     return out
 
 
+@dataclass(frozen=True)
+class IpRecord:
+    address: str
+    reason: str
+    blocked: bool = True
+
+
 @dataclass
 class Status:
     installed: bool = False
@@ -795,6 +807,41 @@ class Status:
                 if address not in seen:
                     seen.append(address)
         return seen[:16]
+
+    def attack_ips(self) -> list[str]:
+        seen: list[str] = []
+        for group in (self.syn_flood, self.conn_flood, self.udp_flood):
+            for address in group:
+                if address not in seen:
+                    seen.append(address)
+        return seen
+
+    def ip_records(self) -> list[IpRecord]:
+        records: list[IpRecord] = []
+        seen: set[str] = set()
+        buckets: tuple[tuple[list[str], str], ...] = (
+            (self.syn_flood, "syn"),
+            (self.conn_flood, "conn"),
+            (self.udp_flood, "udp"),
+            (self.icmp_flood, "icmp"),
+            (self.scan, "scan"),
+            (list(self.policy.manual_bans), "manual"),
+        )
+        for group, reason in buckets:
+            for item in group:
+                addr = str(item or "").strip()
+                if addr and addr not in seen:
+                    seen.add(addr)
+                    records.append(IpRecord(addr, reason, True))
+        for item in [*(self.policy.unbanned or []), *(self.policy.rkn_allow or [])]:
+            addr = str(item or "").strip()
+            if addr and addr not in seen:
+                seen.add(addr)
+                records.append(IpRecord(addr, "unbanned", False))
+        return records
+
+    def blocked_count(self) -> int:
+        return sum(1 for item in self.ip_records() if item.blocked)
 
     def pressure(self) -> float:
         if self.conntrack_max <= 0:

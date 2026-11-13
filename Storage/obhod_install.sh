@@ -776,10 +776,22 @@ heal_system() {
   if [ ! -d /etc/wireguard ]; then
     mkdir -p -m 700 /etc/wireguard
   fi
-  mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d /etc/sysctl.d
+  mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /etc/fail2ban/action.d /etc/ssh/sshd_config.d /etc/sysctl.d /etc/obhod
   mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system /opt/free-turn-proxy
   mkdir -p /var/lib/xray-manager /var/log/xray
   ensure_private_dir "${LOG_DIR:-/var/log/obhod}"
+  if [ "$SKIP_DEPS" = "0" ] && ! command -v nft >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y -q nftables >/dev/null 2>&1 || true
+    elif command -v pacman >/dev/null 2>&1; then
+      pacman -Sy --noconfirm nftables >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add --no-cache nftables >/dev/null 2>&1 || true
+    fi
+  fi
 
   local logf
   for logf in /var/log/xray/access.log /var/log/xray/error.log /var/log/xray/sub.log "${LOG_DIR:-/var/log/obhod}/security.log"; do
@@ -1068,6 +1080,11 @@ cmd_install() {
   step "writing the config and the unit"
   write_env "$token" "$api_id" "$api_hash" "$admin_id"
   ok_line "config $ENV_FILE, mode 600, subscription $SUB_PORT, api $API_PORT"
+  if [ "$DEV" = "0" ] && [ -f "$PREFIX/Storage/remote/ddos_agent.py" ]; then
+    if "${PYTHON_BIN:-python3}" "$PREFIX/Storage/remote/ddos_agent.py" install --ports="22,443,${SUB_PORT}" >/dev/null 2>&1; then
+      ok_line "anti-ddos and rkn-guard active out of the box"
+    fi
+  fi
   write_service
 
   summary_box
@@ -1127,11 +1144,15 @@ cmd_nuke() {
   say "stopping systemd services"
   if command -v systemctl >/dev/null 2>&1; then
     local unit
-    for unit in obhod.service obhod-self-update.service obhod-self-update-timer.timer obhod-honeypot.service xray.service free-turn-proxy.service wg-quick@ft-wg0.service; do
+    for unit in obhod.service obhod-ddos.service obhod-self-update.service obhod-self-update-timer.timer obhod-honeypot.service xray.service free-turn-proxy.service wg-quick@ft-wg0.service; do
       systemctl stop "$unit" >/dev/null 2>&1 || true
       systemctl disable "$unit" >/dev/null 2>&1 || true
     done
   fi
+  if command -v nft >/dev/null 2>&1; then
+    nft delete table inet obhod_ddos >/dev/null 2>&1 || true
+  fi
+  rm -f /etc/obhod/ddos.nft /etc/obhod/ddos.json /etc/obhod/rkn_seed.zhex /etc/systemd/system/obhod-ddos.service /etc/sysctl.d/99-obhod-ddos.conf 2>/dev/null || true
   local stopped
   stopped="$(kill_leftovers)"
   if [ -n "$stopped" ]; then
