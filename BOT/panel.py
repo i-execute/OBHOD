@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import antiddos, i18n, inline, portguard, screens, subs, xscreens
+from . import antiddos, i18n, inline, portguard, screens, serverless, subs, xscreens
 from .inline import InlineError
 from .models import ModelError
 from .scan import CONCURRENCY, FAST_SCAN_TARGETS, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit, top_fastest_targets, vps_subnet_cidr
@@ -72,6 +72,7 @@ GLOBAL_FIELDS = frozenset(
         "xr_sub_announce",
         "xr_tunnel_host",
         "xr_tunnel_key",
+        "xr_tgcloud_key",
         "xr_ban_ip",
         "xr_bantime",
         "xr_ssh_bantime",
@@ -116,6 +117,7 @@ class XrayPanel:
         self.last_subnet: str = ""
         self.pending_subnet_targets: list[str] = []
         self.tunnel_key = self.load_tunnel_key()
+        self.tgcloud_token = self.load_tgcloud_token()
 
     @property
     def state(self) -> XrayState:
@@ -141,6 +143,33 @@ class XrayPanel:
                 pass
             return
         path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(value)
+        os.chmod(path, 0o600)
+
+    def tgcloud_key_path(self) -> Path:
+        return Path(str(getattr(self.bot.cfg, "state_dir", "/var/lib/obhod"))) / "tgcloud.key"
+
+    def load_tgcloud_token(self) -> str:
+        try:
+            token = self.tgcloud_key_path().read_text(encoding="utf-8").strip()
+            app_id, _clean = serverless.token_parts(token)
+            self.state.tgcloud_app_id = app_id
+            return token
+        except (OSError, serverless.ServerlessError):
+            return ""
+
+    def store_tgcloud_token(self, value: str) -> None:
+        path = self.tgcloud_key_path()
+        if not value:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        os.chmod(path.parent, 0o700)
         handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(value)
@@ -186,6 +215,7 @@ class XrayPanel:
         item.address = self.address()
         item.bundle = self.sub_bundle()
         item.key_mask = self.key_mask()
+        item.serverless_status = str(getattr(self.bot, "serverless_status", {}).get("status", "unknown"))
         item.picked_dest = self.picked_dest
         item.picked_sni = self.picked_sni
         item.vps_subnet = vps_subnet_cidr(item.address)
@@ -1172,6 +1202,13 @@ class XrayPanel:
         bundle = self.sub_bundle(host)
         if bundle is not None:
             out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), subs.url_of(bundle, host, self.state.sub_port, self.state.public_base())))
+            if self.state.tgcloud_app_id:
+                try:
+                    url = serverless.subscription_url(self.state.tgcloud_app_id, bundle.id, bundle.key)
+                except serverless.ServerlessError:
+                    url = ""
+                if url:
+                    out.append((self.tr()("TGCLOUD_SUB"), bundle.path(), url))
         return out
 
     async def refresh_traffic(self) -> bool:
@@ -2015,7 +2052,38 @@ class XrayPanel:
             return t("NOTICE_PUBKEY")
         raise PanelError(f"the field {ident} is not supported")
 
+    async def apply_tgcloud_key(self, chat_id: int, value: str) -> None:
+        token = (value or "").strip()
+        if not token:
+            self.tgcloud_token = ""
+            self.state.tgcloud_app_id = ""
+            self.store_tgcloud_token("")
+            self.save()
+            await self.send(chat_id, xscreens.subs_screen(self.view(notice=self.tr()("NOTICE_TGCLOUD_CLEARED")), self.sub_rows()))
+            return
+        try:
+            app_id, token = serverless.token_parts(token)
+            await asyncio.to_thread(serverless.verify_token, token)
+        except serverless.ServerlessError as exc:
+            await self.send(chat_id, self.error_screen("xr_tgcloud_key", "subs", exc.message))
+            return
+        self.tgcloud_token = token
+        self.state.tgcloud_app_id = app_id
+        self.store_tgcloud_token(token)
+        self.save()
+        synced = False
+        try:
+            synced = await self.bot.subs_sync(force=True)
+        except Exception as exc:
+            log.warning("Telegram Serverless subscription sync failed: %s", type(exc).__name__)
+        notice = self.tr()("NOTICE_TGCLOUD_SET", app_id=app_id)
+        error = "" if synced else self.tr()("TGCLOUD_SYNC_PENDING")
+        await self.send(chat_id, xscreens.subs_screen(self.view(notice=notice, error=error), self.sub_rows()))
+
     async def apply_input(self, chat_id: int, ident: str, ctx: str, value: str) -> None:
+        if ident == "xr_tgcloud_key":
+            await self.apply_tgcloud_key(chat_id, value)
+            return
         try:
             notice = self.set_field(ident, ctx, value)
         except (PanelError, XrayError, InlineError, ModelError, ValueError) as exc:
@@ -2149,7 +2217,7 @@ class XrayPanel:
             return screens.settings(self.bot.view(notice=notice))
         if ident == "xr_log_level":
             return xscreens.core_screen(self.view(notice=notice))
-        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce", "xr_tunnel_host", "xr_tunnel_key"}:
+        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce", "xr_tunnel_host", "xr_tunnel_key", "xr_tgcloud_key"}:
             return xscreens.subs_screen(self.view(notice=notice), self.sub_rows())
         if ident in {"xr_ban_ip", "xr_bantime", "xr_ssh_bantime", "xr_ssh_maxretry", "xr_ignoreip"}:
             return screens.ban_screen(self.bot.ban_view(notice=notice))

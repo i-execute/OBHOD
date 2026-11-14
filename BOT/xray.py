@@ -1450,6 +1450,7 @@ class XrayState:
     tunnel_tags: str = ""
     tunnel_approval_url: str = ""
     tunnel_expiry_notified: str = ""
+    tgcloud_app_id: str = ""
     api_enabled: bool = True
     api_port: int = API_PORT
     metrics: str = DEFAULT_METRICS
@@ -1494,6 +1495,7 @@ class XrayState:
             "tunnel_tags": normalize_tailscale_tags(self.tunnel_tags),
             "tunnel_approval_url": self.tunnel_approval_url[:200],
             "tunnel_expiry_notified": self.tunnel_expiry_notified[:64],
+            "tgcloud_app_id": str(self.tgcloud_app_id or "")[:20],
             "api_enabled": bool(self.api_enabled),
             "api_port": int(self.api_port),
             "metrics": self.metrics,
@@ -1548,6 +1550,7 @@ class XrayState:
             tunnel_tags=normalize_tailscale_tags(data.get("tunnel_tags", "")),
             tunnel_approval_url=str(data.get("tunnel_approval_url", "") or "")[:200],
             tunnel_expiry_notified=str(data.get("tunnel_expiry_notified", "") or "")[:64],
+            tgcloud_app_id=str(data.get("tgcloud_app_id", "") or "")[:20],
             api_enabled=bool(data.get("api_enabled", True)),
             api_port=int(data.get("api_port", API_PORT) or API_PORT),
             metrics=str(data.get("metrics", DEFAULT_METRICS) or ""),

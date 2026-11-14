@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import i18n, inline, subs
+from . import i18n, inline, serverless, subs
 from .scan import ML_DSA65_CHAIN_MIN, ScanResult, canonical_kind, kind_has_mldsa, security_fit, security_fits, top_fastest_targets
 from .ui import (
     bold,
@@ -94,6 +94,7 @@ class XrayView:
     picked_sni: str = ""
     vps_subnet: str = ""
     last_subnet: str = ""
+    serverless_status: str = "unknown"
 
     @property
     def installed(self) -> bool:
@@ -652,11 +653,15 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     approval_url = str(getattr(state, "tunnel_approval_url", "") or "").strip()
     domain_ok = bool(state.tunnel_enabled and not state.tunnel_expired and state.public_base())
     has_live_node = bool(state.tunnel_key_expiry and not state.tunnel_expired)
-    ready = bool(domain_ok or view.key_mask or state.tunnel_expired or state.tunnel_key_expiry or approval_url)
+    ready = bool(domain_ok or state.tgcloud_app_id or view.key_mask or state.tunnel_expired or state.tunnel_key_expiry or approval_url)
     if not ready:
         if xray_missing:
             blocks.append(quote(bold(t("XR_SUBS_NO_XRAY_NOTE"))))
         blocks.append(quote(muted(t("XR_SUBS_NO_DOMAIN"))))
+        if view.serverless_status == "missing":
+            blocks.append(quote(bold(t("TGCLOUD_NOT_ENABLED"))))
+        else:
+            blocks.append(quote(muted(t("TGCLOUD_SETUP_NOTE"))))
         blocks.append(tailscale_guide_block(t, open_=True))
         buttons = []
         if xray_missing:
@@ -665,6 +670,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
             [
                 row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")),
                 input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
+                row(link_button(t("TGCLOUD_ENABLE"), "https://t.me/BotFather", icon="world")),
+                input_row(t("TGCLOUD_KEY_INPUT"), "xr_tgcloud_key", "-", view.lang),
                 back_row("xr:home", view.lang),
             ]
         )
@@ -681,9 +688,15 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
             blocks.append(quote(bold(t("TS_EXPIRY_ALERT_TITLE_30D", days=exp_days))))
     bundle = view.bundle
     links = [item for item in (bundle.links if bundle is not None else []) if str(item).startswith("vless://")]
+    try:
+        serverless_domain = serverless.app_domain(state.tgcloud_app_id) if state.tgcloud_app_id else ""
+    except serverless.ServerlessError:
+        serverless_domain = ""
+    serverless_label = t("TGCLOUD_STATUS_ON") if serverless_domain else t("TGCLOUD_STATUS_OFF")
     pairs = [
         ("link", t("XR_SUBS_ENABLED"), code(i18n.t("UI_YES" if state.sub_enabled else "UI_NO", view.lang))),
         ("world", t("DOM_TITLE"), code(state.public_base() or t("UI_NOT_SET"))),
+        ("world", t("TGCLOUD_TITLE"), code(serverless_domain or serverless_label)),
         ("plug", t("XR_SUBS_LOCAL_PORT"), code("127.0.0.1:%d" % int(state.sub_port or 0))),
     ]
     if state.tunnel_key_expiry or state.tunnel_expired:
@@ -692,9 +705,14 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         pairs.append(("tag", t("TAILSCALE_TAGS_ROW"), code(state.tunnel_tags)))
     pairs.append(("info", t("XR_HOME_INBOUNDS"), code(len(enabled_inbounds))))
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
+    if not state.tgcloud_app_id and view.serverless_status == "missing":
+        blocks.append(quote(bold(t("TGCLOUD_NOT_ENABLED"))))
+    elif not state.tgcloud_app_id:
+        blocks.append(quote(muted(t("TGCLOUD_SETUP_NOTE"))))
     if domain_ok:
         blocks.append(quote(muted(t("XR_SUBS_PERMANENT_NOTE"))))
     copy_btn = ""
+    copy_serverless_btn = ""
     setup_btn = ""
     if xray_missing and len(enabled_inbounds) == 0:
         blocks.append(quote(bold(t("XR_SUBS_NO_XRAY_NOTE"))))
@@ -717,6 +735,16 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
             copy_btn = copy_row(t("SUB_COPY"), url, icon="copy")
         if not host and not links:
             blocks.append(quote(muted(t("XR_SUBS_NO_IP_NOTE"))))
+    if serverless_domain and bundle is not None:
+        try:
+            cloud_url = serverless.subscription_url(state.tgcloud_app_id, bundle.id, bundle.key)
+        except serverless.ServerlessError:
+            cloud_url = ""
+        if cloud_url:
+            blocks.append(long_block(t("TGCLOUD_SUB_URL"), cloud_url))
+            copy_serverless_btn = copy_row(t("TGCLOUD_COPY"), cloud_url, icon="copy")
+    if serverless_domain and not links:
+        blocks.append(quote(muted(t("TGCLOUD_NO_LINKS"))))
     if not domain_ok and not has_live_node:
         blocks.append(tailscale_guide_block(t, open_=bool(state.tunnel_expired)))
     buttons = []
@@ -724,6 +752,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         buttons.append(setup_btn)
     if copy_btn:
         buttons.append(copy_btn)
+    if copy_serverless_btn:
+        buttons.append(copy_serverless_btn)
     has_approve_btn = bool(approval_url and approval_url.startswith("https://") and not domain_ok)
     if has_approve_btn:
         buttons.append(row(link_button(t("TAILSCALE_APPROVE_BTN"), approval_url, icon="ok")))
@@ -734,6 +764,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     if not has_approve_btn and not domain_ok:
         buttons.append(row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")))
     buttons.append(input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang))
+    buttons.append(row(link_button(t("TGCLOUD_ENABLE"), "https://t.me/BotFather", icon="world")))
+    buttons.append(input_row(t("TGCLOUD_KEY_INPUT"), "xr_tgcloud_key", "-", view.lang))
     buttons.append(back_row("xr:home", view.lang))
     return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
 

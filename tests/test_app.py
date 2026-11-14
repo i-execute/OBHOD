@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from BOT import i18n, inline, screens, xscreens
+from BOT import i18n, inline, screens, serverless, xscreens
 from BOT.config import ConfigError
 from BOT.guard import SshState
 from BOT.models import ModelError
@@ -492,6 +493,32 @@ def test_a_new_inbound_is_pushed_to_the_live_subscription(tmp_path: Path) -> Non
     bot.state.xray.add(extra)
     assert asyncio.run(bot.subs_sync()) is True
     assert control.calls[-1][0] == "sub-sync"
+
+
+def test_telegram_serverless_subscription_refreshes_for_new_inbounds(tmp_path: Path, monkeypatch) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tgcloud_app_id = "123456"
+    bot.xray.tgcloud_token = "app" + "123456" + ":" + "A" * 32
+    pushes = []
+    monkeypatch.setattr(serverless, "publish_static", lambda token, files: pushes.append((token, dict(files))) or {})
+    first = new_inbound("vless", 443, "raw", "reality")
+    first.make_client("owner")
+    bot.state.xray.add(first)
+    assert asyncio.run(bot.subs_sync(force=True)) is True
+    first_files = pushes[-1][1]
+    assert len(first_files) == 1
+    first_payload = next(iter(first_files.values())).strip()
+    assert len(base64.b64decode(first_payload, validate=True).decode().splitlines()) == 1
+    second = new_inbound("vless", 8443, "grpc", "tls")
+    second.make_client("owner")
+    bot.state.xray.add(second)
+    assert asyncio.run(bot.subs_sync()) is True
+    second_files = pushes[-1][1]
+    assert list(first_files) == list(second_files)
+    decoded = base64.b64decode(next(iter(second_files.values())).strip(), validate=True).decode()
+    assert len(decoded.splitlines()) == 2
+    assert not any(call[0] == "sub-sync" for call in bot.control.calls)
 
 
 def test_the_subscription_push_is_off_without_a_permanent_domain(tmp_path: Path) -> None:

@@ -19,7 +19,7 @@ from typing import Any
 
 from goygram import GoyGram
 
-from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, tools, ui, xscreens
+from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, tools, ui, xscreens
 from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
@@ -251,6 +251,8 @@ class Bot:
         self.inline_limit = INLINE_LIMIT
         self.inline_seen: dict[tuple[str, str, str], float] = {}
         self.subs_digest = ""
+        self.serverless_digest = ""
+        self.serverless_status = {"status": "unknown", "http_status": 0, "error_type": ""}
         self.subs_failed = 0.0
         self.notify = notify.Centre(notify.Settings.from_dict(self.state.notify))
         self.notify_task: Any = None
@@ -366,27 +368,45 @@ class Bot:
 
     async def subs_sync(self, force: bool = False) -> bool:
         state = self.state.xray
-        if not state.sub_enabled and not force:
+        tunnel_domain = state.tunnel_host if state.tunnel_enabled else ""
+        serverless_token = self.xray.tgcloud_token
+        if not tunnel_domain and not serverless_token:
             return False
-        domain = state.tunnel_host if state.tunnel_enabled else ""
-        if not domain:
-            return False
-        try:
-            registry = self.subs_payload()
-        except Exception as exc:
-            log.debug("the subscription registry was skipped: %s", exc)
-            return False
-        digest = hashlib.sha256(json.dumps(registry, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-        if not force and digest == self.subs_digest:
+        host = state.address(self.address())
+        if not host:
+            log.debug("subscription sync skipped: no public Xray address")
             return False
         try:
-            await self.control.sub_sync(self.state.ssh, registry, state.sub_port, domain)
+            bundle = subs.aggregate(state, [], host, state.sub_port)
         except Exception as exc:
-            self.subs_failed = time.monotonic()
-            log.warning("the subscription registry was not pushed: %s", exc)
+            log.debug("the subscription bundle was skipped: %s", exc)
             return False
-        self.subs_digest = digest
-        return True
+        changed = False
+        if tunnel_domain and (state.sub_enabled or force):
+            try:
+                registry = self.subs_payload()
+                digest = hashlib.sha256(json.dumps(registry, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+                if force or digest != self.subs_digest:
+                    await self.control.sub_sync(self.state.ssh, registry, state.sub_port, tunnel_domain)
+                    self.subs_digest = digest
+                    changed = True
+            except Exception as exc:
+                self.subs_failed = time.monotonic()
+                log.warning("the Tailscale subscription registry was not pushed: %s", getattr(exc, "message", type(exc).__name__))
+        if serverless_token:
+            try:
+                content = serverless.subscription_file(bundle.links)
+                files = {}
+                if content:
+                    files[serverless.subscription_path(bundle.id, bundle.key)] = content
+                digest = hashlib.sha256((state.tgcloud_app_id + "\0" + bundle.id + "\0" + bundle.key + "\0").encode("ascii") + content).hexdigest()
+                if force or digest != self.serverless_digest:
+                    await asyncio.to_thread(serverless.publish_static, serverless_token, files)
+                    self.serverless_digest = digest
+                    changed = True
+            except Exception as exc:
+                log.warning("the Telegram Serverless subscription was not pushed: %s", getattr(exc, "message", type(exc).__name__))
+        return changed
 
     def view(self, notice: str = "", error: str = "", busy: str = "") -> screens.View:
         notice = notice or self.update_notice_text()
@@ -696,6 +716,13 @@ class Bot:
             return True
         if not isinstance(me, dict):
             return True
+        bot_id = me.get("id")
+        if str(bot_id or "").isdigit():
+            self.serverless_status = await asyncio.to_thread(serverless.check_app, bot_id)
+            if self.serverless_status.get("status") == "missing":
+                banner = i18n.t("TUI_SERVERLESS_WARN", "en", app_id=bot_id)
+                print("\033[1;33m%s\033[0m" % banner, file=sys.stderr, flush=True)
+                log.warning("%s", banner)
         supports = me.get("supports_inline_queries")
         if supports is None and "bot_inline_placeholder" in me:
             supports = me.get("bot_inline_placeholder") is not None
@@ -752,6 +779,11 @@ class Bot:
     async def run(self) -> None:
         app = await self.boot()
         await self.check_inline_mode()
+        if self.xray.tgcloud_token and not self.serverless_digest:
+            try:
+                await self.subs_sync(force=True)
+            except Exception as exc:
+                log.warning("Telegram Serverless startup sync skipped: %s", type(exc).__name__)
         await self.verify_update()
         try:
             await self.register_commands()
@@ -1157,6 +1189,7 @@ class Bot:
             "xr_access_log": xr.access_log,
             "xr_tunnel_host": xr.tunnel_host,
             "xr_tunnel_key": "",
+            "xr_tgcloud_key": "",
             "ft_port": str(ft_cfg.listen_port),
             "ft_wg_port": str(ft_cfg.wg_port),
             "ft_wg_net": ft_cfg.wg_net,

@@ -747,7 +747,7 @@ check_bot_inline_mode() {
   command -v "$py" >/dev/null 2>&1 || py="python3"
   command -v "$py" >/dev/null 2>&1 || return 0
   OBHOD_PROBE_TOKEN="$tok" "$py" -c '
-import json, os, sys, urllib.request
+import json, os, sys, urllib.error, urllib.request
 tok = os.environ.get("OBHOD_PROBE_TOKEN", "").strip()
 if not tok or ":" not in tok:
     raise SystemExit(0)
@@ -758,11 +758,37 @@ try:
 except Exception:
     raise SystemExit(0)
 res = data.get("result") if isinstance(data, dict) and data.get("ok") else None
-if isinstance(res, dict) and res.get("supports_inline_queries") is False:
-    uname = str(res.get("username") or "").strip()
-    handle = ("@" + uname) if uname else "@your_bot"
-    msg = "THE BOT IS ALIVE AND WILL BE CONFIGURED, BUT ENABLE INLINE MODE (BotFather -> /setinline -> %s)" % handle
-    sys.stderr.write("\n  \033[1;31m%s\033[0m\n\n" % msg)
+if isinstance(res, dict):
+    if res.get("supports_inline_queries") is False:
+        uname = str(res.get("username") or "").strip()
+        handle = ("@" + uname) if uname else "@your_bot"
+        msg = "THE BOT IS ALIVE AND WILL BE CONFIGURED, BUT ENABLE INLINE MODE (BotFather -> /setinline -> %s)" % handle
+        sys.stderr.write("\n  \033[1;31m%s\033[0m\n\n" % msg)
+    bot_id = res.get("id")
+    if isinstance(bot_id, int) and bot_id > 0:
+        webhook_url = "https://cloud.telegram.org/app%s/webhook" % bot_id
+        try:
+            req = urllib.request.Request(webhook_url, headers={"User-Agent": "curl/8.5.0"})
+            with urllib.request.urlopen(req, timeout=15) as response:
+                body = response.read(4096)
+                status = response.status
+        except urllib.error.HTTPError as error:
+            body = error.read(4096)
+            status = error.code
+        except Exception:
+            body = b""
+            status = 0
+        kind = ""
+        try:
+            payload = json.loads(body.decode("utf-8", "replace"))
+            if isinstance(payload, dict):
+                kind = str(payload.get("error_type") or "")
+        except Exception:
+            pass
+        missing = kind == "APP_NOT_FOUND" or (not kind and status == 404)
+        if missing:
+            msg = "TELEGRAM SERVERLESS IS NOT ENABLED FOR BOT %s; ENABLE IT IN BOTFATHER -> SERVERLESS" % bot_id
+            sys.stderr.write("\n  \033[1;33m%s\033[0m\n\n" % msg)
 ' || true
 }
 

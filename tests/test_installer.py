@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
 import os
 import pty
 import re
+import urllib.error
+import urllib.request
 import select
 import shlex
 import shutil
@@ -31,6 +34,52 @@ def test_shell_syntax() -> None:
     for script in (INSTALLER, ROOT / "run.sh"):
         result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "warn"),
+    [
+        (404, b'{"error_type":"APP_NOT_FOUND"}', True),
+        (401, b'{"error_type":"INTERNAL_ERROR"}', False),
+    ],
+)
+def test_install_probes_telegram_serverless_status(
+    status: int, payload: bytes, warn: bool, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = INSTALLER.read_text(encoding="utf-8")
+    start = text.index('OBHOD_PROBE_TOKEN="$tok" "$py" -c \'') + len('OBHOD_PROBE_TOKEN="$tok" "$py" -c \'')
+    end = text.index("\n' || true", start)
+    source = text[start:end]
+    monkeypatch.setenv("OBHOD_PROBE_TOKEN", "123456:TEST")
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size: int = -1) -> bytes:
+            return b'{"ok":true,"result":{"id":123456,"supports_inline_queries":true}}'
+
+    calls = []
+
+    def opener(request: urllib.request.Request, timeout: float):
+        calls.append(request.full_url)
+        if request.full_url.startswith("https://api.telegram.org/"):
+            return Response()
+        raise urllib.error.HTTPError(request.full_url, status, "probe", {}, io.BytesIO(payload))
+
+    monkeypatch.setattr(urllib.request, "urlopen", opener)
+    exec(compile(source, str(INSTALLER), "exec"), {})
+    err = capsys.readouterr().err
+    assert calls == [
+        "https://api.telegram.org/bot123456:TEST/getMe",
+        "https://cloud.telegram.org/app123456/webhook",
+    ]
+    assert ("TELEGRAM SERVERLESS IS NOT ENABLED" in err) is warn
 
 
 def test_unit_template_placeholders() -> None:
