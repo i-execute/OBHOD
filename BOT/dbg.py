@@ -354,7 +354,7 @@ class DebugPanel:
         if not self.cooled("dpi", DPI_COOLDOWN):
             await self.render(chat_id, msg_id, dscreens.dpi_screen(self.view(notice=t("DBG_LIMIT"))))
             return
-        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        await self.render(chat_id, msg_id, dscreens.busy(self.view()))
         marks, networks, version = self.dpi_inputs()
         try:
             state = await asyncio.wait_for(asyncio.to_thread(dpi.kernel_state), DPI_LIMIT)
@@ -429,7 +429,7 @@ class DebugPanel:
         t = self.tr()
         self.honey_busy = False
         if action in ("", "open", "refresh"):
-            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
             await self.honey_refresh()
             await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view()))
             return
@@ -440,7 +440,7 @@ class DebugPanel:
         if not self.cooled("hp:" + action, HP_COOLDOWN):
             await self.render(chat_id, msg_id, dscreens.honeypot_screen(self.view(notice=t("DBG_LIMIT"))))
             return
-        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        await self.render(chat_id, msg_id, dscreens.busy(self.view()))
         client = guard.GuardClient(self.bot.control)
         cfg = getattr(self.bot.state, "ssh", None)
         try:
@@ -629,7 +629,7 @@ class DebugPanel:
         self.ddos_busy = False
         if action in ("", "open", "refresh"):
             self.ddos_in_ips = False
-            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
             await self.ddos_refresh(probe=action == "open")
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
             return
@@ -640,7 +640,7 @@ class DebugPanel:
                 self.ddos_page = max(0, int(page_part))
             except ValueError:
                 self.ddos_page = 0
-            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
             await self.ddos_refresh(probe=False)
             await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view()))
             return
@@ -669,7 +669,7 @@ class DebugPanel:
             if not self.cooled("dd:probe", DDOS_COOLDOWN):
                 await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DBG_LIMIT"))))
                 return
-            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
             await self.ddos_refresh(probe=True)
             self.note("dd", "probe", "ok")
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
@@ -687,7 +687,7 @@ class DebugPanel:
                 self.ddos.rkn_enabled = policy.rkn_enabled
                 self.ddos.policy = policy
             if self.ddos is not None and self.ddos.installed:
-                await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+                await self.render(chat_id, msg_id, dscreens.busy(self.view()))
                 client = guard.GuardClient(self.bot.control)
                 cfg = getattr(self.bot.state, "ssh", None)
                 try:
@@ -717,7 +717,7 @@ class DebugPanel:
             msg = t("DDOS_RKN_SYNCED", v4=v4_len, v6=v6_len, sources=ok_sources)
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=msg)))
             return
-        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        await self.render(chat_id, msg_id, dscreens.busy(self.view()))
         client = guard.GuardClient(self.bot.control)
         cfg = getattr(self.bot.state, "ssh", None)
         policy = antiddos.Policy.from_dict(self.bot.state.ddos)
@@ -747,7 +747,7 @@ class DebugPanel:
         if not self.cooled("scripts", SCRIPTS_COOLDOWN):
             await self.render(chat_id, msg_id, dscreens.scripts_screen(self.view(notice=self.tr()("DBG_LIMIT"))))
             return
-        await self.render(chat_id, msg_id, dscreens.busy(self.view(), self.tr()("LOADING_STEP")))
+        await self.render(chat_id, msg_id, dscreens.busy(self.view()))
         await self.scripts_check()
         await self.render(chat_id, msg_id, dscreens.scripts_screen(self.view()))
 
@@ -778,7 +778,7 @@ class DebugPanel:
         if not pending:
             await self.render(chat_id, msg_id, dscreens.scripts_screen(self.view(notice=t("SCR_FETCHED"))))
             return
-        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        await self.render(chat_id, msg_id, dscreens.busy(self.view()))
         failed = ""
         for item in pending:
             try:
@@ -800,7 +800,7 @@ class DebugPanel:
             return
         t = self.tr()
         keep = self.keep_ports()
-        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        await self.render(chat_id, msg_id, dscreens.busy(self.view()))
         try:
             raw = await self.bot.freeturn.control.net_ports(portguard.join(keep))
         except FtError as exc:
@@ -855,7 +855,7 @@ class DebugPanel:
         if _kind in ("ip", "subnet"):
             self.target = host
         wants_live = action in ("probe", "both")
-        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("LOADING_STEP")))
+        await self.render(chat_id, msg_id, dscreens.busy(self.view()))
         answer = chebur.Answer(target=host, at=0.0)
         try:
             answer.registry = await asyncio.to_thread(chebur.check, host)

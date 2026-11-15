@@ -521,6 +521,69 @@ def test_telegram_serverless_subscription_refreshes_for_new_inbounds(tmp_path: P
     assert not any(call[0] == "sub-sync" for call in bot.control.calls)
 
 
+def test_serverless_warning_is_shown_when_the_app_probe_reports_missing(tmp_path: Path, monkeypatch, capsys) -> None:
+    bot = make_bot(tmp_path)
+
+    async def get_me(refresh: bool = True):
+        return {"id": 123456, "supports_inline_queries": True}
+
+    bot.app.get_me = get_me
+    monkeypatch.setattr(serverless, "check_app", lambda app_id: {"status": "missing", "http_status": 404, "error_type": "APP_NOT_FOUND"})
+    assert asyncio.run(bot.check_inline_mode()) is True
+    assert i18n.t("TUI_SERVERLESS_WARN", "en", app_id=123456) in capsys.readouterr().err
+    assert bot.serverless_status["status"] == "missing"
+    html = xscreens.subs_screen(bot.xray.view(), []).to_html()
+    assert i18n.t("TGCLOUD_NOT_ENABLED", "en").replace(">", "&gt;") in html
+
+
+def test_serverless_input_shows_progress_then_both_subscription_links(tmp_path: Path, monkeypatch) -> None:
+    bot = make_bot(tmp_path)
+    token = "app123456:" + "A" * 32
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tunnel_host = "obhod.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = True
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    uploaded = []
+    monkeypatch.setattr(serverless, "verify_token", lambda value: {"app_id": "123456", "revision": 7})
+    monkeypatch.setattr(serverless, "publish_static", lambda value, files: uploaded.append(dict(files)) or {})
+
+    asyncio.run(bot.dispatch_input(7, "xr_tgcloud_key", "-", token))
+
+    assert len(bot.sent) == 2
+    progress = bot.sent[0].to_html()
+    final = bot.sent[-1].to_html()
+    assert i18n.t("TGCLOUD_CONNECTING", "en") in progress
+    assert "app123456.tgcloud.ai/base64/base64" in final
+    assert "obhod.tail1234.ts.net" in final
+    assert i18n.t("TGCLOUD_SUB", "en") in final
+    assert uploaded and len(uploaded[-1]) == 1
+    assert bot.state.xray.tgcloud_app_id == "123456"
+    assert bot.xray.tgcloud_token == token
+    key_file = bot.xray.tgcloud_key_path()
+    assert key_file.read_text(encoding="utf-8") == token
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    assert token not in str(bot.state.to_dict())
+    assert bot.busy is False
+
+
+def test_serverless_rejected_token_shows_error_and_clears_progress(tmp_path: Path, monkeypatch) -> None:
+    bot = make_bot(tmp_path)
+    token = "app123456:" + "A" * 32
+    def reject(_value: str):
+        raise serverless.ServerlessError("invalid Serverless token", 401)
+
+    monkeypatch.setattr(serverless, "verify_token", reject)
+    asyncio.run(bot.dispatch_input(7, "xr_tgcloud_key", "-", token))
+
+    assert len(bot.sent) == 2
+    assert "invalid Serverless token" in bot.sent[-1].to_html()
+    assert bot.state.xray.tgcloud_app_id == ""
+    assert bot.xray.tgcloud_token == ""
+    assert bot.busy is False
+
+
 def test_the_subscription_push_is_off_without_a_permanent_domain(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     inbound = new_inbound("vless", 443, "raw", "reality")

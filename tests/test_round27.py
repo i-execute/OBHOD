@@ -237,7 +237,7 @@ def test_update_messages_have_no_empty_paragraphs_and_clean_newlines(tmp_path: P
     assert "<p><br></p>" not in html
     assert "\n\n" not in html
     assert "<br>" in html
-    assert bot.tr()("LOADING_BODY") not in html
+    assert bot.tr()("BUSY_TITLE") not in html
 
 
 def test_funnel_port_preserved_on_key_rotation_and_switchable_manually(tmp_path: Path) -> None:

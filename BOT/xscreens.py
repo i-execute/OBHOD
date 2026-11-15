@@ -1110,10 +1110,10 @@ def logs_screen(view: XrayView, lines: list[str], tail: int) -> Any:
 
 def busy_screen(title: str, lang: str = i18n.DEFAULT_LANGUAGE, steps: list[str] | None = None) -> Any:
     t = i18n.translator(lang)
-    blocks = [quote(muted(title))]
+    blocks = [quote(muted(title))] if title else []
     if steps:
         blocks.append(bullet_list([muted(item) for item in steps]))
-    return screen(t("XR_TITLE"), t("BUSY_SUBTITLE"), blocks, [], icon="xray")
+    return screen(t("XR_TITLE"), "", blocks, [], icon="xray")
 
 
 def default_targets() -> list[str]:

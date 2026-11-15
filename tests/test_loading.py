@@ -33,21 +33,22 @@ def test_a_slow_route_shows_the_loading_screen_first(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_callback(Evt("xr:subs")))
     first = bot.rendered[0].to_html()
-    assert i18n.t("LOADING_BODY") in first
     assert i18n.t("BUSY_TITLE") in first
+    assert "please wait" not in first.lower()
+    assert "LOADING" not in first
 
 
 def test_a_fast_navigation_does_not_flash_loading(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_callback(Evt("nav:settings")))
     for rich in bot.rendered:
-        assert i18n.t("LOADING_BODY") not in rich.to_html()
+        assert i18n.t("BUSY_TITLE") not in rich.to_html()
 
 
 def test_the_loading_screen_is_not_shown_twice(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.on_callback(Evt("upd:show")))
-    marks = [rich.to_html().count(i18n.t("LOADING_BODY")) for rich in bot.rendered]
+    marks = [rich.to_html().count(i18n.t("BUSY_TITLE")) for rich in bot.rendered]
     assert marks[0] == 1
     assert sum(marks) == 1
 
@@ -60,10 +61,11 @@ def test_every_heavy_prefix_is_marked_as_slow() -> None:
         assert not bot.slow_action(data), data
 
 
-def test_the_loading_text_exists_in_every_language() -> None:
+def test_the_short_busy_label_exists_and_filler_keys_are_gone() -> None:
     for language in i18n.LANGUAGES:
-        for key in ("LOADING_TITLE", "LOADING_BODY", "LOADING_STEP"):
-            assert i18n.raw(key, language), key
+        assert i18n.raw("BUSY_TITLE", language).strip()
+        for key in ("BUSY_SUBTITLE", "LOADING_TITLE", "LOADING_BODY", "LOADING_STEP"):
+            assert not i18n.has_key(key, language), key
 
 
 def test_a_failing_slow_route_still_ends_on_an_error_screen(tmp_path: Path) -> None:
@@ -74,7 +76,7 @@ def test_a_failing_slow_route_still_ends_on_an_error_screen(tmp_path: Path) -> N
 
     bot.xray.route = boom
     run(bot.on_callback(Evt("xr:subs")))
-    assert i18n.t("LOADING_BODY") in bot.rendered[0].to_html()
+    assert i18n.t("BUSY_TITLE") in bot.rendered[0].to_html()
     assert "RuntimeError" in bot.rendered[-1].to_html()
 
 

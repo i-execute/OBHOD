@@ -887,10 +887,10 @@ def error_screen(view: View, title: str, message: str) -> Any:
 
 def busy_screen(title: str, lang: str = i18n.DEFAULT_LANGUAGE, steps: list[str] | None = None) -> Any:
     t = i18n.translator(lang)
-    blocks = [quote(muted(title))]
+    blocks = [quote(muted(title))] if title else []
     if steps:
         blocks.append(bullet_list([muted(item) for item in steps]))
-    return screen(t("BUSY_TITLE"), t("BUSY_SUBTITLE"), blocks, [], icon="clock")
+    return screen(t("BUSY_TITLE"), "", blocks, [], icon="clock")
 
 
 def prompt(ident: str, lang: str = i18n.DEFAULT_LANGUAGE, error: str = "") -> Any:

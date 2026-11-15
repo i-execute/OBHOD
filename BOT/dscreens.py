@@ -251,11 +251,12 @@ def info_screen(view: DbgView, info: dict[str, Any]) -> Any:
     return screen(t("DBG_INFO_TITLE"), t("DBG_INFO_SUBTITLE"), blocks, buttons, icon="server")
 
 
-def busy(view: DbgView, text: str) -> Any:
+def busy(view: DbgView, text: str = "") -> Any:
     t = view.tr()
     blocks = banner(view, t)
-    blocks.append(quote(muted(text or t("LOADING_BODY"))))
-    return screen(t("LOADING_TITLE"), t("BUSY_SUBTITLE"), blocks, [], icon="loading")
+    if text:
+        blocks.append(quote(muted(text)))
+    return screen(t("BUSY_TITLE"), "", blocks, [], icon="loading")
 
 
 def stub_screen(view: DbgView, name: str, reason: str, host: str, retry: str = "") -> Any:

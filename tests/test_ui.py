@@ -8,6 +8,7 @@ from goygram.rich import Rich
 from BOT import i18n
 from BOT.ui import (
     MAX_BUTTONS,
+    PALETTE,
     big,
     bold,
     button,
@@ -42,9 +43,12 @@ ROW_RE = re.compile(r"<tg-button-row[^>]*>(.*?)</tg-button-row>", re.S)
 def test_esc_and_helpers() -> None:
     assert esc("<b>&\"") == "&lt;b&gt;&amp;&quot;"
     assert code("x") == "<code>x</code>"
-    assert bold("x") == "<b>x</b>"
-    assert muted("x").startswith("<span")
-    assert chip("x") == "<mark>x</mark>"
+    assert bold("x") == '<b><span style="color: #D6E0FA">x</span></b>'
+    assert muted("x") == '<span style="color: #A0C6EE">x</span>'
+    assert chip("x") == '<span style="color: #60B0FF">x</span>'
+    assert PALETTE["night"] == "#0C1230"
+    assert PALETTE["violet"] == "#5862C4"
+    assert PALETTE["white"] == "#F2F6FF"
 
 
 def test_button_html_shape() -> None:
@@ -90,7 +94,7 @@ def test_lists_details_quote_pre() -> None:
     assert numbered(["a"]).startswith("<ol>")
     assert details("t", "b").startswith("<details><summary>t</summary>")
     assert quote("x") == "<blockquote>x</blockquote>"
-    assert heading("t", 2) == "<h2>t</h2>"
+    assert heading("t", 2) == '<h2><span style="color: #7C92E0">t</span></h2>'
     assert divider() == "<hr/>"
     assert pre("a<b") == "<pre>a&lt;b</pre>"
     assert pre("{}", "json").startswith('<pre><code class="language-json">')
@@ -100,7 +104,7 @@ def test_screen_returns_rich_with_buttons() -> None:
     rich = screen("Title", "subtitle", ["<p>x</p>"], [big("a", "nav:home")], footer=muted("f"))
     assert isinstance(rich, Rich)
     html = rich.build()
-    assert html.startswith("<h2>Title</h2>")
+    assert html.startswith('<h2><span style="color: #F2F6FF">Title</span></h2>')
     assert "subtitle" in html
     assert "<hr/>" in html
     assert count_buttons(html) == 1
@@ -185,15 +189,13 @@ def test_input_row_adds_the_list_button_for_fixed_choices() -> None:
     assert i18n.t("BTN_LIST", "en") in manual
 
 
-def test_the_loading_screen_never_repeats_itself() -> None:
+def test_the_loading_screen_uses_short_single_status_copy() -> None:
     from BOT import screens, ui
 
     for lang in i18n.LANGUAGES:
-        body = i18n.t("LOADING_BODY", lang)
-        step = i18n.t("LOADING_STEP", lang)
-        html = ui.loading(i18n.t("LOADING_TITLE", lang), body, [step]).to_html()
-        assert html.count(body) == 1
-        assert html.count(step) == 1
-        busy = screens.busy_screen(body, lang, [step]).to_html()
-        assert busy.count(body) == 1
-        assert busy.count(step) == 1
+        busy = screens.busy_screen("", lang).to_html()
+        assert i18n.t("BUSY_TITLE", lang) in busy
+        assert i18n.has_key("BUSY_SUBTITLE", lang) is False
+        helper = ui.loading("Working", "", []).to_html()
+        assert "Working" in helper
+        assert "please wait" not in helper.lower()

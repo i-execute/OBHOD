@@ -223,6 +223,19 @@ def test_show_links_and_subscription(tmp_path: Path) -> None:
     assert item.sub_rows()[0][1] == path
 
 
+def test_serverless_subscription_row_is_translated_in_all_languages(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(make_inbound("reality", "raw", 443))
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tgcloud_app_id = "123456"
+    for language in i18n.LANGUAGES:
+        bot.state.language = language
+        rows = item.sub_rows()
+        assert len(rows) == 2
+        assert rows[1][0] == i18n.t("TGCLOUD_SUB", language)
+        assert rows[1][2] == "https://app123456.tgcloud.ai/base64/base64"
+
+
 def test_subs_apply_pushes_registry(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     inbound = new_inbound("vless", 443, "raw", "reality")

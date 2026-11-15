@@ -21,6 +21,19 @@ PRE_BLOCK = re.compile(r"(<pre(?:\s[^>]*)?>.*?</pre>)", re.S)
 INTER_BLOCK_NL = re.compile(r"(</(?:p|blockquote|details|table|ul|ol|h[1-6])>|<hr\s*/?>)\s*\n+\s*(?=<)")
 SEP = " · "
 _ICONS = False
+PALETTE = {
+    "night": "#0C1230",
+    "indigo": "#1C245C",
+    "blue": "#344094",
+    "violet": "#5862C4",
+    "cornflower": "#7C92E0",
+    "ice": "#A0C6EE",
+    "lavender": "#D6E0FA",
+    "white": "#F2F6FF",
+    "steel": "#9698AA",
+    "neon": "#60B0FF",
+    "metal": "#5A6686",
+}
 
 
 class ScreenRich(Rich):
@@ -62,27 +75,27 @@ def code(value: object) -> str:
 
 
 def bold(value: object) -> str:
-    return f"<b>{esc(value)}</b>"
+    return f'<b><span style="color: {PALETTE["lavender"]}">{esc(value)}</span></b>'
 
 
 def bold_html(body: str) -> str:
-    return f"<b>{body}</b>"
+    return f'<b><span style="color: {PALETTE["lavender"]}">{body}</span></b>'
 
 
 def muted(value: object) -> str:
-    return f'<span style="color: #8a8a8a">{esc(value)}</span>'
+    return f'<span style="color: {PALETTE["ice"]}">{esc(value)}</span>'
 
 
 def muted_html(body: str) -> str:
-    return f'<span style="color: #8a8a8a">{body}</span>'
+    return f'<span style="color: {PALETTE["ice"]}">{body}</span>'
 
 
 def chip(value: object) -> str:
-    return f"<mark>{esc(value)}</mark>"
+    return f'<span style="color: {PALETTE["neon"]}">{esc(value)}</span>'
 
 
 def chip_html(body: str) -> str:
-    return f"<mark>{body}</mark>"
+    return f'<span style="color: {PALETTE["neon"]}">{body}</span>'
 
 
 def link(label: object, url: str) -> str:
@@ -207,7 +220,9 @@ def row_parts(item: object) -> tuple[str, str, object]:
 def table(pairs: Iterable[object], headers: tuple[str, str] | None = None) -> str:
     head = ""
     if headers:
-        head = f'<tr><th align="center">{esc(headers[0])}</th><th align="center">{esc(headers[1])}</th></tr>'
+        first = f'<span style="color: {PALETTE["cornflower"]}">{esc(headers[0])}</span>'
+        second = f'<span style="color: {PALETTE["cornflower"]}">{esc(headers[1])}</span>'
+        head = f'<tr><th align="center">{first}</th><th align="center">{second}</th></tr>'
     cells = []
     for item in pairs:
         icon, key, value = row_parts(item)
@@ -246,7 +261,7 @@ def quote(body: str, cite: str = "") -> str:
 
 
 def heading(text: str, level: int = 3, icon: str = "") -> str:
-    return f"<h{level}>{ico(icon, '')}{esc(text)}</h{level}>"
+    return f'<h{level}>{ico(icon, "")}<span style="color: {PALETTE["cornflower"]}">{esc(text)}</span></h{level}>'
 
 
 def divider() -> str:
@@ -271,7 +286,7 @@ def screen(
     icon: str = "",
 ) -> Rich:
     root = ScreenRich()
-    root.add(f"<h2>{ico(icon, '')}{esc(title)}</h2>")
+    root.add(f'<h2>{ico(icon, "")}<span style="color: {PALETTE["white"]}">{esc(title)}</span></h2>')
     if subtitle:
         root.add(f"<p>{subtitle}</p>")
     for block in blocks:

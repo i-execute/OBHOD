@@ -451,10 +451,10 @@ def confirm_screen(view: FtView, title: str, body: str, action: str, back: str =
 
 def busy_screen(title: str, lang: str = i18n.DEFAULT_LANGUAGE, steps: list[str] | None = None) -> Any:
     t = i18n.translator(lang)
-    blocks = [quote(muted(title))]
+    blocks = [quote(muted(title))] if title else []
     if steps:
         blocks.append(bullet_list([muted(item) for item in steps]))
-    return screen(t("FT_TITLE"), t("BUSY_SUBTITLE"), blocks, [], icon="tunnel")
+    return screen(t("FT_TITLE"), "", blocks, [], icon="tunnel")
 
 
 def error_screen(view: FtView, title: str, message: str) -> Any:

@@ -1589,6 +1589,26 @@ class Bot:
     async def dispatch_input(self, chat_id: int, ident: str, ctx: str, value: str) -> None:
         if not chat_id:
             return
+        if ident == "xr_tgcloud_key" and str(value or "").strip():
+            if not self.busy_begin():
+                await self.send(chat_id, screens.error_screen(self.view(), self.tr()("ERR_INPUT_TITLE"), self.tr()("TOAST_BUSY")))
+                return
+            progress_id = 0
+            try:
+                progress_id = await self.send(chat_id, xscreens.busy_screen(self.tr()("TGCLOUD_CONNECTING"), self.language))
+                await self.xray.apply_input(chat_id, ident, ctx, value)
+                self.audit.note(self.admin_id, "input:%s" % ident, "ok")
+            except Exception as exc:
+                self.audit.note(self.admin_id, "input:%s" % ident, "failed")
+                log.exception("Telegram Serverless input failed")
+                await self.send(chat_id, screens.error_screen(self.view(), self.tr()("ERR_CRASH_TITLE"), "%s: %s" % (type(exc).__name__, exc)))
+            finally:
+                try:
+                    if progress_id:
+                        await self.drop_marker(chat_id, progress_id)
+                finally:
+                    self.busy_end()
+            return
         actor = self.admin_id
         try:
             if ident.startswith("ssh_"):
@@ -1690,7 +1710,7 @@ class Bot:
                 return
         if self.slow_action(data):
             try:
-                await self.render(chat_id, msg_id, screens.busy_screen(self.tr()("LOADING_BODY"), self.language, [self.tr()("LOADING_STEP")]))
+                await self.render(chat_id, msg_id, screens.busy_screen("", self.language))
             except Exception as exc:
                 log.debug("the loading screen failed: %s", exc)
         await self.answer_click(evt)
