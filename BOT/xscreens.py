@@ -736,13 +736,13 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         if not host and not links:
             blocks.append(quote(muted(t("XR_SUBS_NO_IP_NOTE"))))
     if serverless_domain and bundle is not None:
-        try:
-            cloud_url = serverless.subscription_url(state.tgcloud_app_id, bundle.id, bundle.key)
-        except serverless.ServerlessError:
-            cloud_url = ""
+        cloud_url = next((str(item[2]) for item in rows_data if item[0] == t("TGCLOUD_SUB") and item[2]), "")
+        cloud_check_failed = any(item[0] == "__TGCLOUD_VERIFY_ERROR__" for item in rows_data)
         if cloud_url:
             blocks.append(long_block(t("TGCLOUD_SUB_URL"), cloud_url))
             copy_serverless_btn = copy_row(t("TGCLOUD_COPY"), cloud_url, icon="copy")
+        elif cloud_check_failed:
+            blocks.append(quote(bold(t("TGCLOUD_VERIFY_FAILED"))))
     if serverless_domain and not links:
         blocks.append(quote(muted(t("TGCLOUD_NO_LINKS"))))
     if not domain_ok and not has_live_node:

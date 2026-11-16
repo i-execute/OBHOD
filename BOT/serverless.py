@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -12,7 +14,8 @@ API_ROOT = "https://cloud.telegram.org"
 DOMAIN_SUFFIX = ".tgcloud.ai"
 TOKEN_RE = re.compile(r"^(app([0-9]{5,20}):([A-Za-z0-9_-]{20,256}))$")
 SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]{64}$")
-MANAGED_PATH = "base64/base64.txt"
+MANAGED_PATH_RE = re.compile(r"^[A-Za-z0-9_-]{64}/[A-Za-z0-9_-]{64}$")
+LEGACY_MANAGED_PATH = "base64/base64.txt"
 MAX_BLOB = 8 * 1024 * 1024
 
 
@@ -44,12 +47,11 @@ def subscription_path(sub_id: object, sub_key: object) -> str:
     key = str(sub_key or "")
     if not SEGMENT_RE.fullmatch(ident) or not SEGMENT_RE.fullmatch(key):
         raise ServerlessError("the subscription path is invalid")
-    return MANAGED_PATH
+    return "%s/%s" % (ident, key)
 
 
 def subscription_url(app_id: object, sub_id: object, sub_key: object) -> str:
-    subscription_path(sub_id, sub_key)
-    return app_domain(app_id) + "/base64/base64"
+    return app_domain(app_id) + "/" + subscription_path(sub_id, sub_key)
 
 
 def subscription_file(links: Any) -> bytes:
@@ -149,28 +151,76 @@ def check_app(app_id: object, opener: Any = None, timeout: float = 5.0) -> dict[
     return {"status": verdict, "http_status": status, "error_type": kind}
 
 
-def verify_token(token: str, opener: Any = None) -> dict[str, Any]:
+def verify_token(token: str, opener: Any = None, timeout: float = 20.0) -> dict[str, Any]:
     app_id, clean = token_parts(token)
-    result = request(clean, "GET", "/get", opener=opener)
+    result = request(clean, "GET", "/get", opener=opener, timeout=timeout)
     return {"app_id": app_id, "revision": int(result.get("revision", 0) or 0), "static": result.get("static") if isinstance(result.get("static"), dict) else None}
 
 
-def _static_config(static: dict[str, Any] | None) -> dict[str, Any]:
+def validate_subscription(token: str, url: str, expected_links: Any, opener: Any = None, timeout: float = 5.0) -> list[str]:
+    app_id, _ = token_parts(token)
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+        expected_host = urllib.parse.urlsplit(app_domain(app_id)).hostname
+        if parts.scheme != "https" or parts.hostname != expected_host or parts.port not in (None, 443):
+            raise ServerlessError("the Serverless subscription URL is invalid")
+        path_parts = parts.path.strip("/").split("/")
+        if len(path_parts) != 2:
+            raise ServerlessError("the Serverless subscription URL is invalid")
+        subscription_path(*path_parts)
+        if parts.query or parts.fragment:
+            raise ServerlessError("the Serverless subscription URL is invalid")
+    except ValueError as exc:
+        raise ServerlessError("the Serverless subscription URL is invalid") from exc
+
+    verify_token(token, opener=opener, timeout=timeout)
+    req = urllib.request.Request(str(url), headers={"Accept": "text/plain"}, method="GET")
+    call = opener or urllib.request.urlopen
+    try:
+        response = call(req, timeout=timeout)
+        with response:
+            status = int(getattr(response, "status", 200) or 200)
+            raw = response.read(MAX_BLOB + 1)
+            final_url = str(response.geturl() if callable(getattr(response, "geturl", None)) else url)
+    except urllib.error.HTTPError as exc:
+        raise ServerlessError("the Serverless subscription is not reachable", exc.code) from exc
+    except Exception as exc:
+        raise ServerlessError("the Serverless subscription is not reachable: %s" % type(exc).__name__) from None
+    if status < 200 or status >= 300 or len(raw) > MAX_BLOB:
+        raise ServerlessError("the Serverless subscription returned an invalid response", status)
+    final = urllib.parse.urlsplit(final_url)
+    if final.scheme != "https" or final.hostname != expected_host or final.path != parts.path or final.query:
+        raise ServerlessError("the Serverless subscription redirected away from its signed path")
+    try:
+        decoded = base64.b64decode(b"".join(raw.split()), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        raise ServerlessError("the Serverless subscription content is invalid") from exc
+    returned = [line.strip() for line in decoded.splitlines() if line.strip()]
+    if not returned or any(not line.startswith("vless://") for line in returned):
+        raise ServerlessError("the Serverless subscription has no valid Xray configurations")
+    expected = [str(line).strip() for line in expected_links or [] if str(line or "").strip().startswith("vless://")]
+    if not expected or returned != expected:
+        raise ServerlessError("the Serverless subscription does not match the current complete Xray list")
+    return returned
+
+
+def _managed_path(path: object) -> bool:
+    value = str(path or "").lstrip("/")
+    return value == LEGACY_MANAGED_PATH or bool(MANAGED_PATH_RE.fullmatch(value))
+
+
+def _static_config(static: dict[str, Any] | None, managed_paths: list[str] | None = None) -> dict[str, Any]:
     raw = static.get("config") if isinstance(static, dict) else None
     config = dict(raw) if isinstance(raw, dict) else {"spa": False, "headers": [], "immutable": [], "redirects": []}
     headers = [dict(item) for item in config.get("headers", []) if isinstance(item, dict) and isinstance(item.get("set"), dict)]
-    rule = {
-        "path": "/base64/base64.txt",
-        "set": {"Cache-Control": "no-store", "Content-Disposition": "attachment; filename=subscription.txt"},
-    }
-    headers = [item for item in headers if item.get("path") != rule["path"]]
-    headers.append(rule)
+    headers = [item for item in headers if not _managed_path(item.get("path"))]
+    for path in managed_paths or []:
+        headers.append({
+            "path": "/" + path,
+            "set": {"Cache-Control": "no-store", "Content-Disposition": "attachment; filename=subscription.txt"},
+        })
     config["headers"] = headers
-    redirects = [dict(item) for item in config.get("redirects", []) if isinstance(item, dict)]
-    route = {"from": "/base64/base64", "to": "/base64/base64.txt", "status": 302}
-    redirects = [item for item in redirects if item.get("from") != route["from"]]
-    redirects.append(route)
-    config["redirects"] = redirects
+    config["redirects"] = [dict(item) for item in config.get("redirects", []) if isinstance(item, dict) and item.get("from") != "/base64/base64"]
     config.setdefault("immutable", [])
     config.setdefault("spa", False)
     return config
@@ -184,22 +234,26 @@ def publish_static(token: str, files: dict[str, bytes], opener: Any = None) -> d
     manifest = {
         path: dict(item)
         for path, item in old_manifest.items()
-        if isinstance(path, str) and path != MANAGED_PATH and isinstance(item, dict)
+        if isinstance(path, str) and not _managed_path(path) and isinstance(item, dict)
     }
     normalized: dict[str, bytes] = {}
     for raw_path, raw_bytes in files.items():
-        path = str(raw_path or "")
-        if path != MANAGED_PATH:
-            raise ServerlessError("a subscription file path is outside the managed file")
+        path = str(raw_path or "").lstrip("/")
+        if not MANAGED_PATH_RE.fullmatch(path):
+            raise ServerlessError("a subscription file path is invalid")
         content = bytes(raw_bytes)
+        if not content:
+            continue
         if len(content) > MAX_BLOB:
             raise ServerlessError("a subscription file exceeds the static file limit")
         normalized[path] = content
         manifest[path] = {"hash": hashlib.sha256(content).hexdigest(), "size": len(content)}
+    if len(normalized) > 1:
+        raise ServerlessError("only the current all-configurations subscription may be published")
     total = sum(len(value) for value in normalized.values())
     if total > 16 * MAX_BLOB:
         raise ServerlessError("the subscription bundle is too large")
-    config = _static_config(old_static)
+    config = _static_config(old_static, list(normalized))
     prepared = request(clean, "POST", "/static/prepare", {"manifest": manifest, "config": config}, opener=opener)
     missing = prepared.get("missing") if isinstance(prepared.get("missing"), list) else []
     by_hash: dict[str, bytes] = {}

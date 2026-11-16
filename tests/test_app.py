@@ -548,6 +548,7 @@ def test_serverless_input_shows_progress_then_both_subscription_links(tmp_path: 
     uploaded = []
     monkeypatch.setattr(serverless, "verify_token", lambda value: {"app_id": "123456", "revision": 7})
     monkeypatch.setattr(serverless, "publish_static", lambda value, files: uploaded.append(dict(files)) or {})
+    monkeypatch.setattr(serverless, "validate_subscription", lambda value, url, links: list(links))
 
     asyncio.run(bot.dispatch_input(7, "xr_tgcloud_key", "-", token))
 
@@ -555,7 +556,8 @@ def test_serverless_input_shows_progress_then_both_subscription_links(tmp_path: 
     progress = bot.sent[0].to_html()
     final = bot.sent[-1].to_html()
     assert i18n.t("TGCLOUD_CONNECTING", "en") in progress
-    assert "app123456.tgcloud.ai/base64/base64" in final
+    assert "app123456.tgcloud.ai/" in final
+    assert "base64/base64" not in final
     assert "obhod.tail1234.ts.net" in final
     assert i18n.t("TGCLOUD_SUB", "en") in final
     assert uploaded and len(uploaded[-1]) == 1

@@ -223,8 +223,12 @@ def test_show_links_and_subscription(tmp_path: Path) -> None:
     assert item.sub_rows()[0][1] == path
 
 
-def test_serverless_subscription_row_is_translated_in_all_languages(tmp_path: Path) -> None:
+def test_serverless_subscription_row_is_translated_in_all_languages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import serverless
+
     item, bot = panel(tmp_path)
+    item.tgcloud_token = "app123456:" + "A" * 32
+    monkeypatch.setattr(serverless, "validate_subscription", lambda token, url, expected: list(expected))
     bot.state.xray.add(make_inbound("reality", "raw", 443))
     bot.state.xray.sub_address = "203.0.113.10"
     bot.state.xray.tgcloud_app_id = "123456"
@@ -233,7 +237,7 @@ def test_serverless_subscription_row_is_translated_in_all_languages(tmp_path: Pa
         rows = item.sub_rows()
         assert len(rows) == 2
         assert rows[1][0] == i18n.t("TGCLOUD_SUB", language)
-        assert rows[1][2] == "https://app123456.tgcloud.ai/base64/base64"
+        assert rows[1][2].endswith(rows[1][1])
 
 
 def test_subs_apply_pushes_registry(tmp_path: Path) -> None:
@@ -1025,3 +1029,44 @@ def test_the_fingerprint_notice_warns_about_the_mass_one(tmp_path: Path) -> None
     for name in ("360", "qq", "edge", "ios"):
         assert name in item.set_field("xr_fingerprint", str(inbound.id), name)
     assert inbound.fingerprint == "ios"
+
+
+def test_serverless_link_is_hidden_and_error_is_visible_when_external_check_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import serverless
+
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(make_inbound("reality", "raw", 443))
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tgcloud_app_id = "123456"
+    item.tgcloud_token = "app123456:" + "A" * 32
+    checks = []
+
+    def invalid(token: str, url: str, expected: list[str]) -> list[str]:
+        checks.append(url)
+        raise serverless.ServerlessError("stale or incomplete remote content")
+
+    monkeypatch.setattr(serverless, "validate_subscription", invalid)
+    rows = item.sub_rows()
+    assert checks and len(checks) == 1
+    assert not any(row[0] == i18n.t("TGCLOUD_SUB", "en") for row in rows)
+    assert rows[-1][0] == "__TGCLOUD_VERIFY_ERROR__"
+    html = xscreens.subs_screen(item.view(), rows).to_html()
+    assert i18n.t("TGCLOUD_VERIFY_FAILED", "en") in html
+    assert "app123456.tgcloud.ai/" not in html
+
+
+def test_serverless_external_validation_runs_for_each_screen_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import serverless
+
+    item, bot = panel(tmp_path)
+    bot.state.xray.add(make_inbound("reality", "raw", 443))
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tgcloud_app_id = "123456"
+    item.tgcloud_token = "app123456:" + "A" * 32
+    checks = []
+    monkeypatch.setattr(serverless, "validate_subscription", lambda token, url, links: checks.append(url) or list(links))
+
+    first = item.sub_rows()
+    second = item.sub_rows()
+    assert len(checks) == 2
+    assert first[1][2] == second[1][2]
