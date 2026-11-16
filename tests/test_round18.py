@@ -95,7 +95,7 @@ def test_no_tunnel_ui_shown_until_tailnet_key_is_inserted(tmp_path: Path) -> Non
     subs_html = xscreens.subs_screen(bot.xray.view(), bot.xray.sub_rows()).to_html()
     assert "<table" not in subs_html
     assert 'data="xr:dom"' not in subs_html
-    assert subs_html.count("switch_inline_query_current_chat") == 2
+    assert subs_html.count("switch_inline_query_current_chat") == 3
     assert i18n.t("DOM_KEY_INPUT", bot.state.language) in subs_html
     assert i18n.t("TGCLOUD_KEY_INPUT", bot.state.language) in subs_html
     for junk in ("xr:subs:traffic", "xr:subs:apply", "xr:subs:status", "xr:subs:stop"):
@@ -103,7 +103,7 @@ def test_no_tunnel_ui_shown_until_tailnet_key_is_inserted(tmp_path: Path) -> Non
 
     dom_html = xscreens.domain_screen(bot.xray.view(), None, "").to_html()
     assert "<table" not in dom_html
-    assert dom_html.count("switch_inline_query_current_chat") == 2
+    assert dom_html.count("switch_inline_query_current_chat") == 3
     assert i18n.t("TGCLOUD_KEY_INPUT", bot.state.language) in dom_html
 
 

@@ -672,6 +672,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
                 input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
                 row(link_button(t("TGCLOUD_ENABLE"), "https://t.me/BotFather", icon="world")),
                 input_row(t("TGCLOUD_KEY_INPUT"), "xr_tgcloud_key", "-", view.lang),
+                input_row("Xray subscription tag", "xr_sub_tag", "-", view.lang),
+                row(button("Skip", "xr:subs:skip_tag", icon="ok")),
                 back_row("xr:home", view.lang),
             ]
         )
@@ -698,6 +700,7 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         ("world", t("DOM_TITLE"), code(state.public_base() or t("UI_NOT_SET"))),
         ("world", t("TGCLOUD_TITLE"), code(serverless_domain or serverless_label)),
         ("plug", t("XR_SUBS_LOCAL_PORT"), code("127.0.0.1:%d" % int(state.sub_port or 0))),
+        ("tag", "Xray subscription title", code(bundle.title if bundle is not None else "OBHOD")),
     ]
     if state.tunnel_key_expiry or state.tunnel_expired:
         pairs.append(("clock", t("TAILNET_EXPIRY"), code(tailnet_expiry_label(state.tunnel_key_expiry, state.tunnel_expired, view.lang))))
@@ -766,6 +769,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     buttons.append(input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang))
     buttons.append(row(link_button(t("TGCLOUD_ENABLE"), "https://t.me/BotFather", icon="world")))
     buttons.append(input_row(t("TGCLOUD_KEY_INPUT"), "xr_tgcloud_key", "-", view.lang))
+    buttons.append(input_row("Xray subscription tag", "xr_sub_tag", "-", view.lang))
+    buttons.append(row(button("Skip", "xr:subs:skip_tag", icon="ok")))
     buttons.append(back_row("xr:home", view.lang))
     return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
 

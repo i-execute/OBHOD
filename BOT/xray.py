@@ -1924,8 +1924,8 @@ class XrayState:
                     continue
         return out
 
-    def aggregate_entry(self, address: str = "", extra_links: Any = None, refresh: int = 0) -> dict[str, Any]:
-        bundle = subs.aggregate(self, extra_links, address, self.sub_port)
+    def aggregate_entry(self, address: str = "", extra_links: Any = None, refresh: int = 0, title: str = "") -> dict[str, Any]:
+        bundle = subs.aggregate(self, extra_links, address, self.sub_port, title=title)
         quotas: list[dict[str, int]] = []
         seen: set[str] = set()
         for client in self.only_client():
@@ -1939,8 +1939,8 @@ class XrayState:
         entry["announce"] = self.announce()
         return entry
 
-    def sub_registry(self, address: str = "", extra_links: Any = None) -> dict[str, Any]:
-        bundle = self.aggregate_entry(address, extra_links)
+    def sub_registry(self, address: str = "", extra_links: Any = None, title: str = "") -> dict[str, Any]:
+        bundle = self.aggregate_entry(address, extra_links, title=title)
         return {"port": safe_port(self.sub_port), "sub_id_len": SUB_SEGMENT_LEN, "entries": {bundle["path"].split("/")[1]: bundle}}
 
     def to_config(self) -> str:

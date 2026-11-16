@@ -508,6 +508,8 @@ def make_config(state_dir: Path) -> SimpleNamespace:
         emoji_default=False,
         dc_host=None,
         dc_port=None,
+        env_path=Path(state_dir) / "obhod.env",
+        extra={"OBHOD_TAG": "test"},
     )
 
 

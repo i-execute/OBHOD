@@ -411,7 +411,21 @@ def test_routes_render(tmp_path: Path) -> None:
         "xr:nope",
     ):
         run(item.route(1, 0, data))
-    assert len(bot.rendered) == 20
+    assert len(bot.rendered) == 21
+
+
+def test_xray_subscription_tag_persists_and_only_changes_header(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    original_link = bot.state.xray.all_links("203.0.113.10")[0]
+    assert item.set_subscription_tag("Frankfurt-1") == "Frankfurt-1"
+    assert "OBHOD_TAG=Frankfurt-1" in bot.cfg.env_path.read_text(encoding="utf-8")
+    registry = bot.state.xray.sub_registry("203.0.113.10", [], title=item.subscription_title())
+    entry = next(iter(registry["entries"].values()))
+    assert entry["title"] == "OBHOD Frankfurt-1"
+    assert entry["links"] == [original_link]
 
 
 def test_host_port_and_parse_port() -> None:

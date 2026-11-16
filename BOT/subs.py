@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -9,21 +13,27 @@ MAX_LINKS = 4096
 MAX_BODY = 8 * 1024 * 1024
 MAX_LINK = 4096
 ALL_EMAIL = "*"
-ALL_TITLE = "OBHOD all"
+ALL_TITLE = "OBHOD server"
 LOCAL_PREFIXES = ("http://", "https://")
 
 
 class SubError(Exception):
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, status: int = 0) -> None:
         super().__init__(message)
         self.message = message
+        self.status = int(status or 0)
+
+
+def title_for_tag(tag: object) -> str:
+    value = str(tag or "").strip()
+    return ("OBHOD " + value)[:64] if value else ALL_TITLE
 
 
 @dataclass
 class Bundle:
     id: str = ""
     key: str = ""
-    title: str = "OBHOD"
+    title: str = "OBHOD server"
     links: list[str] = field(default_factory=list)
     quotas: list[dict[str, int]] = field(default_factory=list)
 
@@ -171,11 +181,11 @@ def xray_links(links: Any) -> list[str]:
     return [item for item in clean_links(links) if item.startswith("vless://")]
 
 
-def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port: int = 0) -> Bundle:
+def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port: int = 0, title: str = "") -> Bundle:
     bundle = Bundle()
     if xray_state is not None:
         bundle.id, bundle.key = xray_state.ensure_sub_all()
-        bundle.title = ALL_TITLE
+        bundle.title = str(title or ALL_TITLE)[:64]
         all_fn = getattr(xray_state, "all_links", None)
         if callable(all_fn):
             bundle.links.extend(all_fn(address))
@@ -185,6 +195,53 @@ def aggregate(xray_state: Any, extra_links: Any = None, address: str = "", port:
     bundle.links.extend(xray_links(extra_links))
     bundle.links = xray_links(bundle.links)
     return bundle
+
+
+def validate_public_subscription(url: str, expected_links: Any, title: str = "", opener: Any = None, timeout: float = 5.0) -> list[str]:
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+        if parts.scheme not in {"https", "http"} or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+            raise SubError("the public subscription URL is invalid")
+        if len(parts.path.strip("/").split("/")) != 2:
+            raise SubError("the public subscription URL path is invalid")
+    except ValueError as exc:
+        raise SubError("the public subscription URL is invalid") from exc
+    request = urllib.request.Request(str(url), headers={"Accept": "text/plain"}, method="GET")
+    call = opener or urllib.request.urlopen
+    try:
+        response = call(request, timeout=timeout)
+        with response:
+            status = int(getattr(response, "status", 200) or 200)
+            raw = response.read(MAX_BODY + 1)
+            final_url = str(response.geturl() if callable(getattr(response, "geturl", None)) else url)
+            headers = getattr(response, "headers", None)
+            if headers is None and callable(getattr(response, "info", None)):
+                headers = response.info()
+            profile_title = str(headers.get("Profile-Title", "") if headers is not None and callable(getattr(headers, "get", None)) else "")
+    except urllib.error.HTTPError as exc:
+        raise SubError("the public subscription returned HTTP %d" % exc.code, exc.code) from exc
+    except Exception as exc:
+        raise SubError("the public subscription request failed: %s" % type(exc).__name__) from None
+    if status != 200:
+        raise SubError("the public subscription returned HTTP %d" % status, status)
+    if len(raw) > MAX_BODY:
+        raise SubError("the public subscription response is too large", status)
+    final = urllib.parse.urlsplit(final_url)
+    if (final.scheme, final.netloc, final.path) != (parts.scheme, parts.netloc, parts.path) or final.query or final.fragment:
+        raise SubError("the public subscription redirected away from its keyed path", status)
+    if title and profile_title != "base64:" + base64.b64encode(str(title).encode("utf-8")).decode("ascii"):
+        raise SubError("the public subscription title is missing or outdated", status)
+    try:
+        decoded = base64.b64decode(b"".join(raw.split()), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        raise SubError("the public subscription body is invalid", status) from exc
+    returned = [line.strip() for line in decoded.splitlines() if line.strip()]
+    expected = xray_links(expected_links)
+    if not returned or any(not line.startswith("vless://") for line in returned):
+        raise SubError("the public subscription has no complete Xray configuration list", status)
+    if not expected or returned != expected:
+        raise SubError("the public subscription does not match the current complete Xray list", status)
+    return returned
 
 
 def usage_of(stats: Any, email: str) -> dict[str, int]:

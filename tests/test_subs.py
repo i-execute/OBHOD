@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import io
 import os
 import socket
 import subprocess
@@ -103,12 +104,30 @@ def test_the_aggregate_path_is_two_segments() -> None:
     assert bundle.json_path().endswith("/json")
 
 
+def test_public_subscription_check_requires_http_200_complete_list_and_title() -> None:
+    links = ["vless://first", "vless://second"]
+    url = "https://example.invalid/" + "A" * 64 + "/" + "B" * 64
+
+    class Response(io.BytesIO):
+        status = 200
+        headers = {"Profile-Title": "base64:" + base64.b64encode(b"OBHOD Frankfurt").decode("ascii")}
+
+        def geturl(self) -> str:
+            return url
+
+    def opener(_request, timeout):
+        assert timeout == 5.0
+        return Response(base64.b64encode(("\n".join(links) + "\n").encode()))
+
+    assert subs.validate_public_subscription(url, links, title="OBHOD Frankfurt", opener=opener) == links
+
+
 def test_the_registry_carries_the_aggregate() -> None:
     state = filled()
-    registry = state.sub_registry("203.0.113.5", ["freeturn://owner"])
+    registry = state.sub_registry("203.0.113.5", ["freeturn://owner"], title="OBHOD Frankfurt")
     titles = [entry["title"] for entry in registry["entries"].values()]
-    assert "OBHOD all" in titles
-    all_entry = [entry for entry in registry["entries"].values() if entry["title"] == "OBHOD all"][0]
+    assert "OBHOD Frankfurt" in titles
+    all_entry = [entry for entry in registry["entries"].values() if entry["title"] == "OBHOD Frankfurt"][0]
     assert len(all_entry["links"]) == 2
     assert all(item.startswith("vless://") for item in all_entry["links"])
 

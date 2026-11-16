@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import os
 import re
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,7 @@ GLOBAL_FIELDS = frozenset(
         "xr_log_level",
         "xr_sub_port",
         "xr_sub_address",
+        "xr_sub_tag",
         "xr_sub_refresh",
         "xr_sub_support",
         "xr_sub_announce",
@@ -118,6 +120,36 @@ class XrayPanel:
         self.pending_subnet_targets: list[str] = []
         self.tunnel_key = self.load_tunnel_key()
         self.tgcloud_token = self.load_tgcloud_token()
+        configured_tag = str(getattr(bot.cfg, "extra", {}).get("OBHOD_TAG", "") or "").strip()
+        hostname_tag = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname().split(".", 1)[0]).strip(".-_")[:32] or "server"
+        self.default_subscription_tag = hostname_tag
+        if configured_tag and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", configured_tag):
+            configured_tag = ""
+        self.subscription_tag = configured_tag or hostname_tag
+        if not configured_tag:
+            try:
+                from .config import write_env_value
+                if getattr(bot.cfg, "env_path", None):
+                    write_env_value(bot.cfg.env_path, "OBHOD_TAG", self.subscription_tag)
+                    bot.cfg.extra["OBHOD_TAG"] = self.subscription_tag
+            except Exception as exc:
+                log.warning("the default Xray subscription tag could not be saved: %s", type(exc).__name__)
+
+    def subscription_title(self) -> str:
+        return subs.title_for_tag(self.subscription_tag)
+
+    def set_subscription_tag(self, value: str) -> str:
+        tag = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", tag):
+            raise PanelError("tag must be 1-32 letters, numbers, dots, underscores or hyphens")
+        from .config import write_env_value
+        path = getattr(self.bot.cfg, "env_path", None)
+        if path is None:
+            raise PanelError("the environment file path is unavailable")
+        write_env_value(path, "OBHOD_TAG", tag)
+        self.bot.cfg.extra["OBHOD_TAG"] = tag
+        self.subscription_tag = tag
+        return tag
 
     @property
     def state(self) -> XrayState:
@@ -473,7 +505,7 @@ class XrayPanel:
                 self.state.ensure_sub_all()
                 port = self.ensure_random_sub_port()
                 domain = (self.state.tunnel_host or "").split(":", 1)[0]
-                registry = self.state.sub_registry(host, [])
+                registry = self.state.sub_registry(host, [], title=self.subscription_title())
                 try:
                     if not self.state.sub_enabled and hasattr(self.control, "sub_install"):
                         await self.control.sub_install(self.bot.state.ssh, port, domain)
@@ -976,7 +1008,7 @@ class XrayPanel:
         self.state.ensure_sub_all()
         try:
             await self.control.sub_install(self.bot.state.ssh, port, domain)
-            registry = self.state.sub_registry(self.state.address(self.address()), [])
+            registry = self.state.sub_registry(self.state.address(self.address()), [], title=self.subscription_title())
             await self.control.sub_sync(self.bot.state.ssh, registry, port, domain)
         except (RpcError, OSError) as exc:
             self.save()
@@ -1205,7 +1237,12 @@ class XrayPanel:
             if self.state.tgcloud_app_id and bundle.links:
                 try:
                     url = serverless.subscription_url(self.state.tgcloud_app_id, bundle.id, bundle.key)
-                    serverless.validate_subscription(self.tgcloud_token, url, bundle.links)
+                    try:
+                        serverless.validate_subscription(self.tgcloud_token, url, bundle.links, title=self.subscription_title())
+                    except TypeError as exc:
+                        if "title" not in str(exc):
+                            raise
+                        serverless.validate_subscription(self.tgcloud_token, url, bundle.links)
                 except serverless.ServerlessError:
                     out.append(("__TGCLOUD_VERIFY_ERROR__", "", ""))
                 else:
@@ -1225,16 +1262,104 @@ class XrayPanel:
     def sub_bundle(self, host: str = ""):
         address = str(host or self.state.address(self.address()))
         try:
-            return subs.aggregate(self.state, [], address, self.state.sub_port)
+            return subs.aggregate(self.state, [], address, self.state.sub_port, title=self.subscription_title())
         except subs.SubError:
             return None
 
+    async def check_public_subscriptions(self) -> tuple[list[str], list[str]]:
+        host = self.state.address(self.address())
+        try:
+            bundle = self.sub_bundle(host)
+        except Exception:
+            bundle = None
+        if bundle is None or not bundle.links:
+            return [], []
+        checks: list[tuple[str, Any]] = []
+        base = self.state.public_base()
+        if self.state.tunnel_enabled and base:
+            checks.append(("Tailscale", lambda: subs.validate_public_subscription(
+                bundle.public_url(base), bundle.links, title=self.subscription_title())))
+        if self.state.tgcloud_app_id and self.tgcloud_token:
+            try:
+                url = serverless.subscription_url(self.state.tgcloud_app_id, bundle.id, bundle.key)
+            except serverless.ServerlessError as exc:
+                return [], ["Telegram Serverless: " + exc.message]
+            checks.append(("Telegram Serverless", lambda: serverless.validate_subscription(
+                self.tgcloud_token, url, bundle.links, title=self.subscription_title())))
+        if not checks:
+            return [], []
+        good: list[str] = []
+        errors: list[str] = []
+        for label, check in checks:
+            try:
+                await asyncio.to_thread(check)
+            except Exception as exc:
+                status = int(getattr(exc, "status", 0) or 0)
+                detail = str(getattr(exc, "message", "") or type(exc).__name__)
+                errors.append("%s: HTTP %s; %s" % (label, status if status else "unavailable", detail))
+            else:
+                good.append(label)
+        return good, errors
+
+    async def recover_public_subscriptions(self) -> tuple[list[str], list[str]]:
+        good, errors = await self.check_public_subscriptions()
+        if not errors:
+            return good, []
+        diagnostics = list(errors)
+        try:
+            await self.bot.subs_sync(force=True)
+        except Exception as exc:
+            diagnostics.append("publication refresh failed: " + type(exc).__name__)
+        if self.state.tunnel_enabled and any(item.startswith("Tailscale:") for item in errors):
+            try:
+                status = await self.control.tunnel_status(self.bot.state.ssh)
+                if not bool(getattr(status, "installed", False)) or not str(getattr(status, "url", "") or ""):
+                    await self.control.tunnel_install(self.bot.state.ssh)
+                    port = int(self.state.sub_port or self.ensure_random_sub_port())
+                    tunnel = await self.call_tunnel_up(self.tunnel_key, self.tunnel_host_hint, port, self.pending_funnel_port or random_funnel_port())
+                    notice, failure = await self.finalize_tunnel_subs(tunnel, port)
+                    if failure:
+                        diagnostics.append("Tailscale recreation did not complete subscription setup")
+                    elif notice:
+                        diagnostics.append("Tailscale tunnel recreated and subscription publication refreshed")
+                else:
+                    await self.control.tunnel_down(self.bot.state.ssh)
+                    await self.control.tunnel_install(self.bot.state.ssh)
+                    port = int(self.state.sub_port or self.ensure_random_sub_port())
+                    tunnel = await self.call_tunnel_up(self.tunnel_key, self.tunnel_host_hint, port, self.pending_funnel_port or random_funnel_port())
+                    notice, failure = await self.finalize_tunnel_subs(tunnel, port)
+                    if failure:
+                        diagnostics.append("Tailscale recreation did not complete subscription setup")
+                    elif notice:
+                        diagnostics.append("Tailscale tunnel fully recreated and subscription publication refreshed")
+            except Exception as exc:
+                diagnostics.append("Tailscale recreation failed: " + type(exc).__name__)
+        good, retry_errors = await self.check_public_subscriptions()
+        if retry_errors:
+            diagnostics.append("retry check failed: " + " | ".join(retry_errors))
+        else:
+            diagnostics.append("retry check passed; public subscription link refreshed")
+        return good, diagnostics
+
     async def subs_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        if action == "skip_tag":
+            try:
+                tag = self.set_subscription_tag(self.default_subscription_tag)
+                await self.bot.subs_sync(force=True)
+            except Exception as exc:
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=str(getattr(exc, "message", exc))), self.sub_rows()))
+                return
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice="Xray subscription title set to %s" % subs.title_for_tag(tag)), self.sub_rows()))
+            return
         if not action:
+            await self.render(chat_id, msg_id, xscreens.busy_screen("Checking Xray subscriptions and recovering public links...", self.bot.state.language, ["Loading the current Xray list", "Checking HTTP status and exact configuration list", "Repairing publication if needed"]))
             await self.ensure_core_probed()
             await self.refresh_traffic()
             await self.refresh_tunnel_meta()
             await self.push_subs_live()
+            health_ok, health_diagnostics = await self.recover_public_subscriptions()
+            health_error = "\n".join(health_diagnostics) if health_diagnostics else ""
+            health_notice = "Xray public subscriptions verified: " + ", ".join(health_ok) if health_ok else ""
             if not self.state.tunnel_enabled and self.state.tunnel_approval_url and not self.state.tunnel_expired:
                 port = int(self.state.sub_port or 0)
                 if port in {0, 80, 443}:
@@ -1254,9 +1379,9 @@ class XrayPanel:
                     pass
                 else:
                     ready_notice, err = await self.finalize_tunnel_subs(up_tunnel, port)
-                    await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
+                    await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice or health_notice, error=err or health_error), self.sub_rows()))
                     return
-            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=health_notice, error=health_error), self.sub_rows()))
             return
         if action == "apply":
             await self.subs_apply(chat_id, msg_id)
@@ -1296,7 +1421,7 @@ class XrayPanel:
         try:
             port = self.ensure_random_sub_port()
             await self.control.sub_install(self.bot.state.ssh, port, domain)
-            registry = state.sub_registry(state.address(self.address()), [])
+            registry = state.sub_registry(state.address(self.address()), [], title=self.subscription_title())
             await self.control.sub_sync(self.bot.state.ssh, registry, port, domain)
         except (RpcError, OSError) as exc:
             message = getattr(exc, "message", str(exc))
@@ -1938,6 +2063,9 @@ class XrayPanel:
         if ident == "xr_sub_address":
             self.state.sub_address = text
             return t("NOTICE_SUB_ADDRESS", value=text) if text else t("NOTICE_SUB_ADDRESS_RESET")
+        if ident == "xr_sub_tag":
+            self.set_subscription_tag(text)
+            return "Xray subscription title set to %s" % self.subscription_title()
         if ident == "xr_bantime":
             if not text.isdigit() or int(text) < 1:
                 raise PanelError("the ban time must be a positive number of minutes")
@@ -2094,7 +2222,7 @@ class XrayPanel:
         if edited_inbound is not None:
             self.mark_inbound_dirty(edited_inbound)
         self.save()
-        if ident in {"xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
+        if ident in {"xr_sub_address", "xr_sub_tag", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
             await self.push_subs_live()
         if ident == "xr_subnet_cidr":
             clean = list(self.pending_subnet_targets)[:CANDIDATE_LIMIT]
@@ -2218,7 +2346,7 @@ class XrayPanel:
             return screens.settings(self.bot.view(notice=notice))
         if ident == "xr_log_level":
             return xscreens.core_screen(self.view(notice=notice))
-        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce", "xr_tunnel_host", "xr_tunnel_key", "xr_tgcloud_key"}:
+        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_tag", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce", "xr_tunnel_host", "xr_tunnel_key", "xr_tgcloud_key"}:
             return xscreens.subs_screen(self.view(notice=notice), self.sub_rows())
         if ident in {"xr_ban_ip", "xr_bantime", "xr_ssh_bantime", "xr_ssh_maxretry", "xr_ignoreip"}:
             return screens.ban_screen(self.bot.ban_view(notice=notice))

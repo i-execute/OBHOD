@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,6 +29,63 @@ def _env_file(path: Path) -> dict[str, str]:
             value = value[1:-1]
         data[key.strip()] = value
     return data
+
+
+def write_env_value(path: str | os.PathLike[str], key: str, value: str) -> None:
+    target = Path(path)
+    name = str(key or "").strip()
+    text = str(value or "")
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", name) or any(char in text for char in "\r\n\x00"):
+        raise ConfigError("the environment setting is invalid")
+    if target.is_symlink():
+        raise ConfigError("the environment file must not be a symbolic link")
+    try:
+        old = target.read_text(encoding="utf-8").splitlines() if target.is_file() else []
+    except OSError as exc:
+        raise ConfigError("the environment file could not be read") from exc
+    lines = []
+    replaced = False
+    for line in old:
+        candidate = line.strip()
+        if candidate.startswith("export "):
+            candidate = candidate[7:].strip()
+        existing = candidate.split("=", 1)[0].strip() if "=" in candidate else ""
+        if existing == name:
+            if not replaced:
+                lines.append(f"{name}={text}")
+                replaced = True
+        else:
+            lines.append(line)
+    if not replaced:
+        lines.append(f"{name}={text}")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, temporary = tempfile.mkstemp(prefix=".%s." % target.name, suffix=".tmp", dir=str(target.parent))
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write("\n".join(lines) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+            os.chmod(target, 0o600)
+            folder = os.open(str(target.parent), os.O_RDONLY)
+            try:
+                os.fsync(folder)
+            finally:
+                os.close(folder)
+        except Exception:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        raise ConfigError("the environment setting could not be saved") from exc
 
 
 LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")

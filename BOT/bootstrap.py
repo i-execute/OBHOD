@@ -215,9 +215,11 @@ def install_script(plan: BootstrapPlan, phase: str = "deps") -> str:
     if phase == "finalize":
         lines.extend(
             [
+                'OBHOD_TAG_OLD="$(sed -n \'s/^OBHOD_TAG=//p\' "$ENV_FILE" 2>/dev/null | tail -n1)"',
                 'cat > "$ENV_FILE" <<OBHODENV',
                 plan.env_text().rstrip("\n"),
                 "OBHODENV",
+                'if [ -n "$OBHOD_TAG_OLD" ]; then printf "OBHOD_TAG=%s\\n" "$OBHOD_TAG_OLD" >> "$ENV_FILE"; fi',
                 'chmod 600 "$ENV_FILE"',
                 'cat > "$UNIT" <<OBHODUNIT',
                 UNIT_TEMPLATE.format(root=plan.install_dir, env=ENV_FILE, state=plan.state_dir).rstrip("\n"),

@@ -364,7 +364,7 @@ class Bot:
         self.store.save(self.state)
 
     def subs_payload(self) -> dict[str, Any]:
-        return self.state.xray.sub_registry(self.address(), [])
+        return self.state.xray.sub_registry(self.address(), [], title=self.xray.subscription_title())
 
     async def subs_sync(self, force: bool = False) -> bool:
         state = self.state.xray
@@ -377,7 +377,7 @@ class Bot:
             log.debug("subscription sync skipped: no public Xray address")
             return False
         try:
-            bundle = subs.aggregate(state, [], host, state.sub_port)
+            bundle = subs.aggregate(state, [], host, state.sub_port, title=self.xray.subscription_title())
         except Exception as exc:
             log.debug("the subscription bundle was skipped: %s", exc)
             return False
@@ -401,7 +401,12 @@ class Bot:
                     files[serverless.subscription_path(bundle.id, bundle.key)] = content
                 digest = hashlib.sha256((state.tgcloud_app_id + "\0" + bundle.id + "\0" + bundle.key + "\0").encode("ascii") + content).hexdigest()
                 if force or digest != self.serverless_digest:
-                    await asyncio.to_thread(serverless.publish_static, serverless_token, files)
+                    try:
+                        await asyncio.to_thread(serverless.publish_static, serverless_token, files, title=self.xray.subscription_title())
+                    except TypeError as exc:
+                        if "title" not in str(exc):
+                            raise
+                        await asyncio.to_thread(serverless.publish_static, serverless_token, files)
                     self.serverless_digest = digest
                     changed = True
             except Exception as exc:
@@ -1176,6 +1181,7 @@ class Bot:
             "xr_scan_candidates": ", ".join(xr.candidates()),
             "xr_sub_port": str(xr.sub_port),
             "xr_sub_address": xr.sub_address,
+            "xr_sub_tag": self.xray.subscription_tag,
             "xr_sub_support": xr.sub_support_url,
             "xr_sub_announce": xr.sub_announce,
             "xr_sub_refresh": str(xr.sub_refresh),

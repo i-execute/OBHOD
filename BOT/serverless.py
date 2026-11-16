@@ -157,7 +157,7 @@ def verify_token(token: str, opener: Any = None, timeout: float = 20.0) -> dict[
     return {"app_id": app_id, "revision": int(result.get("revision", 0) or 0), "static": result.get("static") if isinstance(result.get("static"), dict) else None}
 
 
-def validate_subscription(token: str, url: str, expected_links: Any, opener: Any = None, timeout: float = 5.0) -> list[str]:
+def validate_subscription(token: str, url: str, expected_links: Any, opener: Any = None, title: str = "", timeout: float = 5.0) -> list[str]:
     app_id, _ = token_parts(token)
     try:
         parts = urllib.parse.urlsplit(str(url or ""))
@@ -182,15 +182,21 @@ def validate_subscription(token: str, url: str, expected_links: Any, opener: Any
             status = int(getattr(response, "status", 200) or 200)
             raw = response.read(MAX_BLOB + 1)
             final_url = str(response.geturl() if callable(getattr(response, "geturl", None)) else url)
+            response_headers = getattr(response, "headers", None)
+            if response_headers is None and callable(getattr(response, "info", None)):
+                response_headers = response.info()
+            profile_title = str(response_headers.get("Profile-Title", "") if response_headers is not None and callable(getattr(response_headers, "get", None)) else "")
     except urllib.error.HTTPError as exc:
         raise ServerlessError("the Serverless subscription is not reachable", exc.code) from exc
     except Exception as exc:
         raise ServerlessError("the Serverless subscription is not reachable: %s" % type(exc).__name__) from None
-    if status < 200 or status >= 300 or len(raw) > MAX_BLOB:
+    if status != 200 or len(raw) > MAX_BLOB:
         raise ServerlessError("the Serverless subscription returned an invalid response", status)
     final = urllib.parse.urlsplit(final_url)
-    if final.scheme != "https" or final.hostname != expected_host or final.path != parts.path or final.query:
+    if final.scheme != "https" or final.hostname != expected_host or final.path != parts.path or final.query or final.fragment:
         raise ServerlessError("the Serverless subscription redirected away from its signed path")
+    if title and profile_title != "base64:" + base64.b64encode(str(title).encode("utf-8")).decode("ascii"):
+        raise ServerlessError("the Serverless subscription title is missing or outdated", status)
     try:
         decoded = base64.b64decode(b"".join(raw.split()), validate=True).decode("utf-8")
     except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
@@ -209,16 +215,16 @@ def _managed_path(path: object) -> bool:
     return value == LEGACY_MANAGED_PATH or bool(MANAGED_PATH_RE.fullmatch(value))
 
 
-def _static_config(static: dict[str, Any] | None, managed_paths: list[str] | None = None) -> dict[str, Any]:
+def _static_config(static: dict[str, Any] | None, managed_paths: list[str] | None = None, title: str = "") -> dict[str, Any]:
     raw = static.get("config") if isinstance(static, dict) else None
     config = dict(raw) if isinstance(raw, dict) else {"spa": False, "headers": [], "immutable": [], "redirects": []}
     headers = [dict(item) for item in config.get("headers", []) if isinstance(item, dict) and isinstance(item.get("set"), dict)]
     headers = [item for item in headers if not _managed_path(item.get("path"))]
     for path in managed_paths or []:
-        headers.append({
-            "path": "/" + path,
-            "set": {"Cache-Control": "no-store", "Content-Disposition": "attachment; filename=subscription.txt"},
-        })
+        settings = {"Cache-Control": "no-store", "Content-Disposition": "attachment; filename=subscription.txt"}
+        if title:
+            settings["Profile-Title"] = "base64:" + base64.b64encode(str(title).encode("utf-8")).decode("ascii")
+        headers.append({"path": "/" + path, "set": settings})
     config["headers"] = headers
     config["redirects"] = [dict(item) for item in config.get("redirects", []) if isinstance(item, dict) and item.get("from") != "/base64/base64"]
     config.setdefault("immutable", [])
@@ -226,7 +232,7 @@ def _static_config(static: dict[str, Any] | None, managed_paths: list[str] | Non
     return config
 
 
-def publish_static(token: str, files: dict[str, bytes], opener: Any = None) -> dict[str, Any]:
+def publish_static(token: str, files: dict[str, bytes], opener: Any = None, title: str = "") -> dict[str, Any]:
     app_id, clean = token_parts(token)
     remote = request(clean, "GET", "/get", opener=opener)
     old_static = remote.get("static") if isinstance(remote.get("static"), dict) else {}
@@ -253,7 +259,7 @@ def publish_static(token: str, files: dict[str, bytes], opener: Any = None) -> d
     total = sum(len(value) for value in normalized.values())
     if total > 16 * MAX_BLOB:
         raise ServerlessError("the subscription bundle is too large")
-    config = _static_config(old_static, list(normalized))
+    config = _static_config(old_static, list(normalized), title=title)
     prepared = request(clean, "POST", "/static/prepare", {"manifest": manifest, "config": config}, opener=opener)
     missing = prepared.get("missing") if isinstance(prepared.get("missing"), list) else []
     by_hash: dict[str, bytes] = {}
