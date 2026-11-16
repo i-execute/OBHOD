@@ -1202,12 +1202,13 @@ class XrayPanel:
         bundle = self.sub_bundle(host)
         if bundle is not None:
             out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), subs.url_of(bundle, host, self.state.sub_port, self.state.public_base())))
-            if self.state.tgcloud_app_id:
+            if self.state.tgcloud_app_id and bundle.links:
                 try:
                     url = serverless.subscription_url(self.state.tgcloud_app_id, bundle.id, bundle.key)
+                    serverless.validate_subscription(self.tgcloud_token, url, bundle.links)
                 except serverless.ServerlessError:
-                    url = ""
-                if url:
+                    out.append(("__TGCLOUD_VERIFY_ERROR__", "", ""))
+                else:
                     out.append((self.tr()("TGCLOUD_SUB"), bundle.path(), url))
         return out
 
