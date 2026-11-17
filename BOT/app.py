@@ -19,7 +19,7 @@ from typing import Any
 
 from goygram import GoyGram
 
-from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, tools, ui, xscreens
+from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, tools, ui, vkscreens, xscreens
 from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
@@ -36,6 +36,7 @@ from .update import UpdateError, Updater
 from .scan import vps_subnet_cidr
 from .xrayrpc import XrayControl, XrayError as RpcError
 from .xray import API_PORT, SUB_PORT, current_funnel_port, tailnet_expiry_stage
+from .vkcalls import VKCallsPanel
 
 log = logging.getLogger("obhod.app")
 
@@ -45,12 +46,15 @@ INLINE_DUPLICATE_WINDOW = 8.0
 BUSY_QUIET = 5.0
 BUSY_TTL = 900.0
 RENDER_QUIET = 5.0
-LOADING_MARKS = ("xr:", "ft:", "dbg:", "upd:", "fb:", "sshd:", "ssh:", "tools:")
+LOADING_MARKS = ("xr:", "ft:", "dbg:", "vk:", "upd:", "fb:", "sshd:", "ssh:", "tools:")
 LOADING_SKIP = (
     "nav:",
     "lang:",
     "set:",
     "dbg:home",
+    "vk:home",
+    "vk:active",
+    "vk:auth",
     "dbg:emoji",
     "dbg:info",
     "dbg:dd:ips",
@@ -82,7 +86,7 @@ CLICK_QUIET = 2.0
 ACTION_LOCK_QUIET = 5.0
 
 NAV_PREFIXES = ("nav:", "lang:", "set:", "dbg:dd:ips")
-NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:dd:ntf", "dbg:dd:refresh", "dbg:info", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
+NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:dd:ntf", "dbg:dd:refresh", "dbg:info", "vk:home", "vk:active", "vk:auth", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
 
 def is_navigation(data: str) -> bool:
     if data.startswith(NAV_PREFIXES):
@@ -228,6 +232,7 @@ class Bot:
         self.xray = XrayPanel(self, self.control)
         self.freeturn = FtPanel(self, FtControl(shell=shell))
         self.debug = DebugPanel(self)
+        self.vkcalls = VKCallsPanel(self)
         self.updater = updater or Updater(shell=shell, state_dir=cfg.state_dir)
         self.update_info: dict[str, object] = {}
         self.update_result: dict[str, object] = {}
@@ -1494,14 +1499,22 @@ class Bot:
         await self.track(self.handle_message(evt), "msg")
 
     async def handle_message(self, evt: object) -> None:
+        text = str(getattr(evt, "text", "") or "")
         if not await self.guard_admin(evt):
+            raw = getattr(evt, "raw", None)
+            outgoing = bool(getattr(evt, "outgoing", False) or getattr(evt, "is_outgoing", False) or (isinstance(raw, dict) and raw.get("out")))
+            if not outgoing and self.vkcalls.contains_vk_token_url(text):
+                chat_id = int(getattr(evt, "chat_id", 0) or 0)
+                msg_id = int(getattr(evt, "msg_id", 0) or getattr(evt, "id", 0) or 0)
+                await self.vkcalls.schedule_token_delete(chat_id, msg_id)
             return
         who = int(getattr(evt, "from_id", 0) or 0)
+        if await self.vkcalls.handle_message(evt, text):
+            return
         if not self.allowed(who, "message", self.message_limit, 60.0):
             if self.quiet("rate:%d" % who, RATE_QUIET):
                 await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
             return
-        text = str(getattr(evt, "text", "") or "")
         if text.startswith(inline.marker_text()):
             await self.on_marker(evt, text)
             return
@@ -1532,6 +1545,11 @@ class Bot:
         if not cmd and text.startswith("/"):
             cmd = text.split()[0][1:].split("@")[0].lower()
         t = self.tr()
+        if cmd == "start" and await self.vkcalls.deep_auth_command(chat_id, text):
+            return
+        if cmd == "vkcall":
+            await self.send(chat_id, vkscreens.home_screen(self.language, authorized=bool(self.vkcalls.service.token), user_id=self.vkcalls.service.user_id))
+            return
         found = commands.known(cmd)
         if found is not None:
             await self.command_screen(chat_id, found, t)
@@ -1850,6 +1868,9 @@ class Bot:
             return
         if head == "ft":
             await self.freeturn.route(chat_id, msg_id, data)
+            return
+        if head == "vk":
+            await self.vkcalls.route(chat_id, msg_id, data)
             return
         if head == "upd":
             await self.update_action(chat_id, msg_id, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")

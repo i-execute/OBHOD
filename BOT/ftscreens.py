@@ -14,6 +14,7 @@ from .ui import (
     input_row,
     fitted,
     long_block,
+    link_button as url_button,
     muted,
     pre,
     quote,
@@ -37,6 +38,9 @@ class FtView:
     logs: list[str] = field(default_factory=list)
     link: str = ""
     conf: str = ""
+    vk_join_link: str = ""
+    vk_authorized: bool = False
+    vk_user_id: int = 0
     name: str = ""
     core: str = "xray"
     guard: dict[str, Any] = field(default_factory=dict)
@@ -111,6 +115,10 @@ def home(view: FtView) -> Any:
             ("settings", t("FT_STATE_METHOD"), code("%s / %s / %s" % (plan.method, plan.mode, plan.obf_profile))),
         ]
     blocks.append(table(pairs, (t("FT_STATE_TITLE"), t("UI_VALUE"))))
+    vk_status = t("VKCALLS_AUTH_SET") if view.vk_authorized else t("VKCALLS_AUTH_REQUIRED")
+    if view.vk_user_id:
+        vk_status = "%s (%s)" % (vk_status, view.vk_user_id)
+    blocks.append(table([("calls", t("VKCALLS_TITLE"), code(vk_status))], (t("UI_FIELD"), t("UI_VALUE"))))
     if state.installed:
         buttons = [
             row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")),
@@ -122,6 +130,8 @@ def home(view: FtView) -> Any:
             row(button(t("FT_BTN_INSTALL"), "ft:apply", icon="ok"), button(t("FT_BTN_PLAN"), "ft:plan", icon="settings")),
             row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("UI_HOME"), "nav:home", icon="home")),
         ]
+    buttons.append(row(button(t("VKCALLS_BTN_CREATE"), "vk:create", icon="calls"), button(t("VKCALLS_BTN_ACTIVE"), "vk:active", icon="users")))
+    buttons.append(row(button(t("VKCALLS_BTN_CHECK_TOKEN"), "vk:auth:check", icon="shield"), button(t("VKCALLS_BTN_AUTH"), "vk:auth", icon="key")))
     return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, icon="tunnel")
 
 
@@ -317,6 +327,9 @@ def client_screen(view: FtView, name: str) -> Any:
             blocks.append(link_block)
     if view.conf:
         blocks.append(long_block(t("FT_BTN_CONF"), view.conf))
+    if view.vk_join_link:
+        blocks.append(long_block(t("VKCALLS_CONFIG_LINK"), view.vk_join_link))
+        buttons.append(row(url_button(t("VKCALLS_JOIN"), view.vk_join_link, icon="calls")))
     buttons.append(row(button(t("FT_BTN_REFRESH_TRAFFIC"), "ft:cl:%s:t" % name, icon="refresh")))
     if name == "owner" or (client is not None and client.owner):
         buttons.append(row(button(t("FT_BTN_REVOKE_OWNER"), "ft:rm:owner", icon="delete")))
@@ -383,6 +396,9 @@ def share_screen(view: FtView) -> Any:
             blocks.append(link_block)
     if view.conf:
         blocks.append(long_block(t("FT_BTN_CONF"), view.conf))
+    if view.vk_join_link:
+        blocks.append(long_block(t("VKCALLS_CONFIG_LINK"), view.vk_join_link))
+        buttons.append(row(url_button(t("VKCALLS_JOIN"), view.vk_join_link, icon="calls")))
     if view.link:
         buttons.append(
             row(

@@ -70,6 +70,7 @@ def home(view: DbgView) -> Any:
         row(button(t("NAV_SSHD"), "nav:sshd", icon="key"), button(t("HP_BTN_OPEN"), "dbg:hp", icon="target"), button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell")),
         row(button(t("CHK_BTN_OPEN"), "dbg:chk", icon="shield"), button(t("DPI_BTN_OPEN"), "dbg:dpi", icon="warn"), button(t("DBG_VK_BTN"), "dbg:vk", icon="world")),
         row(button(t("DBG_SCAN_BTN"), "dbg:scan", icon="radar"), button(t("DBG_TRACE_BTN"), "dbg:trace", icon="route"), button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug")),
+        row(button(t("VKCALLS_BTN"), "vk:home", icon="calls")),
         row(button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server"), button(t("UI_HOME"), "nav:home", icon="home")),
     ]
     return screen(t("TOOLS_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="tools")

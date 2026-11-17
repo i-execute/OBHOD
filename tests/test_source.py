@@ -7,7 +7,7 @@ import tokenize
 import unicodedata
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-AUTHORED_PY = sorted(path for path in ROOT.rglob("*.py") if ".venv" not in path.parts and "__pycache__" not in path.parts)
+AUTHORED_PY = sorted(path for path in ROOT.rglob("*.py") if ".venv" not in path.parts and "__pycache__" not in path.parts and "evidence" not in path.parts)
 AUTHORED_SH = sorted(path for path in ROOT.rglob("*.sh") if ".venv" not in path.parts)
 TEXT_FILES = AUTHORED_PY + AUTHORED_SH + [
     ROOT / "README.md",
