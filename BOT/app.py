@@ -86,7 +86,7 @@ CLICK_QUIET = 2.0
 ACTION_LOCK_QUIET = 5.0
 
 NAV_PREFIXES = ("nav:", "lang:", "set:", "dbg:dd:ips")
-NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:chk", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:dd:ntf", "dbg:dd:refresh", "dbg:info", "vk:home", "vk:active", "vk:auth", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
+NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:dd:ntf", "dbg:dd:refresh", "dbg:info", "vk:home", "vk:active", "vk:auth", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
 
 def is_navigation(data: str) -> bool:
     if data.startswith(NAV_PREFIXES):
@@ -1174,8 +1174,7 @@ class Bot:
             "xr_subnet_cidr": self.xray.last_subnet or vps_subnet_cidr(self.address()),
             "dbg_target": str(getattr(dbg, "scan_target", "") or ""),
             "dbg_ports": str(getattr(dbg, "scan_ports", "") or ""),
-            "dbg_chk_target": str(getattr(dbg, "chk_target", "") or ""),
-            "dbg_hops": str(getattr(dbg, "chk_hops", 12) or 12),
+            "dbg_hops": str(getattr(dbg, "hops", 12) or 12),
             "dbg_ddos_ban": "",
             "dbg_ddos_allow": "",
             "xr_log_level": xr.log_level,
@@ -1713,7 +1712,7 @@ class Bot:
                     await self.toast(evt, self.tr()("TOAST_RATE"), alert=True)
                 return
         if is_expensive(data):
-            if not data.startswith(("dbg:chk:net", "dbg:dd:rkn", "dbg:dd:ub:", "dbg:dd:rb:")) and not self.audit.first_time(int(getattr(evt, "from_id", 0) or 0), data, time.monotonic()):
+            if not data.startswith(("dbg:dd:rkn", "dbg:dd:ub:", "dbg:dd:rb:")) and not self.audit.first_time(int(getattr(evt, "from_id", 0) or 0), data, time.monotonic()):
                 await self.toast(evt, self.tr()("TOAST_REPEAT"), alert=True)
                 return
             if not self.allowed(int(getattr(evt, "from_id", 0) or 0), "expensive", self.expensive_limit, 120.0):
@@ -2321,9 +2320,6 @@ class Bot:
         sub = parts[2] if len(parts) > 2 else ""
         if action == "scan":
             await self.debug.route(chat_id, msg_id, "dbg:scan:go" if sub == "go" else "dbg:scan")
-            return
-        if action in ("chebur", "chk"):
-            await self.debug.route(chat_id, msg_id, "dbg:chk:probe" if sub == "probe" else "dbg:chk")
             return
         if action == "dpi":
             await self.debug.route(chat_id, msg_id, "dbg:dpi:scan" if sub == "scan" else "dbg:dpi")

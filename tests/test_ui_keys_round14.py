@@ -199,7 +199,6 @@ def test_simplified_navigation_eliminates_duplicate_hub_and_unknown_routes(tmp_p
         "nav:sshd",
         "dbg:hp",
         "dbg:ntf",
-        "dbg:chk",
         "dbg:dpi",
         "dbg:vk",
         "dbg:scan",

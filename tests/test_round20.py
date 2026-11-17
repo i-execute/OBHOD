@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from BOT import chebur, i18n, inline, ipscan
+from BOT import i18n, inline, ipscan
 from BOT.app import Bot
 from BOT.ui import use_icons
 from tests.fakes import FakeApp, FakeControl, FakeEvent, FakeGuard, make_bot, make_config
@@ -19,24 +19,6 @@ def run(coro):
 
 
 def install_scan_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | None = None) -> None:
-    ipscan.clear_cache()
-
-    def fake_chebur(host: str, timeout: float = 3.5) -> chebur.Registry:
-        if calls is not None:
-            calls.append("chebur:" + host)
-        return chebur.Registry(
-            target=host,
-            kind="domain" if any(c.isalpha() for c in host) else "ip",
-            blocked=False,
-            ips=["77.88.55.242", "77.88.55.243"],
-            ip_count=2,
-            subnets=["77.88.0.0/18"],
-            cdn={"Yandex CDN": True},
-            reverse=["ya.ru"],
-            complaints=[chebur.Complaint("2026-11-04", 3)],
-            geo=chebur.Geo(country="RU", asn="AS13238", organisation="YANDEX LLC", location="Moscow"),
-        )
-
     def fake_ip_api(ip_addr: str, timeout: float = 2.8) -> dict[str, Any]:
         if calls is not None:
             calls.append("ipapi:" + (ip_addr or "self"))
@@ -64,21 +46,6 @@ def install_scan_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | None 
             calls.append("ports:" + ip_addr)
         return {"open": [(80, "HTTP", 12), (443, "TLS", 9)], "best_ms": 9}
 
-    def fake_probe(ctx: str, deadline: float = 18.0) -> chebur.Live:
-        if calls is not None:
-            calls.append("probe:" + ctx)
-        return chebur.Live(
-            target="ya.ru",
-            online=2,
-            finished=True,
-            results=[
-                chebur.Probe(provider="MTS", region="Moscow", asn="AS8359", verdicts=["ok"]),
-                chebur.Probe(provider="RTK", region="SPb", asn="AS12389", verdicts=["tspu_block"], dpi_hop=6),
-            ],
-        )
-
-    monkeypatch.setattr(chebur, "check", fake_chebur)
-    monkeypatch.setattr(chebur, "probe", fake_probe)
     monkeypatch.setattr(ipscan, "fetch_ip_api", fake_ip_api)
     monkeypatch.setattr(ipscan, "probe_ports", fake_ports)
 

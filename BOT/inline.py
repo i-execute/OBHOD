@@ -69,7 +69,6 @@ FIELDS: dict[str, Field] = {
     "xr_mldsa65_verify": Field("xr_mldsa65_verify", "FLD_XR_MLDSA_VERIFY", "FLH_XR_MLDSA_VERIFY", ""),
     "dbg_target": Field("dbg_target", "FLD_DBG_TARGET", "FLH_DBG_TARGET", "203.0.113.0/24"),
     "dbg_ports": Field("dbg_ports", "FLD_DBG_PORTS", "FLH_DBG_PORTS", "22,80,443"),
-    "dbg_chk_target": Field("dbg_chk_target", "FLD_DBG_CHK_TARGET", "FLH_DBG_CHK_TARGET", "31.77.12.187"),
     "dbg_hops": Field("dbg_hops", "FLD_DBG_HOPS", "FLH_DBG_HOPS", "12"),
     "dbg_ddos_ban": Field("dbg_ddos_ban", "FLD_DBG_DDOS_BAN", "FLH_DBG_DDOS_BAN", "37.9.13.54"),
     "dbg_ddos_allow": Field("dbg_ddos_allow", "FLD_DBG_DDOS_ALLOW", "FLH_DBG_DDOS_ALLOW", "203.0.113.10"),

@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from goygram import GoyGram
 
-from BOT import chebur, i18n, ipscan
+from BOT import i18n, ipscan
 from BOT.app import Bot
 from tests.fakes import FakeApp, FakeControl, FakeEvent, FakeGuard, make_config
 from tests.test_html import Checker
@@ -36,32 +36,6 @@ def test_round22_real_goygram_instance_never_triggers_dynamic_method_crash(
     bot.app = real_app
     bot.state.language = "ru"
 
-    monkeypatch.setattr(
-        chebur,
-        "check",
-        lambda host, timeout=8.0: chebur.Registry(
-            target=host,
-            kind="ip",
-            ips=[host],
-            blocked=False,
-            geo=chebur.Geo(country="DE", asn="AS24940", organisation="Hetzner Online GmbH", location="Falkenstein"),
-            context="ctx_hetzner",
-        ),
-    )
-    monkeypatch.setattr(
-        chebur,
-        "probe",
-        lambda ctx, deadline=18.0: chebur.Live(
-            target="203.0.113.55",
-            online=3,
-            finished=True,
-            results=[
-                chebur.Probe(provider="MTS", region="Moscow", asn="AS8359", verdicts=["tspu_block"], dpi_hop=5),
-                chebur.Probe(provider="Beeline", region="Kazan", asn="AS3216", verdicts=["ok"]),
-                chebur.Probe(provider="MegaFon", region="Novosibirsk", asn="AS31133", verdicts=["sni_block"], dpi_hop=7),
-            ],
-        ),
-    )
     monkeypatch.setattr(
         ipscan,
         "fetch_ip_api",
@@ -133,7 +107,6 @@ def test_round22_inline_card_is_rich_with_zero_hosting_info_and_single_start_but
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     net_calls: list[str] = []
-    monkeypatch.setattr(chebur, "check", lambda *a, **kw: net_calls.append("chebur") or None)
     monkeypatch.setattr(ipscan, "fetch_ip_api", lambda *a, **kw: net_calls.append("ipapi") or {})
     monkeypatch.setattr(ipscan, "probe_ports", lambda *a, **kw: net_calls.append("ports") or {})
 
@@ -201,11 +174,6 @@ def test_round22_no_ip_caching_across_inline_queries_or_changing_server_ip(
         ipscan,
         "fetch_ip_api",
         lambda q: {"status": "success", "query": q or current_ip["val"], "country": "NL", "countryCode": "NL", "isp": "ISP-" + (q or current_ip["val"])},
-    )
-    monkeypatch.setattr(
-        chebur,
-        "check",
-        lambda host, timeout=8.0: chebur.Registry(target=host, kind="ip", ips=[host], blocked=False),
     )
     monkeypatch.setattr(ipscan, "probe_ports", lambda ip_addr: {"open": [], "best_ms": 0})
 

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from BOT import chebur, commands, dscreens, freeturn, ftscreens, fwguard, i18n, inline, ipscan, screens, xscreens
+from BOT import commands, dscreens, freeturn, ftscreens, fwguard, i18n, inline, screens, xscreens
 from BOT.ui import count_buttons
 from Storage import obhod_setup
 from tests.test_app import FakeEvent, make_bot, run
@@ -72,31 +72,6 @@ def test_round17_no_triple_dots_in_russian_strings() -> None:
     assert offenders == []
 
 
-def test_round17_chebur_net_check_fast_and_rerunnable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    bot = make_bot(tmp_path)
-    bot.state.language = "ru"
-    calls = {"count": 0}
-
-    def fake_reach() -> chebur.Reach:
-        calls["count"] += 1
-        return chebur.Reach(host=chebur.HOST, ip="1.1.1.1", ms=18, status=200)
-
-    monkeypatch.setattr(chebur, "reach", fake_reach)
-
-    evt1 = FakeEvent(data="dbg:chk:net", msg_id=42, chat_id=1, from_id=7)
-    run(bot.on_callback(evt1))
-    assert calls["count"] == 1
-    assert len(bot.rendered) >= 2
-    assert count_buttons(bot.rendered[0].to_html()) == 0
-    assert count_buttons(bot.rendered[-1].to_html()) > 0
-
-    before = len(bot.rendered)
-    evt2 = FakeEvent(data="dbg:chk:net", msg_id=42, chat_id=1, from_id=7)
-    run(bot.on_callback(evt2))
-    assert calls["count"] == 2
-    assert len(bot.rendered) > before
-    assert count_buttons(bot.rendered[-1].to_html()) > 0
-
 
 def test_round17_inline_sends_pure_notepad_emoji_and_deletes_message(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
@@ -141,88 +116,6 @@ def test_round17_inline_pure_marker_fallback_without_chosen_feedback(tmp_path: P
     assert (1, 88) in bot.app.deleted
     assert bot.state.xray.sub_port == 9443
 
-
-def test_round17_inline_ip_scanner_combines_chebur_and_ip_meta(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    bot = make_bot(tmp_path)
-    bot.state.language = "ru"
-    ipscan.clear_cache()
-
-    monkeypatch.setattr(
-        chebur,
-        "check",
-        lambda host, timeout=3.5: chebur.Registry(
-            target=host,
-            kind="domain",
-            ips=["77.88.55.242"],
-            blocked=False,
-            subnets=["77.88.0.0/18"],
-            cdn={"provider": "Yandex CDN"},
-            reverse=["ya.ru"],
-            complaints=[chebur.Complaint("2026-11-04", 2)],
-            geo=chebur.Geo(country="RU", asn="AS13238", organisation="YANDEX LLC"),
-            context="ctx_yaru",
-        ),
-    )
-    monkeypatch.setattr(
-        chebur,
-        "probe",
-        lambda ctx, deadline=18.0: chebur.Live(
-            target="ya.ru",
-            online=1,
-            finished=True,
-            results=[chebur.Probe(provider="MTS", region="Moscow", asn="AS8359", verdicts=["ok"])],
-        ),
-    )
-    monkeypatch.setattr(
-        ipscan,
-        "fetch_ip_api",
-        lambda ip_addr, timeout=2.8: {
-            "status": "success",
-            "query": "77.88.55.242",
-            "country": "Russia",
-            "countryCode": "RU",
-            "city": "Moscow",
-            "isp": "Yandex LLC",
-            "as": "AS13238 YANDEX LLC",
-            "reverse": "ya.ru",
-            "hosting": True,
-            "proxy": False,
-            "mobile": False,
-        },
-    )
-    monkeypatch.setattr(ipscan, "probe_ports", lambda ip_addr: {"open": [(443, "TLS", 9)], "best_ms": 9})
-
-    answered: list[list[dict]] = []
-
-    class InlineEvt:
-        query = "ya.ru"
-        src = "mt"
-        from_id = 7
-
-        async def answer(self, results: list[dict], cache_time: int = 0, is_personal: bool = True) -> None:
-            answered.append(results)
-
-    run(bot.handle_inline(InlineEvt()))
-    assert len(answered) == 1
-    assert len(answered[0]) == 1
-    card = answered[0][0]
-    assert card["id"].startswith("ipscan:")
-    assert card["send_message"]["_"] == "inputBotInlineMessageRichMessage"
-    launch_html = card["send_message"]["rich_message"]["html"]
-    assert "AS13238" not in launch_html
-    assert "Yandex" not in launch_html
-    rows = card["send_message"]["reply_markup"]["rows"]
-    assert len(rows) == 1 and len(rows[0]["buttons"]) == 1
-
-    report = ipscan.full_scan_sync("ya.ru", force=True)
-    rich_card, after_kbd = ipscan.rich_report(report, "ru")
-    rep_html = rich_card.build()
-    assert "ya.ru" in rep_html
-    assert "77.88.55.242" in rep_html
-    assert "AS13238" in rep_html
-    assert "Yandex" in rep_html
-    assert "<details><summary>" in rep_html
-    assert len(after_kbd) == 1 and "switch_inline_query_current_chat" in after_kbd[0][0]
 
 
 def test_round17_tui_inline_disabled_warning_text_and_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

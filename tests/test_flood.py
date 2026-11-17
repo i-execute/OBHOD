@@ -222,7 +222,7 @@ def test_the_update_check_is_not_repeated_on_each_navigation(tmp_path: Path) -> 
 def test_a_broken_handler_never_reaches_the_dispatcher(tmp_path: Path) -> None:
     bot, wire = make_wire_bot(tmp_path)
     bot.debug.route = _explode
-    press(bot, "dbg:chk:check")
+    press(bot, "dbg:dpi:scan")
     assert wire.edits >= 1
     assert bot.jobs == {}
     assert bot.is_busy() is False

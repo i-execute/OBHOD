@@ -4,20 +4,18 @@ import asyncio
 import time
 from typing import Any
 
-from . import antiddos, chebur, cores, dpi, dscreens, fwguard, guard, i18n, net, notify, portguard, scripts
+from . import antiddos, cores, dpi, dscreens, fwguard, guard, i18n, net, notify, portguard, scripts
 from .freeturn import FtError
 
 SCAN_COOLDOWN = 3.0
 TRACE_COOLDOWN = 3.0
 VK_COOLDOWN = 10.0
 SCRIPTS_COOLDOWN = 5.0
-CHK_COOLDOWN = 4.0
 DPI_COOLDOWN = 8.0
 DDOS_COOLDOWN = 15.0
 NTF_COOLDOWN = 2.0
 HP_COOLDOWN = 5.0
 MAX_LOG = 12
-CHEBUR_LIMIT = 45.0
 REACH_LIMIT = 12.0
 DPI_LIMIT = 20.0
 VK_LIMIT = 40.0
@@ -52,8 +50,6 @@ class DebugPanel:
         self.trace_text = ""
         self.events: list[str] = []
         self.marks: dict[str, float] = {}
-        self.chebur: chebur.Answer | None = None
-        self.chebur_target = ""
         self.dpi: Any = None
         self.notify: Any = self.make_centre()
         self.honeypot: Any = None
@@ -86,8 +82,6 @@ class DebugPanel:
             notice=notice or self.notice,
             error=error or self.error,
             trace_text=self.trace_text,
-            chebur=self.chebur,
-            chebur_target=self.chebur_target,
             dpi=self.dpi,
             notify=self.notify,
             honeypot=self.honeypot,
@@ -150,9 +144,6 @@ class DebugPanel:
                 return
             if head == "ports":
                 await self.ports_action(chat_id, msg_id, arg1)
-                return
-            if head == "chk":
-                await self.chebur_action(chat_id, msg_id, arg1)
                 return
             if head == "dpi":
                 await self.dpi_action(chat_id, msg_id, arg1)
@@ -339,12 +330,7 @@ class DebugPanel:
             address = ""
         if not address:
             return {}
-        try:
-            registry = await asyncio.to_thread(chebur.check, address)
-        except Exception:
-            return {}
-        geo = registry.geo
-        return {"asn": geo.asn, "organisation": geo.organisation, "country": geo.country}
+        return {}
 
     async def dpi_action(self, chat_id: int, msg_id: int, stage: str) -> None:
         t = self.tr()
@@ -815,88 +801,6 @@ class DebugPanel:
         self.note("ports", "ok", str(len(rows)))
         await self.render(chat_id, msg_id, dscreens.ports_screen(self.view(notice=t("DBG_PORTS_NOTE"))))
 
-    async def chebur_action(self, chat_id: int, msg_id: int, action: str) -> None:
-        t = self.tr()
-        target = self.chebur_target or self.target
-        if action in ("", "open"):
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
-            return
-        if action not in ("check", "probe", "both", "net"):
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("HOME_NOTICE_UNKNOWN"))))
-            return
-        if action != "net" and not self.cooled("chk:" + action, CHK_COOLDOWN):
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("CHK_TOO_FAST"))))
-            return
-        if action == "net":
-            await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("CHK_RUNNING_NET")))
-            try:
-                probe = await asyncio.wait_for(asyncio.to_thread(chebur.reach), REACH_LIMIT)
-            except (chebur.CheburError, OSError, asyncio.TimeoutError):
-                probe = chebur.Reach(host=chebur.HOST, error="timeout")
-            answer = self.chebur if self.chebur is not None else chebur.Answer(target=target, at=0.0)
-            answer.reach = probe
-            if not probe.reachable():
-                answer.error = probe.error or t("CHK_NET_TCP_FAIL")
-                answer.code = "network"
-            elif answer.error and answer.code in ("network", "timeout"):
-                answer.error = ""
-                answer.code = ""
-            self.chebur = answer
-            self.note("chk", "reach", probe.state())
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
-            return
-        try:
-            host, _kind = chebur.clean_target(target)
-        except chebur.CheburError as exc:
-            self.note("chk", "bad_arg", exc.code)
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(error=t("CHK_BAD_TARGET"))))
-            return
-        self.chebur_target = host
-        if _kind in ("ip", "subnet"):
-            self.target = host
-        wants_live = action in ("probe", "both")
-        await self.render(chat_id, msg_id, dscreens.busy(self.view()))
-        answer = chebur.Answer(target=host, at=0.0)
-        try:
-            answer.registry = await asyncio.to_thread(chebur.check, host)
-        except chebur.CheburError as exc:
-            self.note("chk", "check_failed", exc.code)
-            answer.error = exc.message
-            answer.code = exc.code
-            try:
-                answer.reach = await asyncio.wait_for(asyncio.to_thread(chebur.reach), REACH_LIMIT)
-            except (chebur.CheburError, OSError, asyncio.TimeoutError):
-                answer.reach = None
-            self.chebur = answer
-            self.remember("chk %s %s" % (host, exc.code))
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
-            return
-        self.chebur = answer
-        if wants_live and not chebur.probe_supported(_kind):
-            self.chebur = answer
-            self.note("chk", "registry_only", _kind)
-            self.remember("chk %s %s" % (host, answer.verdict()))
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view(notice=t("CHK_PROBE_WIDE"))))
-            return
-        if not wants_live or not answer.registry.context:
-            self.note("chk", "registry", "blocked" if answer.blocked() else "clean")
-            self.remember("chk %s %s" % (host, answer.verdict()))
-            await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
-            return
-        await self.render(chat_id, msg_id, dscreens.busy(self.view(), t("CHK_RUNNING", value=answer.registry.geo.label())))
-        try:
-            live = await asyncio.wait_for(asyncio.to_thread(chebur.probe, answer.registry.context, chebur.PROBE_DEADLINE, None), CHEBUR_LIMIT)
-        except (chebur.CheburError, OSError, asyncio.TimeoutError) as exc:
-            reason = getattr(exc, "message", None) or "the live probe did not answer in %d seconds" % int(CHEBUR_LIMIT)
-            self.note("chk", "probe_failed", str(getattr(exc, "code", "timeout")))
-            self.remember("chk %s probe_failed" % host)
-            await self.render(chat_id, msg_id, dscreens.stub_screen(self.view(), t("CHK_BTN_PROBE"), reason, chebur.HOST, "dbg:chk:probe"))
-            return
-        answer.live = live
-        self.chebur = answer
-        self.remember("chk %s %s" % (host, answer.verdict()))
-        self.note("chk", answer.verdict(), host)
-        await self.render(chat_id, msg_id, dscreens.chebur_screen(self.view()))
 
     def describe(self, error: FtError) -> str:
         key = "FT_CODE_%s" % str(error.code or "").upper()
@@ -918,13 +822,6 @@ class DebugPanel:
                 self.ports = ",".join(str(item) for item in ports)
                 await self.bot.send(chat_id, dscreens.scan_screen(self.view(notice=self.ports)))
                 return
-            if ident == "dbg_chk_target":
-                host, _kind = chebur.clean_target(text)
-                if host != self.chebur_target:
-                    self.chebur = None
-                self.chebur_target = host
-                await self.bot.send(chat_id, dscreens.chebur_screen(self.view(notice=host)))
-                return
             if ident == "dbg_hops":
                 self.hops = net.parse_hops(text)
                 await self.bot.send(chat_id, dscreens.trace_screen_view(self.view(notice=str(self.hops))))
@@ -935,10 +832,6 @@ class DebugPanel:
             if ident == "dbg_ddos_allow":
                 await self._mutate_ddos_entries(chat_id, "rkn_allow", text, allow_private=True)
                 return
-        except chebur.CheburError as exc:
-            self.note("chk", "bad_arg", exc.code)
-            await self.bot.send(chat_id, dscreens.chebur_screen(self.view(error=self.tr()("CHK_BAD_TARGET"))))
-            return
         except net.NetError as exc:
             await self.bot.send(chat_id, dscreens.crash_screen(self.view(error=exc.message), ident, net.trace_text(exc)))
             return
