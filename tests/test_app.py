@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from BOT import VERSION, app as appmod, i18n, inline, screens, serverless, xscreens
+from BOT import VERSION, app as appmod, i18n, inline, screens, serverless, version, xscreens
 from BOT.config import ConfigError
 from BOT.guard import SshState
 from BOT.models import ModelError
@@ -80,8 +80,8 @@ def test_product_version_is_single_sourced_into_telegram_client(tmp_path: Path, 
     monkeypatch.setattr(appmod, "GoyGram", FakeGoyGram)
     bot = make_bot(tmp_path)
     asyncio.run(bot.boot())
-    assert VERSION == "1.0.0"
-    assert captured["app_version"] == VERSION
+    assert VERSION == version.VERSION
+    assert captured["app_version"] == version.VERSION
 
 
 def test_start_is_registered_once(tmp_path: Path) -> None:

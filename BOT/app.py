@@ -19,7 +19,8 @@ from typing import Any
 
 from goygram import GoyGram
 
-from . import VERSION, antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, ui, vkscreens, xscreens
+from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, ui, vkscreens, xscreens
+from .version import VERSION
 from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
