@@ -19,7 +19,7 @@ from typing import Any
 
 from goygram import GoyGram
 
-from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, ui, vkscreens, xscreens
+from . import VERSION, antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, ui, vkscreens, xscreens
 from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
@@ -446,7 +446,7 @@ class Bot:
             default_transport="mtproto",
             intake="mtproto",
             app_name="OBHOD",
-            app_version="3.0",
+            app_version=VERSION,
             device_model="desktop",
             system_version="linux",
             mt_host=self.cfg.dc_host,

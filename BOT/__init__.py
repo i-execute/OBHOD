@@ -1,4 +1,4 @@
 from __future__ import annotations
 
-VERSION = "2.5.8"
+VERSION = "1.0.0"
 __all__ = ["VERSION"]

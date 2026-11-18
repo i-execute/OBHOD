@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from BOT import i18n, inline, screens, serverless, xscreens
+from BOT import VERSION, app as appmod, i18n, inline, screens, serverless, xscreens
 from BOT.config import ConfigError
 from BOT.guard import SshState
 from BOT.models import ModelError
@@ -56,6 +56,32 @@ def test_outgoing_or_unknown_sender_is_ignored(tmp_path: Path, event: dict) -> N
     bot = make_bot(tmp_path)
     asyncio.run(bot.on_message(FakeEvent(text="/start", **event)))
     assert not bot.sent
+
+
+def test_product_version_is_single_sourced_into_telegram_client(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    class FakeGoyGram:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def on_msg(self, **kwargs):
+            pass
+
+        def on_cb(self, **kwargs):
+            pass
+
+        def on_inline(self, **kwargs):
+            pass
+
+        def on_update(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(appmod, "GoyGram", FakeGoyGram)
+    bot = make_bot(tmp_path)
+    asyncio.run(bot.boot())
+    assert VERSION == "1.0.0"
+    assert captured["app_version"] == VERSION
 
 
 def test_start_is_registered_once(tmp_path: Path) -> None:
