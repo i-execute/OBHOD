@@ -19,13 +19,12 @@ def run(coro):
 
 
 def install_scan_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | None = None) -> None:
-    def fake_ip_api(ip_addr: str, timeout: float = 2.8) -> dict[str, Any]:
+    def fake_ip_api(ip_addr: str = "") -> dict[str, Any]:
         if calls is not None:
             calls.append("ipapi:" + (ip_addr or "self"))
         return {
             "status": "success",
-            "query": ip_addr if ip_addr and ip_addr[0].isdigit() else "77.88.55.242",
-            "continent": "Europe",
+            "query": ip_addr or "77.88.55.242",
             "country": "Russia",
             "countryCode": "RU",
             "regionName": "Moscow",
@@ -47,7 +46,9 @@ def install_scan_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | None 
         return {"open": [(80, "HTTP", 12), (443, "TLS", 9)], "best_ms": 9}
 
     monkeypatch.setattr(ipscan, "fetch_ip_api", fake_ip_api)
+    monkeypatch.setattr(ipscan, "resolve_ip", lambda host: "77.88.55.242")
     monkeypatch.setattr(ipscan, "probe_ports", fake_ports)
+    monkeypatch.setattr(ipscan, "resolve_ip", lambda host: "77.88.55.242")
 
 
 def test_inline_without_hash_never_registers_tokens_and_returns_single_ipscan_result(
@@ -66,6 +67,13 @@ def test_inline_without_hash_never_registers_tokens_and_returns_single_ipscan_re
         card = evt.results[0]
         assert card["id"].startswith("ipscan:")
         markup = card["send_message"].get("reply_markup")
+        candidate = ipscan.extract_candidate(raw_query)
+        try:
+            if candidate != "self":
+                ipscan.clean_target(candidate)
+        except ValueError:
+            assert markup is None
+            continue
         assert isinstance(markup, dict)
         assert markup.get("_") == "replyInlineMarkup"
         first_btn = markup["rows"][0]["buttons"][0]
@@ -250,7 +258,7 @@ def test_mtproto_tl_binary_serialization_of_inline_ipscan_and_edit_rich(
     )
     assert isinstance(packed_inline, (bytes, bytearray)) and len(packed_inline) > 40
 
-    report_data = ipscan.full_scan_sync("ya.ru", force=True)
+    report_data = ipscan.full_scan_sync("ya.ru")
     card, _kbd = ipscan.rich_report(report_data, "ru")
     packed_edit = ext.serialize_method(
         "messages.editInlineBotMessage",

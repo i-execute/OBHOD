@@ -47,4 +47,3 @@ def scan_screen(v: Any) -> Any:
             blocks.append(table([("plug", t("TOOLS_OPEN"), code(item)) for item in ans.open_ports[:40]], (t("TOOLS_OPEN"), t("TOOLS_VALUE"))))
     buttons = [row(button(t("TOOLS_RUN"), "dbg:scan:go", icon="scan"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools"))]
     return screen(t("TOOLS_SCAN"), t("TOOLS_SCAN_SUB"), blocks, buttons, icon="radar")
-

@@ -701,6 +701,7 @@ def test_the_bot_resolves_latest_and_falls_back_to_the_pin(monkeypatch: pytest.M
     monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.1.2", ""))
     assert freeturn.resolve_version("latest") == ("v4.1.2", "api")
     monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.2.0", ""))
+    monkeypatch.setattr(freeturn, "release_digest", lambda tag: "")
     assert freeturn.resolve_version("latest") == (freeturn.FALLBACK_VERSION, "not_pinned")
     monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("", "rate_limited"))
     assert freeturn.resolve_version("latest") == (freeturn.FALLBACK_VERSION, "fallback")
@@ -783,6 +784,7 @@ def test_the_agent_resolves_the_version_the_same_way() -> None:
     assert module.resolve_version("v4.1.2") == ("v4.1.2", "pinned")
     assert module.resolve_version("local") == (module.FALLBACK_VERSION, "local")
     assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.2", "")) == ("v4.1.2", "api")
+    module.release_digest = lambda tag: ""
     assert module.resolve_version("latest", lookup=lambda repo: ("v4.2.0", ""))[0] == module.FALLBACK_VERSION
     assert module.resolve_version("latest", lookup=lambda repo: ("", "rate_limited"))[0] == module.FALLBACK_VERSION
     for gone in ("v4.1.0", "v4.2.0"):

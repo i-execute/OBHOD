@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from BOT import dscreens, ftscreens, i18n, inline, screens, strings, tools, xscreens
+from BOT import dscreens, ftscreens, i18n, inline, screens, strings, xscreens
 from BOT.freeturn import FtConfig, FtState
 from tests.fakes import make_bot
 
@@ -209,7 +209,7 @@ def test_simplified_navigation_eliminates_duplicate_hub_and_unknown_routes(tmp_p
     ):
         assert f'data="{tool_cb}"' in tools_html, tool_cb
 
-    fw_html = tools.fw_screen(dscreens.DbgView(lang="en")).to_html()
+    fw_html = ftscreens.fw_screen(bot.freeturn.view()).to_html()
     assert 'data="ft:fw"' in fw_html
     assert 'data="tools:fw:status"' not in fw_html
 

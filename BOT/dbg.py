@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from . import antiddos, cores, dpi, dscreens, fwguard, guard, i18n, net, notify, portguard, scripts
+from . import antiddos, cores, dpi, dscreens, fwguard, guard, i18n, ipscan, net, notify, portguard, scripts
 from .freeturn import FtError
 
 SCAN_COOLDOWN = 3.0
@@ -16,7 +16,6 @@ DDOS_COOLDOWN = 15.0
 NTF_COOLDOWN = 2.0
 HP_COOLDOWN = 5.0
 MAX_LOG = 12
-REACH_LIMIT = 12.0
 DPI_LIMIT = 20.0
 VK_LIMIT = 40.0
 NET_LIMIT = 120.0
@@ -330,7 +329,11 @@ class DebugPanel:
             address = ""
         if not address:
             return {}
-        return {}
+        try:
+            metadata = await asyncio.to_thread(ipscan.fetch_ip_api, address)
+        except Exception:
+            return {}
+        return {"asn": str(metadata.get("as") or ""), "organisation": str(metadata.get("org") or ""), "country": str(metadata.get("country") or "")}
 
     async def dpi_action(self, chat_id: int, msg_id: int, stage: str) -> None:
         t = self.tr()
@@ -800,7 +803,6 @@ class DebugPanel:
         self.owners = rows
         self.note("ports", "ok", str(len(rows)))
         await self.render(chat_id, msg_id, dscreens.ports_screen(self.view(notice=t("DBG_PORTS_NOTE"))))
-
 
     def describe(self, error: FtError) -> str:
         key = "FT_CODE_%s" % str(error.code or "").upper()

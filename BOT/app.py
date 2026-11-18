@@ -19,7 +19,7 @@ from typing import Any
 
 from goygram import GoyGram
 
-from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, tools, ui, vkscreens, xscreens
+from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, ui, vkscreens, xscreens
 from .config import Config, ConfigError
 from .dbg import DebugPanel
 from .freeturn import FtControl, FtError
@@ -64,8 +64,6 @@ LOADING_SKIP = (
     "ft:home",
     "xr:home",
     "tools:home",
-    "tools:fortress",
-    "tools:pentest",
     "upd:commit:go",
     "upd:release:go",
     "upd:reinstall:go",
@@ -1382,19 +1380,13 @@ class Bot:
                 log.warning("mt inline fallback edit failed: %s", exc2)
         return False
 
-    async def run_inline_ipscan(self, inline_id: Any, raw_target: str, force: bool = True) -> None:
-        await self.edit_inline_rich(inline_id, ipscan.scanning_screen(raw_target, self.language))
-        report = await ipscan.full_scan_async(raw_target, default_target=self.default_scan_target(), force=force)
-        card, kbd = ipscan.rich_report(report, self.language)
-        await self.edit_inline_rich(inline_id, card, reply_markup=kbd)
-
     async def run_callback_ipscan(self, inline_id: Any, chat_id: int, msg_id: int, raw_target: str) -> None:
         loading = ipscan.scanning_screen(raw_target, self.language)
         if inline_id is not None:
             await self.edit_inline_rich(inline_id, loading)
         elif chat_id and msg_id:
             await self.render(chat_id, msg_id, loading)
-        report = await ipscan.full_scan_async(raw_target, default_target=self.default_scan_target(), force=True)
+        report = await ipscan.full_scan_async(raw_target, default_target=self.default_scan_target())
         card, kbd = ipscan.rich_report(report, self.language)
         if inline_id is not None:
             await self.edit_inline_rich(inline_id, card, reply_markup=kbd)
@@ -2329,9 +2321,6 @@ class Bot:
             return
         if action == "fw":
             await self.freeturn.route(chat_id, msg_id, "ft:fw")
-            return
-        if action in ("fortress", "pentest"):
-            await self.render(chat_id, msg_id, tools.fortress_screen(self.debug.view()))
             return
         await self.debug.route(chat_id, msg_id, "dbg:home")
 

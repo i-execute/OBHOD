@@ -179,7 +179,7 @@ def scan_sync(host: str, kind: str, deep: bool = True) -> dict[str, Any]:
     }
 
 
-def full_scan_sync(raw_target: str, default_target: str = "", force: bool = True) -> dict[str, Any]:
+def full_scan_sync(raw_target: str, default_target: str = "") -> dict[str, Any]:
     candidate = extract_candidate(raw_target)
     if candidate == "self":
         host, kind, seed_metadata = resolve_self_ip(default_target)
@@ -197,8 +197,8 @@ def full_scan_sync(raw_target: str, default_target: str = "", force: bool = True
     return scan_sync(host, kind)
 
 
-async def full_scan_async(raw_target: str, default_target: str = "", force: bool = True) -> dict[str, Any]:
-    return await asyncio.to_thread(full_scan_sync, raw_target, default_target, force)
+async def full_scan_async(raw_target: str, default_target: str = "") -> dict[str, Any]:
+    return await asyncio.to_thread(full_scan_sync, raw_target, default_target)
 
 
 def safe_cb_target(target: str) -> str:

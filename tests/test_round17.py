@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from BOT import commands, dscreens, freeturn, ftscreens, fwguard, i18n, inline, screens, xscreens
+from BOT import commands, dscreens, freeturn, ftscreens, fwguard, i18n, inline, ipscan, screens, xscreens
 from BOT.ui import count_buttons
 from Storage import obhod_setup
 from tests.test_app import FakeEvent, make_bot, run
@@ -116,6 +116,28 @@ def test_round17_inline_pure_marker_fallback_without_chosen_feedback(tmp_path: P
     assert (1, 88) in bot.app.deleted
     assert bot.state.xray.sub_port == 9443
 
+
+def test_round17_inline_ip_scanner_keeps_independent_metadata_and_ports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.language = "ru"
+    monkeypatch.setattr(ipscan, "resolve_ip", lambda host: "77.88.55.242")
+    monkeypatch.setattr(ipscan, "fetch_ip_api", lambda address: {
+        "status": "success", "query": "77.88.55.242", "country": "Russia",
+        "countryCode": "RU", "city": "Moscow", "isp": "Yandex LLC",
+        "as": "AS13238 YANDEX LLC", "hosting": True, "proxy": False, "mobile": False,
+    })
+    monkeypatch.setattr(ipscan, "probe_ports", lambda address: {"open": [(443, "TLS", 9)], "best_ms": 9})
+
+    report = ipscan.full_scan_sync("ya.ru")
+    rich_card, after_kbd = ipscan.rich_report(report, "ru")
+    rep_html = rich_card.build()
+    assert "ya.ru" in rep_html
+    assert "77.88.55.242" in rep_html
+    assert "AS13238" in rep_html
+    assert "Yandex" in rep_html
+    assert "443/TLS" in rep_html
+    assert "verdict" not in rep_html.lower()
+    assert len(after_kbd) == 1 and "switch_inline_query_current_chat" in after_kbd[0][0]
 
 
 def test_round17_tui_inline_disabled_warning_text_and_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

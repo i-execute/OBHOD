@@ -169,7 +169,7 @@ def test_extended_screens_and_commit_links_have_valid_html() -> None:
         ("ft_plan", ftscreens.plan_screen(ft_view).build()),
         ("ft_clients", ftscreens.clients_screen(ft_view).build()),
         ("dbg_stub", dscreens.stub_screen(dscreens.DbgView(lang="ru"), "probe", "timeout", "example.com", "dbg:home").build()),
-        ("tools_fortress", tools.fortress_screen(dscreens.DbgView(lang="ru")).build()),
+        ("tools_home", tools.home(dscreens.DbgView(lang="ru")).build()),
         ("xr_mismatch", xscreens.scan_mismatch_screen(xscreens.XrayView(state=xr_state, lang="ru"), scan_res, inbound, 0).build()),
         ("xr_check", xscreens.target_check_screen(xscreens.XrayView(state=xr_state, lang="ru"), inbound, scan_res).build()),
     ]

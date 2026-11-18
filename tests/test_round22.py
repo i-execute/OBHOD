@@ -92,10 +92,8 @@ def test_round22_real_goygram_instance_never_triggers_dynamic_method_crash(
     checker.close()
     assert checker.errors == []
     assert checker.stack == []
-    assert "<details><summary>" in rep_html
-    assert "<details open>" not in rep_html
-    assert "Moscow / MTS (AS8359)" in rep_html
-    assert "Novosibirsk / MegaFon (AS31133)" in rep_html
+    assert "443/TLS" in rep_html
+    assert "verdict" not in rep_html.lower()
     rows = kw2["reply_markup"]["rows"]
     assert len(rows) == 1 and len(rows[0]["buttons"]) == 1
     only_btn = rows[0]["buttons"][0]
