@@ -130,7 +130,7 @@ def test_subs_screen_shows_path_format() -> None:
     item = view()
     html = xscreens.subs_screen(item, []).to_html()
     assert "xr:subs:apply" not in html
-    assert "xr:dom" not in html
+    assert "xr:dom:up" in html
     assert "<table" not in html
     assert i18n.t("XR_SUBS_NO_DOMAIN") in html
     assert "switch_inline_query_current_chat" in html
@@ -140,6 +140,26 @@ def test_subs_screen_shows_path_format() -> None:
     assert named.count("xr:subs:apply") == 0
     assert "xr:dom:off" in named
     assert i18n.t("XR_SUBS_NO_DOMAIN") not in named
+
+
+def test_subs_credentials_are_shown_only_for_nonworking_providers() -> None:
+    state = XrayState()
+    state.tunnel_host = "obhod.tail1234.ts.net:8443"
+    state.tunnel_enabled = True
+    view_item = xscreens.XrayView(state=state, lang="en", serverless_token_set=True)
+    view_item.state.tgcloud_app_id = "123456"
+    rows = [("__TGCLOUD_VERIFY_ERROR__", "", "")]
+    html = xscreens.subs_screen(view_item, rows).to_html()
+    assert i18n.t("DOM_KEY_INPUT") not in html
+    assert i18n.t("TGCLOUD_KEY_INPUT") in html
+
+    view_item.state.tunnel_enabled = False
+    view_item.state.tunnel_host = ""
+    view_item.serverless_token_set = True
+    html_cloud_only = xscreens.subs_screen(view_item, []).to_html()
+    assert i18n.t("DOM_KEY_INPUT") in html_cloud_only
+    assert i18n.t("TGCLOUD_KEY_INPUT") not in html_cloud_only
+    assert i18n.t("TAILSCALE_DNS_BTN") in html_cloud_only
 
 
 def test_subs_screen_keeps_one_link_in_a_collapsed_block() -> None:
@@ -385,7 +405,7 @@ def test_the_domain_screen_shows_the_https_url_once_the_tunnel_is_on() -> None:
     html = xscreens.domain_screen(xscreens.XrayView(state=st, lang="en"), None).to_html()
     assert "https://obhod.tail1234.ts.net:8443" in html
     assert "xr:dom:up" in html
-    assert i18n.t("DOM_KEY_INPUT") in html
+    assert i18n.t("DOM_KEY_INPUT") not in html
 
 
 def test_the_home_screen_has_a_domain_button() -> None:

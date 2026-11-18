@@ -95,6 +95,7 @@ class XrayView:
     vps_subnet: str = ""
     last_subnet: str = ""
     serverless_status: str = "unknown"
+    serverless_token_set: bool = False
 
     @property
     def installed(self) -> bool:
@@ -654,10 +655,12 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     domain_ok = bool(state.tunnel_enabled and not state.tunnel_expired and state.public_base())
     has_live_node = bool(state.tunnel_key_expiry and not state.tunnel_expired)
     ready = bool(domain_ok or state.tgcloud_app_id or view.key_mask or state.tunnel_expired or state.tunnel_key_expiry or approval_url)
+    serverless_active = bool(state.tgcloud_app_id and view.serverless_token_set and not any(row[0] == "__TGCLOUD_VERIFY_ERROR__" for row in rows_data))
     if not ready:
         if xray_missing:
             blocks.append(quote(bold(t("XR_SUBS_NO_XRAY_NOTE"))))
         blocks.append(quote(muted(t("XR_SUBS_NO_DOMAIN"))))
+        blocks.append(quote(bold(t("SUBS_PROVIDER_REQUIRED"))))
         if view.serverless_status == "missing":
             blocks.append(quote(bold(t("TGCLOUD_NOT_ENABLED"))))
         else:
@@ -666,12 +669,14 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         buttons = []
         if xray_missing:
             buttons.append(row(button(t("XR_SUBS_INSTALL_XRAY"), "xr:core:install", icon="box")))
+        buttons.append(row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")))
+        buttons.append(row(link_button(t("TAILSCALE_DNS_BTN"), "https://console.tailscale.com/admin/dns", icon="world")))
+        buttons.append(input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang))
+        buttons.append(row(button(t("DOM_UP"), "xr:dom:up", icon="world")))
+        buttons.append(row(link_button(t("TGCLOUD_ENABLE"), "https://t.me/BotFather", icon="world")))
+        buttons.append(input_row(t("TGCLOUD_KEY_INPUT"), "xr_tgcloud_key", "-", view.lang))
         buttons.extend(
             [
-                row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")),
-                input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
-                row(link_button(t("TGCLOUD_ENABLE"), "https://t.me/BotFather", icon="world")),
-                input_row(t("TGCLOUD_KEY_INPUT"), "xr_tgcloud_key", "-", view.lang),
                 input_row("Xray subscription tag", "xr_sub_tag", "-", view.lang),
                 row(button("Skip", "xr:subs:skip_tag", icon="ok")),
                 back_row("xr:home", view.lang),
@@ -695,6 +700,7 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     except serverless.ServerlessError:
         serverless_domain = ""
     serverless_label = t("TGCLOUD_STATUS_ON") if serverless_domain else t("TGCLOUD_STATUS_OFF")
+    serverless_active = bool(state.tgcloud_app_id and view.serverless_token_set and not any(row[0] == "__TGCLOUD_VERIFY_ERROR__" for row in rows_data))
     pairs = [
         ("link", t("XR_SUBS_ENABLED"), code(i18n.t("UI_YES" if state.sub_enabled else "UI_NO", view.lang))),
         ("world", t("DOM_TITLE"), code(state.public_base() or t("UI_NOT_SET"))),
@@ -766,9 +772,14 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         buttons.append(row(button(t("DOM_UP"), "xr:dom:up", icon="world")))
     if not has_approve_btn and not domain_ok:
         buttons.append(row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")))
-    buttons.append(input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang))
-    buttons.append(row(link_button(t("TGCLOUD_ENABLE"), "https://t.me/BotFather", icon="world")))
-    buttons.append(input_row(t("TGCLOUD_KEY_INPUT"), "xr_tgcloud_key", "-", view.lang))
+    if not domain_ok:
+        buttons.append(input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang))
+        buttons.append(row(link_button(t("TAILSCALE_DNS_BTN"), "https://console.tailscale.com/admin/dns", icon="world")))
+    if not serverless_active:
+        buttons.append(row(link_button(t("TGCLOUD_ENABLE"), "https://t.me/BotFather", icon="world")))
+        buttons.append(input_row(t("TGCLOUD_KEY_INPUT"), "xr_tgcloud_key", "-", view.lang))
+    if not domain_ok and not serverless_active:
+        blocks.append(quote(bold(t("SUBS_PROVIDER_REQUIRED"))))
     buttons.append(input_row("Xray subscription tag", "xr_sub_tag", "-", view.lang))
     buttons.append(row(button("Skip", "xr:subs:skip_tag", icon="ok")))
     buttons.append(back_row("xr:home", view.lang))
@@ -979,7 +990,8 @@ def domain_screen(view: XrayView, tunnel: Any = None, key_mask: str = "") -> Any
         [
             row(button(t("DOM_UP"), "xr:dom:up", icon="world"), button(t("DOM_OFF"), "xr:dom:off", icon="stop")),
             row(link_button(t("TAILSCALE_CONSOLE_BTN"), TAILSCALE_NEW_LINUX_URL, icon="world")),
-            input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang),
+            row(link_button(t("TAILSCALE_DNS_BTN"), "https://console.tailscale.com/admin/dns", icon="world")),
+            *([] if state.tunnel_enabled and not expired else [input_row(t("DOM_KEY_INPUT"), "xr_tunnel_key", "-", view.lang)]),
             back_row("xr:home", view.lang),
         ]
     )

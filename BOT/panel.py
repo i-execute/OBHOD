@@ -248,6 +248,7 @@ class XrayPanel:
         item.bundle = self.sub_bundle()
         item.key_mask = self.key_mask()
         item.serverless_status = str(getattr(self.bot, "serverless_status", {}).get("status", "unknown"))
+        item.serverless_token_set = bool(self.tgcloud_token)
         item.picked_dest = self.picked_dest
         item.picked_sni = self.picked_sni
         item.vps_subnet = vps_subnet_cidr(item.address)
@@ -490,11 +491,14 @@ class XrayPanel:
         if inbound.enable:
             inbound.dirty = True
 
-    async def push_subs_live(self) -> None:
+    async def push_subs_live(self, force: bool = False) -> None:
         subs_sync_fn = getattr(self.bot, "subs_sync", None)
         if callable(subs_sync_fn):
             try:
-                res = subs_sync_fn()
+                try:
+                    res = subs_sync_fn(force=force)
+                except TypeError:
+                    res = subs_sync_fn()
                 if inspect.isawaitable(res):
                     await res
             except Exception as exc:
@@ -543,10 +547,26 @@ class XrayPanel:
             except Exception as exc:
                 log.debug("auto ddos sync skipped: %s", exc)
 
-    async def sync_live_and_subs(self) -> None:
+    async def verify_subscriptions_after_inbound_change(self) -> str:
+        await self.push_subs_live(force=True)
+        good, errors = await self.check_public_subscriptions()
+        t = self.tr()
+        if errors:
+            return t("SUBS_VERIFY_FAILED", details="; ".join(errors))
+        configured = bool(
+            (self.state.tunnel_enabled and self.state.public_base())
+            or (self.state.tgcloud_app_id and self.tgcloud_token)
+        )
+        if not configured:
+            return t("SUBS_PROVIDER_REQUIRED")
+        if not good:
+            return t("SUBS_VERIFY_NO_LINKS")
+        return ""
+
+    async def sync_live_and_subs(self) -> str:
         if not (self.core or {}).get("daemons"):
             await self.auto_apply_live()
-        await self.push_subs_live()
+        return await self.verify_subscriptions_after_inbound_change()
 
     async def wizard_action(self, chat_id: int, msg_id: int, action: str, arg1: str = "", arg2: str = "") -> None:
         if action == "net":
@@ -698,8 +718,9 @@ class XrayPanel:
         self.state.ensure_sub_all()
         self.register_ddos_port(port)
         self.save()
+        verification_error = await self.sync_live_and_subs()
         notice = t("NOTICE_INBOUND_CREATED")
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice, error=verification_error), inbound))
 
     async def create_quick(self, chat_id: int, msg_id: int, security: str, network: str, port: str = "") -> None:
         if network not in NETWORKS:
@@ -723,9 +744,9 @@ class XrayPanel:
         self.state.ensure_sub_all()
         self.register_ddos_port(number)
         self.save()
-        await self.sync_live_and_subs()
+        verification_error = await self.sync_live_and_subs()
         notice = self.tr()("NOTICE_INBOUND_CREATED")
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice, error=verification_error), inbound))
 
     async def create_custom(self, chat_id: int, msg_id: int) -> None:
         draft = dict(self.draft)
@@ -752,9 +773,9 @@ class XrayPanel:
         self.state.ensure_sub_all()
         self.draft = {}
         self.save()
-        await self.sync_live_and_subs()
+        verification_error = await self.sync_live_and_subs()
         notice = self.tr()("NOTICE_INBOUND_CREATED")
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice), inbound))
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice, error=verification_error), inbound))
 
     def get(self, ident: str) -> XrayInbound:
         item = self.state.inbound(ident)
@@ -780,8 +801,8 @@ class XrayPanel:
         inbound.dirty = False
         self.state.ensure_sub_all()
         self.save()
-        await self.push_subs_live()
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_STARTED")), inbound))
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_STARTED"), error=verification_error), inbound))
 
     async def stop_inbound(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
@@ -798,8 +819,8 @@ class XrayPanel:
         inbound.enable = False
         inbound.dirty = False
         self.save()
-        await self.push_subs_live()
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_STOPPED")), inbound))
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_STOPPED"), error=verification_error), inbound))
 
     async def apply_inbound_changes(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
@@ -815,8 +836,8 @@ class XrayPanel:
         inbound.dirty = False
         self.state.ensure_sub_all()
         self.save()
-        await self.push_subs_live()
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_APPLIED")), inbound))
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_APPLIED"), error=verification_error), inbound))
 
     async def toggle(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
@@ -843,7 +864,8 @@ class XrayPanel:
         inbound.short_ids = [gen_short_id()]
         self.mark_inbound_dirty(inbound)
         self.save()
-        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_KEYS_REGEN")), inbound))
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_KEYS_REGEN"), error=verification_error), inbound))
 
     def ensure_random_sub_port(self) -> int:
         current = int(self.state.sub_port or 0)
@@ -1176,7 +1198,8 @@ class XrayPanel:
         inbound.encryption = chosen
         self.mark_inbound_dirty(inbound)
         self.save()
-        await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(notice=t("XR_ENC_APPLIED", combo=wanted)), inbound))
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(notice=t("XR_ENC_APPLIED", combo=wanted), error=verification_error), inbound))
 
     async def mldsa_action(self, chat_id: int, msg_id: int, ident: str, action: str) -> None:
         inbound = self.get(ident)
@@ -1194,13 +1217,15 @@ class XrayPanel:
             self.state.set_mldsa65(inbound.id, seed, verify)
             self.mark_inbound_dirty(inbound)
             self.save()
-            await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(notice=self.tr()("NOTICE_MI_MLDSA_GENERATED")), inbound))
+            verification_error = await self.verify_subscriptions_after_inbound_change()
+            await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(notice=self.tr()("NOTICE_MI_MLDSA_GENERATED"), error=verification_error), inbound))
             return
         if action == "clear":
             self.state.clear_mldsa65(inbound.id)
             self.mark_inbound_dirty(inbound)
             self.save()
-            await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(notice=self.tr()("NOTICE_MLDSA_REMOVED")), inbound))
+            verification_error = await self.verify_subscriptions_after_inbound_change()
+            await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(notice=self.tr()("NOTICE_MLDSA_REMOVED"), error=verification_error), inbound))
             return
         await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(), inbound))
 
@@ -1216,12 +1241,12 @@ class XrayPanel:
                 log.debug("inbound_remove skipped: %s", exc)
         self.state.remove(ident)
         self.save()
-        await self.push_subs_live()
+        verification_error = await self.verify_subscriptions_after_inbound_change()
         notice = self.tr()("NOTICE_INBOUND_DELETED", remark=remark)
         if self.state.inbounds:
-            await self.render(chat_id, msg_id, xscreens.inbounds_list_screen(self.view(notice=notice)))
+            await self.render(chat_id, msg_id, xscreens.inbounds_list_screen(self.view(notice=notice, error=verification_error)))
         else:
-            await self.render(chat_id, msg_id, xscreens.home(self.view(notice=notice)))
+            await self.render(chat_id, msg_id, xscreens.home(self.view(notice=notice, error=verification_error)))
 
     async def show_links(self, chat_id: int, msg_id: int, ident: str) -> None:
         inbound = self.get(ident)
@@ -1272,22 +1297,22 @@ class XrayPanel:
             bundle = self.sub_bundle(host)
         except Exception:
             bundle = None
-        if bundle is None or not bundle.links:
-            return [], []
         checks: list[tuple[str, Any]] = []
         base = self.state.public_base()
         if self.state.tunnel_enabled and base:
             checks.append(("Tailscale", lambda: subs.validate_public_subscription(
-                bundle.public_url(base), bundle.links, title=self.subscription_title())))
+                bundle.public_url(base) if bundle is not None else "", bundle.links if bundle is not None else [], title=self.subscription_title())))
         if self.state.tgcloud_app_id and self.tgcloud_token:
             try:
-                url = serverless.subscription_url(self.state.tgcloud_app_id, bundle.id, bundle.key)
+                url = serverless.subscription_url(self.state.tgcloud_app_id, bundle.id if bundle is not None else "", bundle.key if bundle is not None else "")
             except serverless.ServerlessError as exc:
                 return [], ["Telegram Serverless: " + exc.message]
             checks.append(("Telegram Serverless", lambda: serverless.validate_subscription(
-                self.tgcloud_token, url, bundle.links, title=self.subscription_title())))
+                self.tgcloud_token, url, bundle.links if bundle is not None else [], title=self.subscription_title())))
         if not checks:
             return [], []
+        if bundle is None or not bundle.links:
+            return [], ["%s: no active Xray configurations are available to verify" % label for label, _check in checks]
         good: list[str] = []
         errors: list[str] = []
         for label, check in checks:
@@ -1731,8 +1756,9 @@ class XrayPanel:
                 self.state.set_mldsa65(inbound.id, seed, verify)
             self.mark_inbound_dirty(inbound)
             self.save()
+            verification_error = await self.verify_subscriptions_after_inbound_change()
             notice = t("XR_SUBSCAN_PICKED_NOTICE", dest=inbound.dest, sni=inbound.sni)
-            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice, error=verification_error), inbound))
             return
         if arg1 == "pick":
             ctx = arg2 or "new"
@@ -1761,7 +1787,8 @@ class XrayPanel:
                 self.state.adopt_scan(inbound.id, host, sni, port)
                 self.mark_inbound_dirty(inbound)
                 self.save()
-                await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
+                verification_error = await self.verify_subscriptions_after_inbound_change()
+                await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice, error=verification_error), inbound))
                 return
             if ctx == "custom":
                 await self.render(chat_id, msg_id, xscreens.custom_menu(self.view(notice=notice)))
@@ -2222,6 +2249,9 @@ class XrayPanel:
         if edited_inbound is not None:
             self.mark_inbound_dirty(edited_inbound)
         self.save()
+        verification_error = ""
+        if edited_inbound is not None:
+            verification_error = await self.verify_subscriptions_after_inbound_change()
         if ident in {"xr_sub_address", "xr_sub_tag", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
             await self.push_subs_live()
         if ident == "xr_subnet_cidr":
@@ -2314,6 +2344,9 @@ class XrayPanel:
             sent_id = await self.send(chat_id, xscreens.subs_screen(self.view(notice=shown_notice, error=err), self.sub_rows()))
             if err and self.state.tunnel_approval_url and sent_id > 0:
                 self.start_funnel_autopilot(chat_id, sent_id, int(self.state.sub_port or 0), self.pending_funnel_port)
+            return
+        if edited_inbound is not None:
+            await self.send(chat_id, xscreens.inbound_screen(self.view(notice=notice, error=verification_error), edited_inbound))
             return
         await self.send(chat_id, await self.screen_for(ident, ctx, notice))
 

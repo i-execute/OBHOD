@@ -177,7 +177,7 @@ def test_run_funnel_captures_interactive_approval_link_without_hanging(tmp_path:
     assert screen_html.count(i18n.t("TAILSCALE_FUNNEL_ENABLE_NOTE", "ru")) == 1
     assert approval_link in screen_html
     assert i18n.t("TAILSCALE_APPROVE_BTN", "ru") in screen_html
-    assert "console.tailscale.com" not in screen_html
+    assert "https://console.tailscale.com/admin/dns" in screen_html
 
 
 def test_single_use_key_recovery_and_dom_up_restarts_sub_server(tmp_path: Path, monkeypatch) -> None:

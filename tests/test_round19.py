@@ -36,6 +36,28 @@ def load_agent():
     return mod
 
 
+def test_inbound_change_forces_subscription_publish_and_reports_provider_errors(tmp_path: Path, monkeypatch) -> None:
+    bot = make_bot(tmp_path)
+    panel = XrayPanel(bot, bot.control)
+    panel.state.tunnel_enabled = True
+    panel.state.tunnel_host = "obhod.tail1234.ts.net:8443"
+    observed = {}
+
+    async def fake_push(force=False):
+        observed["force"] = force
+
+    async def fake_check():
+        observed["checked"] = True
+        return [], ["Tailscale: HTTP 404; stale subscription"]
+
+    monkeypatch.setattr(panel, "push_subs_live", fake_push)
+    monkeypatch.setattr(panel, "check_public_subscriptions", fake_check)
+    result = run(panel.verify_subscriptions_after_inbound_change())
+    assert observed == {"force": True, "checked": True}
+    assert "Tailscale: HTTP 404" in result
+    assert "stale subscription" in result
+
+
 def test_post_update_notification_is_rich_and_localized_in_all_languages(tmp_path: Path) -> None:
     for idx, (lang, expected_state) in enumerate(
         (
