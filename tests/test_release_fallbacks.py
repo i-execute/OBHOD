@@ -71,6 +71,39 @@ def test_an_unreachable_api_sends_the_pinned_core(monkeypatch: pytest.MonkeyPatc
     assert any("unreachable" in line for line in module.LOGS)
 
 
+def test_the_recommended_pins_are_separate_from_xray_minimum() -> None:
+    from BOT import dpi, xray
+
+    xr_agent = load(XRAY_AGENT, "xray_recommended")
+    ft_agent = load(TURN_AGENT, "freeturn_recommended")
+    assert xray.RECOMMENDED_VERSION == xrayrpc.DEFAULT_VERSION == xr_agent.RECOMMENDED_VERSION
+    assert dpi.MIN_CORE_TAG == xr_agent.MIN_CORE_TAG
+    assert xr_agent.core_numbers(xr_agent.RECOMMENDED_VERSION) >= xr_agent.MIN_CORE
+    assert freeturn.RECOMMENDED_VERSION == ft_agent.RECOMMENDED_VERSION == freeturn.FALLBACK_VERSION
+
+
+def test_a_live_xray_release_takes_priority_over_the_recommended_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load(XRAY_AGENT, "xray_live_release")
+    monkeypatch.setattr(module, "latest_tag", lambda timeout=15, use_cache=True: "v26.12.1")
+    monkeypatch.setattr(module, "install_core", lambda version, url, sha256, force: {"version": version})
+    data = module.pinned_with_fallback("latest", "", "", False)
+    assert data["version"] == "v26.12.1"
+    assert data["fallback"] is False
+
+
+def test_xray_official_pinned_release_uses_its_embedded_digest_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load(XRAY_AGENT, "xray_pin_priority")
+    monkeypatch.setattr(module, "machine", lambda: "x86_64")
+    monkeypatch.setattr(module, "core_version", lambda: "")
+    def unexpected_fetch(*args: object) -> str:
+        pytest.fail("the pinned digest must not depend on a remote checksum")
+    monkeypatch.setattr(module, "fetch_digest", unexpected_fetch)
+    monkeypatch.setattr(module, "download", lambda url, target: Path(target).write_bytes(b"wrong archive"))
+    with pytest.raises(module.ScriptError) as caught:
+        module.install_core(module.RECOMMENDED_VERSION, "", "", True)
+    assert caught.value.code == "digest_mismatch"
+
+
 def test_the_pinned_fallback_really_carries_the_hash(monkeypatch: pytest.MonkeyPatch) -> None:
     module = load(XRAY_AGENT, "xray_agent_digest_fallback")
     monkeypatch.setattr(module, "machine", lambda: "x86_64")

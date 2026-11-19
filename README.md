@@ -14,6 +14,22 @@ curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo 
 
 Requires root on a systemd Linux host. Installs into `/opt/obhod`, keeps state in `/var/lib/obhod`, writes `/etc/obhod/obhod.env` with `0600` permissions, and runs `obhod.service`. Run `sudo obhod` in a terminal to open the management TUI.
 
+## Core release versions
+
+By default, OBHOD asks the GitHub releases API for the latest stable release.
+If the API is unavailable or rate-limited, it uses the recommended pinned fallback:
+
+| Component | Recommended fallback (checked 2026-11-04) | Minimum |
+| --- | --- | --- |
+| Xray | `v26.10.31` | `v26.10.31` (security requirement, independent of the fallback) |
+| FreeTurn | `v4.1.2` | No separate minimum-version check is currently enforced |
+
+The pinned releases have SHA-256 digests in both the bot and the standalone remote
+agents. When updating a pin, update both copies and their digests; for FreeTurn,
+also update the bundled installer. The fallback avoids relying on the releases API,
+but downloading Xray still requires access to its release asset. Newer FreeTurn
+releases are used only when their published installer checksum is available.
+
 ## Clients
 
 | Kind | Platform | Client |

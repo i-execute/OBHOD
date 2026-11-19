@@ -43,6 +43,7 @@ FALLBACK_VERSION = "v4.1.2"
 SCRIPT_SHA256 = {
     "v4.1.2": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
 }
+RECOMMENDED_VERSION = FALLBACK_VERSION
 API_URL = "https://api.github.com/repos/%s/releases/latest"
 API_TIMEOUT = 8
 API_TTL = 600

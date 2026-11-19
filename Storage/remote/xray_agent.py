@@ -20,6 +20,7 @@ import zipfile
 
 PROTO = 3
 PINNED = "v26.10.31"
+RECOMMENDED_VERSION = PINNED
 MIN_CORE = (26, 10, 31)
 MIN_CORE_TAG = "v26.10.31"
 MIN_CORE_ADVISORY = "CVE-2026-98432"
@@ -523,13 +524,14 @@ def install_core(version, url, sha256, force):
     if current and current.lstrip("v") == version.lstrip("v") and os.path.isfile(CORE) and not force:
         note("the core is already installed: " + version)
         return {"version": current, "core_path": CORE, "downloaded": False, "sha256": sha256_file(CORE)}
+    official_url = "https://github.com/XTLS/Xray-core/releases/download/%s/Xray-linux-%s.zip" % (version, asset)
     if not url:
-        url = "https://github.com/XTLS/Xray-core/releases/download/%s/Xray-linux-%s.zip" % (version, asset)
+        url = official_url
     expected = (sha256 or "").strip().lower()
+    if not expected and version == PINNED and url == official_url:
+        expected = DIGESTS.get(asset, "")
     if not expected:
         expected = fetch_digest(version, asset, url if not url.startswith("file://") else "")
-    if not expected and version == PINNED:
-        expected = DIGESTS.get(asset, "")
     note("downloading " + url)
     with tempfile.TemporaryDirectory() as tmp:
         archive = os.path.join(tmp, "core.zip")

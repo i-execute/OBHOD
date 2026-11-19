@@ -21,6 +21,7 @@ SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
 PORT_FLOOR = 1024
 PORT_CEIL = 65535
 FALLBACK_VERSION = "v4.1.2"
+RECOMMENDED_VERSION = FALLBACK_VERSION
 DEFAULT_VERSION = FALLBACK_VERSION
 RELEASE_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/{version}/{asset}"
 SCRIPT_URL = RELEASE_URL

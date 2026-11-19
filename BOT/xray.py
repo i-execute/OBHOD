@@ -242,6 +242,7 @@ def tailnet_expiry_label(expiry: object, expired: bool = False, lang: str = i18n
     except ValueError:
         return raw[:19]
 XRAY_VERSION = "v26.10.31"
+RECOMMENDED_VERSION = XRAY_VERSION
 LATEST_CHOICE = "latest"
 VERSION_CHOICES = (XRAY_VERSION, LATEST_CHOICE)
 LOG_LEVELS = ("debug", "info", "warning", "error")

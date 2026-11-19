@@ -10,10 +10,10 @@
     "BOT/shell.py": "9fab9536eee40a0d0f367082130f73da5d5ced3333462c96108afab9dbe37626",
     "BOT/update.py": "07e61a4b1b03f8fa40a969cf1760658357e1f734983829b094d56f9e5a5d9b17",
     "Storage/remote/fail2ban_agent.py": "e9852f965e217a639a61aa372e54f973ba993da9baefdcc9b5d23b393d002be0",
-    "Storage/remote/freeturn_agent.py": "cb1caf97cb8c4d44becda94e28299f2d421ee57a349a177c696702cd42f40350",
+    "Storage/remote/freeturn_agent.py": "21ad33427b07ed6393232390c0c7fe97a1d8dd58ba419bfb51b684f15a9faddc",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "f769499d19bf398f0933a7bc507cc97c19e6190eb9c0cce2b689839c7bdca49d",
-    "Storage/remote/xray_agent.py": "f54fe7a0b63d2b0f4b77e9bc598c6231744ab4ce70965e47fd20d1ab41e78147",
+    "Storage/remote/xray_agent.py": "25486e079194d22578123384a273e916d37313d6861d705767dfd76210926006",
     "tools/obhod_watchdog.py": "ccd3378bfe06c60a0b91ccd9e2b4e3ab19d7196647a935877143031b59d04cbe"
   },
   "policy": [
