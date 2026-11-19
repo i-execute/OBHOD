@@ -55,7 +55,7 @@ def test_the_freeturn_port_list_is_bounded(freeturn) -> None:
 
 def test_the_freeturn_version_never_leaves_the_pins(freeturn) -> None:
     assert freeturn.resolve_version("local") == (freeturn.FALLBACK_VERSION, "local")
-    assert freeturn.resolve_version("") == (freeturn.FALLBACK_VERSION, "default")
+    assert freeturn.resolve_version("", lambda repo: ("", "unreachable")) == (freeturn.FALLBACK_VERSION, "fallback")
     with pytest.raises(freeturn.AgentError):
         freeturn.resolve_version("1.2.3; rm -rf /")
     with pytest.raises(freeturn.AgentError):

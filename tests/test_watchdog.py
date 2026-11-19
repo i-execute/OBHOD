@@ -165,14 +165,14 @@ def test_a_second_freeturn_pin_is_reported(tmp_path: Path) -> None:
     target = clone(tmp_path)
     agent = target / "Storage" / "remote" / "freeturn_agent.py"
     body = agent.read_text(encoding="utf-8").replace(
-        'FALLBACK_VERSION = "v4.1.2"\nSCRIPT_SHA256 = {\n',
-        'FALLBACK_VERSION = "v4.1.2"\nSCRIPT_SHA256 = {\n    "v4.1.0": "b" * 64,\n',
+        'FALLBACK_VERSION = "v4.2.1"\nSCRIPT_SHA256 = {\n',
+        'FALLBACK_VERSION = "v4.2.1"\nSCRIPT_SHA256 = {\n    "v4.1.0": "' + 'b' * 64 + '",\n',
         1,
     )
     agent.write_text(body, encoding="utf-8")
     result = run_tool(target, "policy")
     assert result.returncode == 1
-    assert "exactly one fallback version" in result.stdout
+    assert "minimum and fallback versions" in result.stdout
 
 
 def test_a_digestless_install_is_reported(tmp_path: Path) -> None:

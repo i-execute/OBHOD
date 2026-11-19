@@ -5,16 +5,16 @@
     "BOT/guard.py": "d547dcdc3dfc2b388604c016a9abc623bb8427871a0bb14b9bf6e9840f0121b1",
     "BOT/inline.py": "0bffec21c36fc4620381efa43f44b9aae4b54c45cc51dfd2befb817338f96b7f",
     "BOT/ratelimit.py": "42caff3e46368ba39fff9f7fce015bdb094904e6b8ef4ad9bf95a3eb2b1d9328",
-    "BOT/releases.py": "69e01e035ff2c449fcd2903e0b4bfd5d36c222dfe6cad31722b1ed05fab923ac",
+    "BOT/releases.py": "8a5b8e3c6d8d3cf9bd59f2c30c28314d326e5c6f585c8c5fbd21e097b69132ca",
     "BOT/seclog.py": "63690ada1741536a6d103ae0423c17925e37b0b567e9d85fa2e1bc2cd569be21",
     "BOT/shell.py": "9fab9536eee40a0d0f367082130f73da5d5ced3333462c96108afab9dbe37626",
     "BOT/update.py": "07e61a4b1b03f8fa40a969cf1760658357e1f734983829b094d56f9e5a5d9b17",
     "Storage/remote/fail2ban_agent.py": "e9852f965e217a639a61aa372e54f973ba993da9baefdcc9b5d23b393d002be0",
-    "Storage/remote/freeturn_agent.py": "21ad33427b07ed6393232390c0c7fe97a1d8dd58ba419bfb51b684f15a9faddc",
+    "Storage/remote/freeturn_agent.py": "66d384a674c129cfd4ab4cccc8c04e4a0af7669f07f24203da8b0af6089bc226",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "f769499d19bf398f0933a7bc507cc97c19e6190eb9c0cce2b689839c7bdca49d",
-    "Storage/remote/xray_agent.py": "25486e079194d22578123384a273e916d37313d6861d705767dfd76210926006",
-    "tools/obhod_watchdog.py": "ccd3378bfe06c60a0b91ccd9e2b4e3ab19d7196647a935877143031b59d04cbe"
+    "Storage/remote/xray_agent.py": "7e4dda8dc309c3b9da88ec9c323e8f1a874faff8ab3ce3264c3799d2db512e85",
+    "tools/obhod_watchdog.py": "76fa428ec3a65534daefa93ab31df1958c728d0fcbb90636ecdb66205d46f80f"
   },
   "policy": [
     "dangerous_calls",

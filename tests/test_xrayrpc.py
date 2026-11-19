@@ -131,8 +131,8 @@ def payload(config: dict) -> str:
 
 
 def test_default_version_matches_fallback() -> None:
-    assert DEFAULT_VERSION == "v26.10.31"
-    assert pinned_digest("x86_64") == "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214"
+    assert DEFAULT_VERSION == "v26.11.9"
+    assert pinned_digest("x86_64") == "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82"
     assert PINNED_SHA256["64"] == pinned_digest("x86_64")
 
 
@@ -212,7 +212,7 @@ def test_probe_script_reports_clean_host(sandbox: dict[str, str]) -> None:
     assert body["result"] == "ok"
     data = body["data"]
     assert data["installed"] is False
-    assert data["pinned"] == "v26.10.31"
+    assert data["pinned"] == "v26.11.9"
     assert data["systemd"] is False
     assert data["ports"] == []
 
@@ -239,20 +239,13 @@ def test_install_core_reports_missing_archive(sandbox: dict[str, str]) -> None:
 
 
 def test_install_core_latest_falls_back_to_pinned(sandbox: dict[str, str]) -> None:
-    body = call(
-        "install-core",
-        "--version=latest",
-        "--tag=v26.10.31",
-        "--url=file:///tmp/obhod-missing/latest.zip",
-        "--fallback-url=file://" + sandbox["archive"],
-        "--fallback-sha256=" + sandbox["digest"],
-    )
-    assert body["result"] == "ok", body
-    assert body["data"]["fallback"] is True
-    assert body["data"]["fallback_version"] == "v26.10.31"
-    assert body["data"]["version"] == "26.10.31"
-    assert any("falling back" in line for line in body["logs"])
-    assert Path(sandbox["root"], "usr/local/bin/xray").is_file()
+    body = call("install-core", "--version=latest", "--tag=v26.10.31",
+                "--url=file:///tmp/obhod-missing/latest.zip",
+                "--fallback-url=file://" + sandbox["archive"],
+                "--fallback-sha256=" + sandbox["digest"])
+    assert body["result"] == "err"
+    assert body["code"] == "download_failed"
+    assert not Path(sandbox["root"], "usr/local/bin/xray").is_file()
 
 
 def test_install_core_latest_reports_fallback_log(sandbox: dict[str, str]) -> None:
@@ -286,29 +279,16 @@ def test_install_core_latest_fails_when_fallback_unreachable(sandbox: dict[str, 
     )
     assert body["result"] == "err"
     assert body["code"] == "download_failed"
-    assert any("falling back" in line for line in body["logs"])
+    assert not any("falling back" in line for line in body["logs"])
 
 
 def test_apply_installs_latest_with_fallback(sandbox: dict[str, str]) -> None:
-    config = {
-        "log": {"loglevel": "warning"},
-        "inbounds": [
-            {"tag": "in-1", "listen": "127.0.0.1", "port": free_port(), "protocol": "socks", "settings": {"udp": False}}
-        ],
-        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
-    }
-    body = call(
-        "apply",
-        "--config-b64=" + payload(config),
-        "--version=latest",
-        "--tag=v26.10.31",
-        "--url=file:///tmp/obhod-missing/latest.zip",
-        "--fallback-url=file://" + sandbox["archive"],
-        "--fallback-sha256=" + sandbox["digest"],
-    )
-    assert body["result"] == "ok", body
-    assert body["data"]["fallback"] is True
-    assert body["data"]["version"] == "26.10.31"
+    config = {"log": {"loglevel": "warning"}, "inbounds": [], "outbounds": [{"protocol": "freedom", "tag": "direct"}]}
+    body = call("apply", "--config-b64=" + payload(config), "--version=latest",
+                "--tag=v26.10.31", "--url=file:///tmp/obhod-missing/latest.zip",
+                "--fallback-url=file://" + sandbox["archive"], "--fallback-sha256=" + sandbox["digest"])
+    assert body["result"] == "err"
+    assert body["code"] == "download_failed"
 
 
 def test_install_core_is_idempotent(sandbox: dict[str, str]) -> None:
@@ -453,7 +433,7 @@ def test_control_client_over_fake_shell(sandbox: dict[str, str]) -> None:
     cfg = SshSettings()
     state = asyncio.run(control.probe(cfg))
     assert state.installed is False
-    assert state.pinned == "v26.10.31"
+    assert state.pinned == "v26.11.9"
     asyncio.run(control.install_core(cfg, url="file://" + sandbox["archive"], sha256=sandbox["digest"]))
     applied = asyncio.run(control.apply(cfg, json.dumps(GOOD_CONFIG), restart=False))
     assert applied.config_exists is True

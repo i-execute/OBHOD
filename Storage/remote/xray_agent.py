@@ -19,7 +19,7 @@ import urllib.request
 import zipfile
 
 PROTO = 3
-PINNED = "v26.10.31"
+PINNED = "v26.11.9"
 RECOMMENDED_VERSION = PINNED
 MIN_CORE = (26, 10, 31)
 MIN_CORE_TAG = "v26.10.31"
@@ -41,13 +41,13 @@ ASSETS = {
     "riscv64": "riscv64",
 }
 DIGESTS = {
-    "64": "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214",
-    "arm64-v8a": "1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d",
-    "arm32-v7a": "2387f55239ee7799fd67d5382e79f589c1da07a97d993e86b058f2290b8e456b",
-    "arm32-v6": "28c27bbd262bcc751e2e07115f47ce50d79611289e19e8b499b3065497b0e1ec",
-    "32": "4064a12c7712f28f0a85082be3564c088f7861f2220ddb5e4de409c91837511d",
-    "s390x": "c83452b49eb7c9064ca9afd68d5e0afaa820d0eae25e763306e68665bdc800c4",
-    "riscv64": "1159825b0d448fc7f56ca6f12e4872de2bf80a6639964819e0827fa0ad1283e8",
+    "64": "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82",
+    "arm64-v8a": "64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be",
+    "arm32-v7a": "19c51e08a6562705fb1cb032a84fd87df21d7e27b194f035be7e754dbe3a97b3",
+    "arm32-v6": "955be2b84854ba566b2afc6c20186967e5a0ce7b2078e0f4e9a99e3aac662f38",
+    "32": "225343a01db48e23c1d3091e7fa45971b0d12c20943927846a4a87da374e384d",
+    "s390x": "5657912fbd7429d8a0202dccd8815a297fe49d009216a5359af238ebb6f0db4c",
+    "riscv64": "296884b8601ee95dba31e6664c6121d80e33697382a1f564f05b028e61601a84",
 }
 API_URL = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 API_TTL = 600
@@ -434,7 +434,7 @@ def latest_tag(timeout=15, use_cache=True):
             headers={"User-Agent": "curl/8.5.0", "Accept": "application/vnd.github+json"},
         )
         with open_url(request, timeout) as response:
-            body = json.loads(response.read(65536).decode("utf-8"))
+            body = json.loads(response.read(1024 * 1024).decode("utf-8"))
         candidate = str(body.get("tag_name", "") or "").strip()
         if candidate.startswith("v"):
             tag = candidate
@@ -995,7 +995,7 @@ def payload_of(flags, name):
 
 
 def version_of(flags):
-    version = str(flags.get("version", PINNED)).strip()
+    version = str(flags.get("version", "latest")).strip()
     if version.lower() in {"latest", "auto", ""}:
         return "latest"
     if not version.startswith("v"):
@@ -1013,42 +1013,24 @@ def wants_latest(version):
 
 def pinned_with_fallback(version, url, sha256, force, tag="", fallback_url="", fallback_sha256=""):
     resolved = version
-    requested_latest = wants_latest(version)
-    if requested_latest:
+    fallback = False
+    if wants_latest(version):
         resolved = str(tag or "").strip() or latest_tag()
         if resolved:
             note("latest release: " + resolved)
         else:
             resolved = PINNED
+            fallback = True
             reason = API_REASON or "unreachable"
             if reason == "rate_limited":
                 note("the github api is rate limited, using the pinned " + PINNED)
             else:
                 note("the github api is unreachable, using the pinned " + PINNED)
-    try:
-        data = install_core(resolved, url, sha256, force)
-        data["fallback"] = False
-        return data
-    except ScriptError as exc:
-        if exc.code != "download_failed" or not requested_latest:
-            raise
-        note("the download of " + resolved + " failed, falling back to " + PINNED)
-        try:
-            data = install_core(PINNED, str(fallback_url or ""), str(fallback_sha256 or ""), True)
-        except ScriptError as pinned_exc:
-            if pinned_exc.code != "download_failed":
-                raise
-            spare = latest_tag(use_cache=False)
-            if not spare or spare == PINNED:
-                raise
-            note("the pinned release is gone from github, using the live one: " + spare)
-            data = install_core(spare, str(fallback_url or ""), str(fallback_sha256 or ""), True)
-            data["fallback"] = True
-            data["fallback_version"] = spare
-            return data
-        data["fallback"] = True
+    data = install_core(resolved, url, sha256, force)
+    data["fallback"] = fallback
+    if fallback:
         data["fallback_version"] = PINNED
-        return data
+    return data
 
 
 OFF_TEXT = {"0", "no", "false", "off", "disabled", "none", ""}
