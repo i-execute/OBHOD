@@ -1025,6 +1025,10 @@ class EN:
     DDOS_BTN_ALLOW = "Allow IP or CIDR"
     DDOS_RKN_SYNCING = "Syncing RKN and scanner lists"
     DDOS_RKN_SYNCED = "RKN lists updated: {v4} IPv4, {v6} IPv6 ({sources} feeds)"
+    DDOS_RKN_PARTIAL = 'Partial feed failure ({errors}); previous ranges retained. Counts above are fetched, not live totals.'
+    DDOS_LOGS = 'Service logs'
+    DDOS_LOGS_NOTE = 'Systemd service journal, not individual blocked packets.'
+    DDOS_RKN_COUNTS_CACHE = 'Range counts are from the saved cache, not measured live.'
     DDOS_BAD_ENTRY = "Enter a valid IP, CIDR, -IP to remove, or clear"
     DDOS_ALERTS = "attack alerts"
     DDOS_TRAFFIC = "live load"
@@ -2506,6 +2510,10 @@ class RU:
     DDOS_BTN_ALLOW = "Исключение IP"
     DDOS_RKN_SYNCING = "Обновление списков РКН и сканеров"
     DDOS_RKN_SYNCED = "Списки РКН обновлены: {v4} IPv4, {v6} IPv6 ({sources} списков)"
+    DDOS_RKN_PARTIAL = 'Ошибки источников: {errors}; предыдущие сети сохранены. Выше - число полученных, не итоговых сетей.'
+    DDOS_LOGS = 'Логи службы'
+    DDOS_LOGS_NOTE = 'Журнал службы systemd, не журнал отдельных блокировок.'
+    DDOS_RKN_COUNTS_CACHE = 'Число сетей указано по сохранённому кэшу, а не по текущей таблице.'
     DDOS_BAD_ENTRY = "Введите корректный IP, CIDR, -IP для снятия или clear"
     DDOS_ALERTS = "уведомления"
     DDOS_TRAFFIC = "трафик"
@@ -3986,6 +3994,10 @@ class ZH:
     DDOS_BTN_ALLOW = "白名单 IP"
     DDOS_RKN_SYNCING = "正在同步审查扫描列表"
     DDOS_RKN_SYNCED = "列表已更新: {v4} IPv4, {v6} IPv6 ({sources} 源)"
+    DDOS_RKN_PARTIAL = '部分源失败（{errors}）；已保留旧网段。上述数量为获取数量，并非实时总数。'
+    DDOS_LOGS = '服务日志'
+    DDOS_LOGS_NOTE = 'Systemd 服务日志，不包含逐包拦截记录。'
+    DDOS_RKN_COUNTS_CACHE = '网段数量来自缓存，而非实时表。'
     DDOS_BAD_ENTRY = "请输入有效 IP、CIDR、-IP 移除或 clear 清空"
     DDOS_ALERTS = "攻击通知"
     DDOS_TRAFFIC = "实时负载"

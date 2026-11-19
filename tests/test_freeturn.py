@@ -362,8 +362,7 @@ def test_agent_ensure_apply_port_open_handles_normalized_flags_and_nft(monkeypat
     monkeypatch.setattr(agent, "guard_backend", lambda: "ufw")
     monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/sbin/" + name)
     agent.ensure_apply_port_open({"listen_port": "56000", "mode": "udp"}, {"data": {}})
-    assert ["nft", "flush", "set", "inet", "obhod_ddos", "conn_flood"] in executed
-    assert ["nft", "insert", "rule", "inet", "obhod_ddos", "input", "udp", "dport", "56000", "accept"] in executed
+    assert not any(cmd[:5] == ["nft", "insert", "rule", "inet", "obhod_ddos"] for cmd in executed)
     assert ["nft", "insert", "rule", "inet", "filter", "input", "udp", "dport", "56000", "accept"] in executed
     assert ["ufw", "--force", "delete", "1"] in executed
     assert ["ufw", "allow", "56000/udp"] in executed

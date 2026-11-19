@@ -440,7 +440,12 @@ def fetch_rkn_subnets(
         except Exception as exc:
             errors.append(f"{name}: {type(exc).__name__}")
             continue
-        collected.extend(lines)
+        valid_v4, valid_v6 = sanitize_rkn_networks(lines)
+        if not valid_v4 and not valid_v6:
+            errors.append(f"{name}: empty_or_invalid")
+            continue
+        collected.extend(valid_v4)
+        collected.extend(valid_v6)
         ok_sources += 1
     v4, v6 = sanitize_rkn_networks(collected, extra_protected=extra_protected)
     if not v4 and not v6:
@@ -609,7 +614,7 @@ def nft_table(
             "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_ICMP, policy.ban_timeout, policy.set_size),
             "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_SCAN, policy.ban_timeout, policy.set_size),
             "  chain input {",
-            "    type filter hook input priority raw; policy accept;",
+            "    type filter hook input priority -10; policy accept;",
             '    iifname "lo" accept',
             "    ct state invalid counter drop",
             "    tcp flags & (fin|syn|rst|ack) == 0x0 counter drop",

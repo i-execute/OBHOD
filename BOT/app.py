@@ -677,12 +677,12 @@ class Bot:
                 self.state.ddos = policy.to_dict()
                 self.save()
             status = await ddos_call(self.guard, self.state.ssh, ddos_argv("status"), 60)
-            if not status.installed or not status.table or not status.enabled or set(status.policy.ports) != set(policy.ports):
+            if policy.enabled and (not status.installed or not status.table or not status.enabled or set(status.policy.ports) != set(policy.ports)):
                 status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
             self.ddos_state = status
             self.debug.ddos = status
-            outcomes["ddos"] = "on" if status.enabled else "off"
-            if self.app is not None and status.enabled and status.rkn_enabled and self.quiet("rkn_auto_sync", 43200.0):
+            outcomes["ddos"] = "on" if policy.enabled and status.enabled and status.table else "off"
+            if self.app is not None and policy.enabled and status.enabled and status.table and status.rkn_enabled and self.quiet("rkn_auto_sync", 43200.0):
                 await self.track(self.debug.auto_sync_rkn(), "rkn_boot_sync")
         except Exception as exc:
             log.debug("auto ddos skipped: %s", exc)

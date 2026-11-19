@@ -1729,15 +1729,6 @@ def _nft_chain_blocks_port(joined, proto, port):
 def nft_open_port(port, protos):
     if not shutil.which("nft") or not 1 <= int(port or 0) <= 65535:
         return
-    ddos_nft_file_sync(port, protos)
-    code, ddos_body = run_tool(["nft", "list", "table", "inet", "obhod_ddos"], timeout=15)
-    if code == 0 and ddos_body:
-        for flood_set in ("conn_flood", "udp_flood", "port_scan"):
-            run_tool(["nft", "flush", "set", "inet", "obhod_ddos", flood_set], timeout=10)
-        for proto in protos:
-            needle = "%s dport %d accept" % (proto, port)
-            if needle not in ddos_body:
-                run_tool(["nft", "insert", "rule", "inet", "obhod_ddos", "input", proto, "dport", str(port), "accept"], timeout=10)
     code, ruleset = run_tool(["nft", "list", "ruleset"], timeout=15)
     if code != 0 or not ruleset:
         return
