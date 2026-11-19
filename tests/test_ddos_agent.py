@@ -348,4 +348,41 @@ def test_ddos_rules_exempt_installed_freeturn_port(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr("builtins.open", fake_open, raising=False)
     rules = module.rules_text(module.policy_from({}, {}), {})
     assert "udp dport 56696 accept" in rules
-    assert rules.index("udp dport 56696 accept") < rules.index("ct state invalid counter drop")
+    assert rules.index("udp dport 56696 accept") > rules.index("ip saddr @rkn_v4 counter drop")
+
+
+def test_protocol_matches_bot_transport(bench) -> None:
+    from BOT.xrayrpc import parse_response
+
+    response = parse_response(json.dumps(bench.run("status")))
+    assert response.result == "ok"
+    bad = parse_response(json.dumps(bench.run("unknown")))
+    assert bad.result == "err"
+    assert bad.code == "bad_command"
+
+
+def test_atomic_replacement_keeps_loaded_rules_on_failure(bench) -> None:
+    assert bench.run("install")["ok"]
+    before = bench.loaded.read_bytes()
+    bench.fail.touch()
+    assert not bench.run("install", "--ports=9999")["ok"]
+    assert bench.loaded.read_bytes() == before
+    commands = bench.log.read_text()
+    assert "delete table inet obhod_ddos" not in commands
+
+
+def test_partial_sync_preserves_previous_subnets(bench) -> None:
+    module = bench.module
+    flags = module.parse_flags(bench.argv())
+    module.write_atomic(module.rkn_path(flags), json.dumps({"v4": ["5.143.224.0/24"], "v6": []}))
+    flags.update({"rkn_zhex": __import__("BOT.antiddos", fromlist=["encode_rkn_zhex"]).encode_rkn_zhex(["37.9.13.0/24"], []), "preserve_existing": "1"})
+    module.rkn_sync(flags)
+    stored = module.read_json(module.rkn_path(flags))
+    assert "5.143.224.0/24" in stored["v4"]
+    assert "37.9.13.0/24" in stored["v4"]
+
+
+def test_missing_live_table_is_not_active(bench) -> None:
+    result = bench.run("status")
+    assert result["data"]["rkn_enabled"] is False
+    assert result["data"]["rkn_v4_count"] == 0

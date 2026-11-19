@@ -172,9 +172,12 @@ class GuardClient:
     def __init__(self, control: XrayControl | None = None) -> None:
         self.control = control or XrayControl()
 
-    async def _call(self, cfg: SshSettings, script: Path, name: str, argv: list[str], timeout: float = 180.0) -> XrayResponse:
+    async def _call(self, cfg: SshSettings, script: Path, name: str, argv: list[str], timeout: float = 180.0, stdin: bytes | None = None) -> XrayResponse:
         source = script_code(script, name)
-        response = await self.control.call(cfg, argv, timeout=timeout, source=source)
+        kwargs = {"timeout": timeout, "source": source}
+        if stdin is not None:
+            kwargs["stdin"] = stdin
+        response = await self.control.call(cfg, argv, **kwargs)
         response.raise_for_status()
         return response
 

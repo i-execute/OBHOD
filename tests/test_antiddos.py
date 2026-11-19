@@ -22,7 +22,7 @@ def test_the_table_is_syntactically_shaped() -> None:
     assert body.count("{") == body.count("}")
     for name in (antiddos.SET_SYN, antiddos.SET_CONN, antiddos.SET_UDP, antiddos.SET_SCAN):
         assert "set %s {" % name in body
-    assert "hook input priority raw" in body
+    assert "hook input priority -10" in body
 
 
 def test_every_counter_rule_is_counted() -> None:

@@ -338,6 +338,10 @@ class DDosError(Exception):
 
 
 def emit(payload):
+    payload["proto"] = 3
+    payload["result"] = "ok" if payload.get("ok") else "err"
+    if not payload.get("ok"):
+        payload["msg"] = str(payload.get("message", "") or "")
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
@@ -776,11 +780,10 @@ def rules_text(policy, flags=None):
     lines.extend(
         [
             "  chain input {",
-            "    type filter hook input priority raw; policy accept;",
+            "    type filter hook input priority -10; policy accept;",
             '    iifname "lo" accept',
         ]
     )
-    lines.extend(freeturn_accept_lines(flags))
     lines.extend(
         [
             "    ct state invalid counter drop",
@@ -804,6 +807,7 @@ def rules_text(policy, flags=None):
         lines.append("    ip6 saddr @rkn_v6 counter drop")
     for name in SETS:
         lines.append("    ip saddr @%s counter drop" % name)
+    lines.extend(freeturn_accept_lines(flags))
     lines.extend(
         [
             "    ct state new tcp flags & (fin|syn|rst|ack) == syn update @syn_flood { ip saddr limit rate over %d/second burst %d packets } counter accept" % (policy["syn_rate"], policy["syn_burst"]),
@@ -1007,7 +1011,7 @@ def status(flags):
     present = bool(body)
     counters = counters_of(body) if present else {}
     rkn_v4, rkn_v6, rkn_updated = load_rkn_subnets(flags)
-    rkn_on = bool(policy.get("rkn_enabled", True))
+    rkn_on = bool(present and ("@rkn_v4" in body or "@rkn_v6" in body))
     payload = {
         "installed": os.path.isfile(rules_path(flags)),
         "enabled": bool(policy.get("enabled", True)),
@@ -1043,16 +1047,9 @@ def apply_rules(flags, policy):
         write_atomic(target, body)
         raise DDosError("no_nft", "nft is not installed, the rules were written but not loaded", "apply")
     check = os.path.join(os.path.dirname(target) or ".", ".obhod-check.nft")
-    write_atomic(check, body)
-    try:
-        code, out, err = run([tool, "-c", "-f", check])
-        if code != 0:
-            raise DDosError("bad_rules", (err or out or "nft refused the ruleset").strip()[:200], "check")
-    finally:
-        try:
-            os.unlink(check)
-        except OSError:
-            pass
+    present, _why = table_text(flags)
+    transaction = ("delete table inet %s\n" % TABLE if present else "") + body
+    write_atomic(check, transaction)
     previous = ""
     if os.path.isfile(target):
         try:
@@ -1060,14 +1057,26 @@ def apply_rules(flags, policy):
                 previous = handle.read()[:MAX_OUTPUT]
         except OSError:
             previous = ""
-    write_atomic(target, body)
-    run([tool, "delete", "table", "inet", TABLE])
-    code, out, err = run([tool, "-f", target])
-    if code != 0:
-        if previous:
-            write_atomic(target, previous)
-            run([tool, "-f", target])
-        raise DDosError("apply", (err or out or "nft did not load the ruleset").strip()[:200], "apply")
+    try:
+        code, out, err = run([tool, "-c", "-f", check])
+        if code != 0:
+            raise DDosError("bad_rules", (err or out or "nft refused the ruleset").strip()[:200], "check")
+        write_atomic(target, body)
+        code, out, err = run([tool, "-f", check])
+        if code != 0:
+            if previous:
+                write_atomic(target, previous)
+            else:
+                try:
+                    os.unlink(target)
+                except OSError:
+                    pass
+            raise DDosError("apply", (err or out or "nft did not load the ruleset").strip()[:200], "apply")
+    finally:
+        try:
+            os.unlink(check)
+        except OSError:
+            pass
     return body
 
 
@@ -1088,7 +1097,7 @@ def enable_unit(flags):
     if not tool:
         return {"written": target, "enabled": False, "note": "systemd is not available"}
     run([tool, "daemon-reload"])
-    code, out, err = run([tool, "enable", "--now", os.path.basename(target)])
+    code, out, err = run([tool, "enable", os.path.basename(target)])
     return {"written": target, "enabled": code == 0, "note": (err or out).strip()[:160]}
 
 
@@ -1101,6 +1110,8 @@ def install(flags):
     write_atomic(conf_path(flags), json.dumps(policy, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
     sysctl_result = apply_sysctl(flags)
     unit_result = enable_unit(flags)
+    if policy.get("enabled") and not unit_result.get("enabled"):
+        raise DDosError("unit_failed", "rules are loaded but persistence could not be enabled: " + str(unit_result.get("note") or "systemd unavailable"), "unit")
     payload = status(flags)
     payload["sysctl"] = sysctl_result
     payload["unit"] = unit_result
@@ -1115,6 +1126,9 @@ def rkn_sync(flags):
     v4, v6 = decode_rkn_zhex(blob)
     if not v4 and not v6:
         raise DDosError("bad_rkn_bundle", "the rkn subnet bundle is empty or invalid", "rkn-sync")
+    if truth(flags.get("preserve_existing", "0"), False):
+        old_v4, old_v6, _ = load_rkn_subnets(flags)
+        v4, v6 = sanitize_rkn_networks([*old_v4, *old_v6, *v4, *v6])
     stamp = utc_stamp()
     write_atomic(
         rkn_path(flags),
@@ -1205,6 +1219,9 @@ def disable(flags):
 
 def remove(flags):
     disable(flags)
+    policy = policy_from(read_json(conf_path(flags)), {})
+    policy["enabled"] = False
+    write_atomic(conf_path(flags), json.dumps(policy, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
     tool = binary(flags, "systemctl", SYSTEMCTL)
     if tool:
         run([tool, "disable", "--now", os.path.basename(unit_path(flags))])
@@ -1344,6 +1361,16 @@ def render(flags):
     return {"rules": rules_text(policy, flags), "sysctl": sysctl_text(), "policy": policy}
 
 
+def service_logs(flags):
+    tool = shutil.which("journalctl")
+    if not tool:
+        raise DDosError("no_journal", "journalctl is not installed", "logs")
+    code, out, err = run([tool, "-u", os.path.basename(unit_path(flags)), "-n", "40", "--no-pager", "-o", "short-iso"], timeout=15)
+    if code != 0:
+        raise DDosError("logs_failed", (err or "cannot read service journal")[:200], "logs")
+    return {"text": out[-3000:] or "No journal entries"}
+
+
 def main(argv):
     command = argv[0] if argv else "status"
     try:
@@ -1370,6 +1397,8 @@ def main(argv):
             payload = remove(flags)
         elif command == "disable":
             payload = disable(flags)
+        elif command == "logs":
+            payload = service_logs(flags)
         elif command == "probe":
             payload = probe(flags)
         elif command == "info":

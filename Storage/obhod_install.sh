@@ -1107,8 +1107,12 @@ cmd_install() {
   write_env "$token" "$api_id" "$api_hash" "$admin_id"
   ok_line "config $ENV_FILE, mode 600, subscription $SUB_PORT, api $API_PORT"
   if [ "$DEV" = "0" ] && [ -f "$PREFIX/Storage/remote/ddos_agent.py" ]; then
-    if "${PYTHON_BIN:-python3}" "$PREFIX/Storage/remote/ddos_agent.py" install --ports="22,443,${SUB_PORT}" >/dev/null 2>&1; then
+    local ddos_result
+    ddos_result="$("${PYTHON_BIN:-python3}" "$PREFIX/Storage/remote/ddos_agent.py" install --ports="22,443,${SUB_PORT}" 2>/dev/null)" || true
+    if printf '%s' "$ddos_result" | "${PYTHON_BIN:-python3}" -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("ok") and d.get("data",{}).get("table") and d.get("data",{}).get("enabled") else 1)' 2>/dev/null; then
       ok_line "anti-ddos and rkn-guard active out of the box"
+    else
+      warn_line "anti-ddos/rkn-guard not confirmed; check Tools > Anti-DDoS"
     fi
   fi
   write_service
