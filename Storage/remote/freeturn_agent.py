@@ -39,9 +39,11 @@ ensure_sbin_path()
 PROTO = 3
 SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
 SCRIPT_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/%s/install.sh"
-FALLBACK_VERSION = "v4.1.2"
+MIN_VERSION = "v4.1.2"
+FALLBACK_VERSION = "v4.2.1"
 SCRIPT_SHA256 = {
     "v4.1.2": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
+    "v4.2.1": "e17725c29237d344c1607d1391c91d977521834508640dc158f9b21c06414916",
 }
 RECOMMENDED_VERSION = FALLBACK_VERSION
 API_URL = "https://api.github.com/repos/%s/releases/latest"
@@ -193,7 +195,7 @@ def api_tag(repo=SCRIPT_REPO, timeout=API_TIMEOUT):
     reason = "unreachable"
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read(65536).decode("utf-8"))
+            payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
         candidate = str(payload.get("tag_name", "") or "").strip()
         if candidate and PIN_RE.match(candidate):
             tag = candidate
@@ -264,27 +266,30 @@ def release_digest(tag):
     return digest
 
 
+def require_supported_version(tag):
+    if not PIN_RE.fullmatch(tag):
+        raise AgentError("bad_arg", "the version must be latest or vX.Y.Z", "init")
+    if tuple(map(int, tag[1:].split("."))) < tuple(map(int, MIN_VERSION[1:].split("."))):
+        raise AgentError("bad_arg", "freeturn %s is below the minimum %s" % (tag, MIN_VERSION), "init")
+
+
 def resolve_version(requested, lookup=None, digest_lookup=None):
     text = str(requested or "").strip().lower()
     if text == "local":
         return FALLBACK_VERSION, "local"
-    if text in {"", "default"}:
-        return FALLBACK_VERSION, "default"
-    if text not in {"latest", "auto"}:
+    if text not in {"", "default", "latest", "auto"}:
         tag = text if text.startswith("v") else "v" + text
-        if not PIN_RE.match(tag):
-            raise AgentError("bad_arg", "the version must be latest or vX.Y.Z", "init")
+        require_supported_version(tag)
         if tag not in SCRIPT_SHA256:
             raise AgentError("not_pinned", "the install script of %s is not pinned yet" % tag, "fetch")
         return tag, "pinned"
     found, reason = (lookup or api_tag)(SCRIPT_REPO)
     if not found:
         return FALLBACK_VERSION, "fallback"
-    if found in SCRIPT_SHA256:
+    require_supported_version(found)
+    if found in SCRIPT_SHA256 or (digest_lookup or release_digest)(found):
         return found, "api"
-    if (digest_lookup or release_digest)(found):
-        return found, "api"
-    return FALLBACK_VERSION, "fallback"
+    raise AgentError("not_pinned", "the install script of %s has no published digest" % found, "fetch")
 
 
 def allowed_url(url):
@@ -419,8 +424,7 @@ def _verified_tag(flags):
     raw = str(flags.get("version", "") or "").strip().lower()
     if len(explicit) == 64 and all(ch in "0123456789abcdef" for ch in explicit) and raw not in {"", "default", "latest", "auto", "local"}:
         tag = raw if raw.startswith("v") else "v" + raw
-        if not PIN_RE.match(tag):
-            raise AgentError("bad_arg", "the version must be latest or vX.Y.Z", "init")
+        require_supported_version(tag)
         return tag
     return ""
 
@@ -1978,8 +1982,7 @@ def reapply_argv(installed, root=INSTALL_ROOT):
         "listen_port": str(installed.get("LISTEN_PORT", "56000") or "56000").strip(),
         "mode": str(installed.get("PROXY_MODE", "") or installed.get("MODE", "udp") or "udp").strip().lower(),
         "obf_profile": obf_profile,
-        "version": "local" if ver_raw == "local" else FALLBACK_VERSION,
-        "script_sha256": DEFAULT_SHA256,
+        "version": "local" if ver_raw == "local" else "latest",
     }
     if backend == "new":
         plan_flags["wg_port"] = str(installed.get("WG_PORT", "51820") or "51820").strip()
@@ -1998,7 +2001,11 @@ def reapply_argv(installed, root=INSTALL_ROOT):
         disk_ver = ""
     if disk_ver == "latest":
         plan_flags["update"] = "1"
-    return command_argv("apply", plan_flags, lookup=lambda _repo: (FALLBACK_VERSION, ""))
+    installed_tag = ver_raw if ver_raw.startswith("v") else "v" + ver_raw
+    if PIN_RE.fullmatch(installed_tag):
+        require_supported_version(installed_tag)
+        return command_argv("apply", plan_flags, lookup=lambda _repo: (installed_tag, ""))
+    return command_argv("apply", plan_flags)
 
 
 def heal_runtime(script, command, flags, body):

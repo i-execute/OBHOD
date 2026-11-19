@@ -398,8 +398,8 @@ async def test_control_sends_the_pinned_script_flags() -> None:
     argv, timeout = shell.calls[0]
     assert argv[0].endswith("python3") or "python" in argv[0]
     joined = " ".join(argv)
-    assert "--script-url=https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/install.sh" in joined
-    assert "--script-sha256=91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100" in joined
+    assert "--script-url=" + freeturn.script_url(freeturn.FALLBACK_VERSION) in joined
+    assert "--script-sha256=" + freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION] in joined
     assert timeout == 120
 
 
@@ -702,7 +702,8 @@ def test_the_bot_resolves_latest_and_falls_back_to_the_pin(monkeypatch: pytest.M
     assert freeturn.resolve_version("latest") == ("v4.1.2", "api")
     monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.2.0", ""))
     monkeypatch.setattr(freeturn, "release_digest", lambda tag: "")
-    assert freeturn.resolve_version("latest") == (freeturn.FALLBACK_VERSION, "not_pinned")
+    with pytest.raises(FtError, match="no published"):
+        freeturn.resolve_version("latest")
     monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("", "rate_limited"))
     assert freeturn.resolve_version("latest") == (freeturn.FALLBACK_VERSION, "fallback")
 
@@ -712,13 +713,12 @@ def test_the_bot_resolves_a_requested_version_without_the_api(monkeypatch: pytes
         raise AssertionError("the api must not be called for a pinned version")
 
     monkeypatch.setattr(freeturn.releases, "latest_tag", explode)
-    assert freeturn.resolve_version("") == (freeturn.FALLBACK_VERSION, "pinned")
     assert freeturn.resolve_version("4.1.2") == ("v4.1.2", "pinned")
     assert freeturn.resolve_version("local") == (freeturn.FALLBACK_VERSION, "local")
     for gone in ("v4.1.0", "v4.2.0"):
         with pytest.raises(FtError) as caught:
             freeturn.resolve_version(gone)
-        assert caught.value.code == "not_pinned", gone
+        assert caught.value.code == ("bad_arg" if gone == "v4.1.0" else "not_pinned"), gone
 
 
 def test_a_plan_version_must_be_pinned() -> None:
@@ -729,7 +729,7 @@ def test_a_plan_version_must_be_pinned() -> None:
     for gone in ("v4.1.0", "v4.2.0"):
         with pytest.raises(FtError) as caught:
             FtConfig(version=gone).check()
-        assert caught.value.code == "not_pinned", gone
+        assert caught.value.code == ("bad_arg" if gone == "v4.1.0" else "not_pinned"), gone
     with pytest.raises(FtError) as wrong:
         FtConfig(version="banana").check()
     assert wrong.value.code == "bad_arg"
@@ -766,8 +766,8 @@ def test_the_local_version_keeps_its_flag_and_a_pinned_script(monkeypatch: pytes
 
 def test_the_version_choices_are_all_pinned() -> None:
     assert freeturn.VERSION_CHOICES == ("latest", "v4.1.2")
-    assert freeturn.FALLBACK_VERSION in freeturn.VERSION_CHOICES
-    assert freeturn.PINNED_SCRIPT_SHA256 == {freeturn.FALLBACK_VERSION: freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION]}
+    assert freeturn.MIN_VERSION in freeturn.VERSION_CHOICES
+    assert set(freeturn.PINNED_SCRIPT_SHA256) == {freeturn.MIN_VERSION, freeturn.FALLBACK_VERSION}
     for item in freeturn.VERSION_CHOICES:
         if item == "latest":
             continue
@@ -780,17 +780,18 @@ def test_the_agent_resolves_the_version_the_same_way() -> None:
     assert module.SCRIPT_SHA256 == freeturn.PINNED_SCRIPT_SHA256
     assert module.DEFAULT_URL.endswith("/%s/install.sh" % module.FALLBACK_VERSION)
     assert module.DEFAULT_SHA256 == module.SCRIPT_SHA256[module.FALLBACK_VERSION]
-    assert module.resolve_version("")[0] == module.FALLBACK_VERSION
+    assert module.resolve_version("", lookup=lambda repo: ("", "rate_limited"))[0] == module.FALLBACK_VERSION
     assert module.resolve_version("v4.1.2") == ("v4.1.2", "pinned")
     assert module.resolve_version("local") == (module.FALLBACK_VERSION, "local")
     assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.2", "")) == ("v4.1.2", "api")
     module.release_digest = lambda tag: ""
-    assert module.resolve_version("latest", lookup=lambda repo: ("v4.2.0", ""))[0] == module.FALLBACK_VERSION
+    with pytest.raises(module.AgentError, match="no published"):
+        module.resolve_version("latest", lookup=lambda repo: ("v4.2.0", ""))
     assert module.resolve_version("latest", lookup=lambda repo: ("", "rate_limited"))[0] == module.FALLBACK_VERSION
     for gone in ("v4.1.0", "v4.2.0"):
         with pytest.raises(module.AgentError) as caught:
             module.resolve_version(gone)
-        assert caught.value.code == "not_pinned", gone
+        assert caught.value.code == ("bad_arg" if gone == "v4.1.0" else "not_pinned"), gone
 
 
 def test_the_agent_passes_the_resolved_tag_to_the_script(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -903,24 +904,25 @@ def test_the_agent_api_lookup_gets_a_real_timeout(monkeypatch: pytest.MonkeyPatc
 
 
 def test_only_one_freeturn_version_is_pinned() -> None:
-    assert list(freeturn.PINNED_SCRIPT_SHA256) == ["v4.1.2"]
-    assert freeturn.FALLBACK_VERSION == "v4.1.2"
-    assert freeturn.DEFAULT_VERSION == "v4.1.2"
+    assert set(freeturn.PINNED_SCRIPT_SHA256) == {"v4.1.2", "v4.2.1"}
+    assert freeturn.MIN_VERSION == "v4.1.2"
+    assert freeturn.FALLBACK_VERSION == freeturn.DEFAULT_VERSION == "v4.2.1"
     assert freeturn.VERSION_CHOICES == ("latest", "v4.1.2")
     module = load_agent()
-    assert list(module.SCRIPT_SHA256) == ["v4.1.2"]
-    assert module.FALLBACK_VERSION == "v4.1.2"
+    assert module.SCRIPT_SHA256 == freeturn.PINNED_SCRIPT_SHA256
+    assert module.MIN_VERSION == freeturn.MIN_VERSION
+    assert module.FALLBACK_VERSION == freeturn.FALLBACK_VERSION
 
 
 def test_the_dropped_version_is_refused_everywhere() -> None:
     for version in ("v4.1.0", "4.1.0"):
         with pytest.raises(FtError) as caught:
             freeturn.resolve_version(version)
-        assert caught.value.code == "not_pinned"
+        assert caught.value.code == "bad_arg"
     module = load_agent()
     with pytest.raises(module.AgentError) as caught:
         module.resolve_version("v4.1.0")
-    assert caught.value.code == "not_pinned"
+    assert caught.value.code == "bad_arg"
 
 
 def test_the_plan_passes_the_published_digest_of_a_newer_release(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -937,10 +939,9 @@ def test_the_plan_falls_back_when_the_newer_release_publishes_no_digest(monkeypa
     control = FtControl(shell=FakeShell())
     monkeypatch.setattr(freeturn.releases, "latest_tag", lambda repo: ("v4.2.0", ""))
     monkeypatch.setattr(freeturn, "release_digest", lambda tag: "")
-    items = control.plan_argv(["apply", "--version=latest"])
-    assert "--version=v4.2.0" not in items
-    assert "--version=" + freeturn.FALLBACK_VERSION in items
-    assert "--script-sha256=" + freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION] in items
+    with pytest.raises(FtError) as caught:
+        control.plan_argv(["apply", "--version=latest"])
+    assert caught.value.code == "not_pinned"
 
 
 def test_the_agent_installs_the_newest_release_with_its_published_digest(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1043,7 +1044,7 @@ def test_bundled_install_script_seeds_offline_from_streamed_agent_code(tmp_path:
     assert b64_path.is_file()
     raw_b64 = b64_path.read_text(encoding="ascii")
     unpacked = gzip_mod.decompress(b64_mod.b64decode("".join(raw_b64.split())))
-    expected_sha = freeturn.PINNED_SCRIPT_SHA256["v4.1.2"]
+    expected_sha = freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION]
     assert hash_mod.sha256(unpacked).hexdigest() == expected_sha
     code_str = freeturn.agent_code()
     assert 'BUNDLED_INSTALL_B64 = ""' not in code_str
@@ -1054,8 +1055,8 @@ def test_bundled_install_script_seeds_offline_from_streamed_agent_code(tmp_path:
         "exec(compile(open(%r, encoding='utf-8').read(), '<stream>', 'exec'), ns)\n"
         "ns['CACHE_DIR'] = %r\n"
         "def _no_net(*a, **k): raise OSError('offline')\n"
-        "ns['urlopen'] = _no_net\n"
-        "seeded = ns['download']('https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/install.sh', %r)\n"
+        "ns['urllib'].request.urlopen = _no_net\n"
+        "seeded = ns['download']('https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.2.1/install.sh', %r)\n"
         "assert os.path.isfile(seeded)\n"
         "with open(seeded, 'rb') as fh:\n"
         "    assert hashlib.sha256(fh.read()).hexdigest() == %r\n"

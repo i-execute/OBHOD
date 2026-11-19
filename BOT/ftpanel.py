@@ -8,7 +8,6 @@ from .freeturn import (
     BACKENDS,
     DEFAULT_LISTEN_PORT,
     METHODS,
-    PINNED_SCRIPT_SHA256,
     TRANSPORTS,
     VERSION_CHOICES,
     is_port,
@@ -39,6 +38,8 @@ class FtPanel:
         self.control = control or FtControl()
         self.state: FtState = bot.state.freeturn
         self.draft: FtConfig = FtConfig.from_dict(bot.state.freeturn.config.to_dict())
+        if self.draft.version not in (*VERSION_CHOICES, "local"):
+            self.draft.version = "latest"
         if not self.state.installed and not self.state.configured and self.draft.listen_port == DEFAULT_LISTEN_PORT:
             self.draft.listen_port = random_listen_port()
         self.clients: list[FtClient] = []
@@ -391,11 +392,7 @@ class FtPanel:
         draft.transport = saved_transport
         if not state.installed and not state.configured and draft.listen_port == DEFAULT_LISTEN_PORT:
             draft.listen_port = self.draft.listen_port if self.draft.listen_port != DEFAULT_LISTEN_PORT else random_listen_port()
-        ver = str(draft.version or "").strip()
-        if ver and ver.lower() not in {"latest", "local", "auto", "default"}:
-            tag = ver if ver.startswith("v") else "v" + ver
-            if tag not in PINNED_SCRIPT_SHA256:
-                draft.version = "latest"
+        draft.version = self.draft.version if self.draft.version in (*VERSION_CHOICES, "local") else "latest"
         self.draft = draft
         if self.state.links:
             self.state.links = {
@@ -449,11 +446,7 @@ class FtPanel:
         self.state.config.transport = saved_transport
         applied_draft = FtConfig.from_dict(state.config.to_dict())
         applied_draft.transport = saved_transport
-        ver = str(applied_draft.version or "").strip()
-        if ver and ver.lower() not in {"latest", "local", "auto", "default"}:
-            tag = ver if ver.startswith("v") else "v" + ver
-            if tag not in PINNED_SCRIPT_SHA256:
-                applied_draft.version = "latest"
+        applied_draft.version = self.draft.version if self.draft.version in (*VERSION_CHOICES, "local") else "latest"
         self.draft = applied_draft
         if self.state.links:
             self.state.links = {

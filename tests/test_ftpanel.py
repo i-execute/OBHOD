@@ -369,3 +369,23 @@ def test_ftpanel_docker_keeps_new_backend_and_rport_rolls_range(tmp_path: Path) 
     assert str(panel.draft.listen_port) in last(bot)
 
 
+
+
+def test_resolved_fallback_does_not_replace_latest_selection(tmp_path: Path) -> None:
+    from BOT.freeturn import FALLBACK_VERSION, FtState
+
+    bot, panel, control = panel_for(tmp_path)
+    async def probe() -> FtState:
+        state = FtState(installed=True, running=True)
+        state.config.version = FALLBACK_VERSION
+        return state
+    async def apply(draft: FtConfig, obf_key: str = "") -> FtState:
+        assert draft.version == "latest"
+        return await probe()
+    control.probe = probe
+    control.apply = apply
+    panel.draft.version = "latest"
+    run(panel.check(1, 0))
+    assert panel.draft.version == bot.state.freeturn.config.version == "latest"
+    run(panel.apply(1, 0))
+    assert panel.draft.version == bot.state.freeturn.config.version == "latest"

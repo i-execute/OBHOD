@@ -20,15 +20,17 @@ PROTO = 3
 SCRIPT_REPO = "hackdiaz-dev/free-turn-proxy"
 PORT_FLOOR = 1024
 PORT_CEIL = 65535
-FALLBACK_VERSION = "v4.1.2"
+MIN_VERSION = "v4.1.2"
+FALLBACK_VERSION = "v4.2.1"
 RECOMMENDED_VERSION = FALLBACK_VERSION
 DEFAULT_VERSION = FALLBACK_VERSION
 RELEASE_URL = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/{version}/{asset}"
 SCRIPT_URL = RELEASE_URL
 PINNED_SCRIPT_SHA256 = {
     "v4.1.2": "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100",
+    "v4.2.1": "e17725c29237d344c1607d1391c91d977521834508640dc158f9b21c06414916",
 }
-VERSION_CHOICES = ("latest", FALLBACK_VERSION)
+VERSION_CHOICES = ("latest", MIN_VERSION)
 CHECKSUMS_ASSET = "checksums.txt"
 CHECKSUMS_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 CHECKSUMS_MAX = 512 * 1024
@@ -142,9 +144,7 @@ def agent_code() -> str:
 
 def normalize_version(version: str = "") -> str:
     text = str(version or "").strip().lower()
-    if text in {"", "default"}:
-        return FALLBACK_VERSION
-    if text in {"latest", "auto"}:
+    if text in {"", "default", "latest", "auto"}:
         return "latest"
     if text == "local":
         return "local"
@@ -210,22 +210,29 @@ def release_digest(version: str) -> str:
     return digest
 
 
+def require_supported_version(tag: str) -> None:
+    if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+        raise FtError("the version must be latest or vX.Y.Z", "bad_arg")
+    if tuple(map(int, tag[1:].split("."))) < tuple(map(int, MIN_VERSION[1:].split("."))):
+        raise FtError("freeturn %s is below the minimum %s" % (tag, MIN_VERSION), "bad_arg")
+
+
 def resolve_version(version: str = "", lookup: object = None, digest_lookup: object = None) -> tuple[str, str]:
     tag = normalize_version(version)
     if tag == "local":
         return FALLBACK_VERSION, "local"
     if tag != "latest":
+        require_supported_version(tag)
         if tag not in PINNED_SCRIPT_SHA256:
             raise FtError("freeturn %s has no pinned install script yet" % tag, "not_pinned")
         return tag, "pinned"
     found, reason = (lookup or (lambda repo: releases.latest_tag(repo)))(SCRIPT_REPO)
     if not found:
         return FALLBACK_VERSION, "fallback"
-    if found in PINNED_SCRIPT_SHA256:
+    require_supported_version(found)
+    if found in PINNED_SCRIPT_SHA256 or (digest_lookup or release_digest)(found):
         return found, "api"
-    if (digest_lookup or release_digest)(found):
-        return found, "api"
-    return FALLBACK_VERSION, "not_pinned"
+    raise FtError("freeturn %s has no published install script digest" % found, "not_pinned")
 
 
 def script_url(version: str = DEFAULT_VERSION) -> str:
@@ -450,8 +457,7 @@ class FtConfig:
         tag = normalize_version(self.version)
         if tag == "latest" or tag == "local":
             return self
-        if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
-            raise FtError("the version must be latest or vX.Y.Z", "bad_arg")
+        require_supported_version(tag)
         if tag not in PINNED_SCRIPT_SHA256:
             raise FtError(FT_ERROR_CODES["not_pinned"], "not_pinned")
         return self
@@ -674,7 +680,7 @@ class FtState:
 
 
 class FtControl:
-    def __init__(self, shell: LocalShell | None = None, timeout: float = 300.0, version: str = DEFAULT_VERSION) -> None:
+    def __init__(self, shell: LocalShell | None = None, timeout: float = 300.0, version: str = "latest") -> None:
         self.shell = shell or LocalShell()
         self.timeout = float(timeout)
         self.version = version

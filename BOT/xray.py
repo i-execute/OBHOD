@@ -13,7 +13,8 @@ from typing import Any
 
 from . import portguard
 
-from . import i18n, subs
+from . import i18n, subs, xrayrpc
+from .dpi import MIN_CORE_TAG as XRAY_VERSION
 from .scan import DEFAULT_CANDIDATES
 
 LEGACY_JAIL = "3x-ipl"
@@ -241,8 +242,7 @@ def tailnet_expiry_label(expiry: object, expired: bool = False, lang: str = i18n
         return i18n.t("TAILNET_EXPIRY_DAYS", lang, date=raw[:10], days=days)
     except ValueError:
         return raw[:19]
-XRAY_VERSION = "v26.10.31"
-RECOMMENDED_VERSION = XRAY_VERSION
+RECOMMENDED_VERSION = xrayrpc.RECOMMENDED_VERSION
 LATEST_CHOICE = "latest"
 VERSION_CHOICES = (XRAY_VERSION, LATEST_CHOICE)
 LOG_LEVELS = ("debug", "info", "warning", "error")

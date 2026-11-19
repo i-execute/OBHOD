@@ -19,16 +19,17 @@ Requires root on a systemd Linux host. Installs into `/opt/obhod`, keeps state i
 By default, OBHOD asks the GitHub releases API for the latest stable release.
 If the API is unavailable or rate-limited, it uses the recommended pinned fallback:
 
-| Component | Recommended fallback (checked 2026-11-04) | Minimum |
+| Component | Recommended API fallback | Minimum |
 | --- | --- | --- |
-| Xray | `v26.10.31` | `v26.10.31` (security requirement, independent of the fallback) |
-| FreeTurn | `v4.1.2` | No separate minimum-version check is currently enforced |
-
-The pinned releases have SHA-256 digests in both the bot and the standalone remote
-agents. When updating a pin, update both copies and their digests; for FreeTurn,
-also update the bundled installer. The fallback avoids relying on the releases API,
-but downloading Xray still requires access to its release asset. Newer FreeTurn
-releases are used only when their published installer checksum is available.
+| Xray | `v26.11.9` | `v26.10.31` |
+| FreeTurn | `v4.2.1` | `v4.1.2` |
+The latest release reported by the API is used when available; the recommended
+fallback is used only when the API cannot provide a release, including rate limiting.
+Releases below the minimum are refused. The fallback uses pinned SHA-256 digests;
+an API-selected release without a verifiable checksum is refused instead of silently
+changing versions. The pins live in both the bot and the standalone remote agents;
+when updating them, update both copies and the bundled FreeTurn installer. No GitHub
+token is needed, but Xray still requires access to the release download asset.
 
 ## Clients
 

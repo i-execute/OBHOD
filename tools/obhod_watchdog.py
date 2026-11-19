@@ -207,10 +207,12 @@ def check_release_pins() -> list[str]:
         problems.append("freeturn.py must pin the digest of its fallback version")
     if sorted(bot_pins) != sorted(scripts):
         problems.append("freeturn.py and freeturn_agent.py must pin the same versions")
-    if len(scripts) != 1:
-        problems.append("freeturn_agent.py must pin exactly one fallback version")
-    if len(bot_pins) != 1:
-        problems.append("freeturn.py must pin exactly one fallback version")
+    if set(scripts) != {str(literal("MIN_VERSION", turn) or ""), fallback}:
+        problems.append("freeturn_agent.py must pin its minimum and fallback versions")
+    if set(bot_pins) != {str(literal("MIN_VERSION", bot) or ""), bot_fallback}:
+        problems.append("freeturn.py must pin its minimum and fallback versions")
+    if scripts != bot_pins or fallback != bot_fallback:
+        problems.append("freeturn bot and agent pins must match")
     if "if not expected:" not in turn:
         problems.append("freeturn_agent.py must refuse an install script without a published digest")
     if "checksums.txt" not in turn or "https://github.com" not in turn:

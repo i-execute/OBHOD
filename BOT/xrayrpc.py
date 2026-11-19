@@ -11,18 +11,19 @@ from .models import SshSettings
 from .shell import LocalShell, ShellError, ShellOutput, agent_argv
 
 PROTO = 3
-DEFAULT_VERSION = "v26.10.31"
+RECOMMENDED_VERSION = "v26.11.9"
+DEFAULT_VERSION = RECOMMENDED_VERSION
 UNIT_NAME = "xray.service"
 CORE_NAME = "xray"
 
 PINNED_SHA256 = {
-    "64": "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214",
-    "arm64-v8a": "1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d",
-    "arm32-v7a": "2387f55239ee7799fd67d5382e79f589c1da07a97d993e86b058f2290b8e456b",
-    "arm32-v6": "28c27bbd262bcc751e2e07115f47ce50d79611289e19e8b499b3065497b0e1ec",
-    "32": "4064a12c7712f28f0a85082be3564c088f7861f2220ddb5e4de409c91837511d",
-    "s390x": "c83452b49eb7c9064ca9afd68d5e0afaa820d0eae25e763306e68665bdc800c4",
-    "riscv64": "1159825b0d448fc7f56ca6f12e4872de2bf80a6639964819e0827fa0ad1283e8",
+    "64": "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82",
+    "arm64-v8a": "64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be",
+    "arm32-v7a": "19c51e08a6562705fb1cb032a84fd87df21d7e27b194f035be7e754dbe3a97b3",
+    "arm32-v6": "955be2b84854ba566b2afc6c20186967e5a0ce7b2078e0f4e9a99e3aac662f38",
+    "32": "225343a01db48e23c1d3091e7fa45971b0d12c20943927846a4a87da374e384d",
+    "s390x": "5657912fbd7429d8a0202dccd8815a297fe49d009216a5359af238ebb6f0db4c",
+    "riscv64": "296884b8601ee95dba31e6664c6121d80e33697382a1f564f05b028e61601a84",
 }
 
 ASSET_BY_ARCH = {
@@ -323,7 +324,7 @@ class XrayControl:
     async def install_core(
         self,
         cfg: SshSettings,
-        version: str = DEFAULT_VERSION,
+        version: str = "latest",
         url: str = "",
         sha256: str = "",
         force: bool = False,
@@ -339,7 +340,7 @@ class XrayControl:
         response.raise_for_status()
         return response
 
-    async def apply(self, cfg: SshSettings, config: str, version: str = DEFAULT_VERSION, restart: bool = True) -> CoreState:
+    async def apply(self, cfg: SshSettings, config: str, version: str = "latest", restart: bool = True) -> CoreState:
         payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
         flag, stdin = payload_arg("config-b64", payload)
         argv = ["apply", flag, f"--version={version}"]
@@ -355,7 +356,7 @@ class XrayControl:
         inbound_id: int,
         config: str,
         remark: str = "",
-        version: str = DEFAULT_VERSION,
+        version: str = "latest",
     ) -> CoreState:
         payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
         flag, stdin = payload_arg("config-b64", payload)

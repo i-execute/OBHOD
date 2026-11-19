@@ -161,12 +161,11 @@ def test_a_good_tag_is_cached_and_an_empty_one_is_not_trusted(monkeypatch: pytes
 
 
 def test_the_new_freeturn_version_is_the_hardcoded_fallback() -> None:
-    assert freeturn.FALLBACK_VERSION == "v4.1.2"
+    assert freeturn.MIN_VERSION == "v4.1.2"
+    assert freeturn.FALLBACK_VERSION == "v4.2.1"
     assert freeturn.DEFAULT_VERSION == freeturn.FALLBACK_VERSION
-    assert freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION] == (
-        "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100"
-    )
-    assert freeturn.script_url(freeturn.FALLBACK_VERSION).endswith("/v4.1.2/install.sh")
+    assert freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION] == "e17725c29237d344c1607d1391c91d977521834508640dc158f9b21c06414916"
+    assert freeturn.script_url(freeturn.FALLBACK_VERSION).endswith("/v4.2.1/install.sh")
 
 
 def test_the_not_pinned_error_is_translated_everywhere() -> None:
@@ -194,28 +193,26 @@ def test_every_architecture_maps_to_an_asset_the_release_ships() -> None:
     assert "server-linux-amd64" in freeturn.ASSET_BY_ARCH.values()
     for arch in ("x86_64", "aarch64", "armv7l"):
         assert freeturn.core_url(freeturn.FALLBACK_VERSION, arch).startswith(
-            "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/"
+            "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.2.1/"
         )
 
 
 def test_the_pin_points_at_the_published_release() -> None:
     module = load(TURN_AGENT, "freeturn_agent_published")
     assert module.SCRIPT_REPO == "hackdiaz-dev/free-turn-proxy"
-    assert module.FALLBACK_VERSION == "v4.1.2"
-    assert module.script_url(module.FALLBACK_VERSION) == (
-        "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.1.2/install.sh"
-    )
-    assert module.SCRIPT_SHA256["v4.1.2"] == freeturn.PINNED_SCRIPT_SHA256["v4.1.2"] == (
-        "91fcea2aa5558d019431da31aa1f32baa0ffb943600529810e073ffa22f83100"
-    )
-    assert module.resolve_version("latest", lookup=lambda repo: ("v4.1.2", "")) == ("v4.1.2", "api")
+    assert module.MIN_VERSION == freeturn.MIN_VERSION == "v4.1.2"
+    assert module.FALLBACK_VERSION == freeturn.FALLBACK_VERSION == "v4.2.1"
+    assert module.script_url(module.FALLBACK_VERSION).endswith("/v4.2.1/install.sh")
+    assert module.SCRIPT_SHA256 == freeturn.PINNED_SCRIPT_SHA256
+    assert module.resolve_version("latest", lookup=lambda repo: ("v4.2.1", "")) == ("v4.2.1", "api")
 
 
 def test_exactly_one_xray_version_is_kept_as_the_fallback() -> None:
     from BOT import xray
 
     module = load(XRAY_AGENT, "xray_agent_single_pin")
-    assert xray.XRAY_VERSION == xrayrpc.DEFAULT_VERSION == module.PINNED == "v26.10.31"
+    assert xray.XRAY_VERSION == module.MIN_CORE_TAG == "v26.10.31"
+    assert xray.RECOMMENDED_VERSION == xrayrpc.DEFAULT_VERSION == module.PINNED == "v26.11.9"
     assert xray.VERSION_CHOICES == (xray.XRAY_VERSION, "latest")
     assert xray.XrayState().install_version() == "latest"
     assert xray.XrayState().pinned() == "v26.10.31"
@@ -229,13 +226,13 @@ def test_exactly_one_xray_version_is_kept_as_the_fallback() -> None:
 def test_the_xray_pins_are_the_published_release_digests() -> None:
     module = load(XRAY_AGENT, "xray_agent_release_digests")
     published = {
-        "64": "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214",
-        "arm64-v8a": "1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d",
-        "arm32-v7a": "2387f55239ee7799fd67d5382e79f589c1da07a97d993e86b058f2290b8e456b",
-        "arm32-v6": "28c27bbd262bcc751e2e07115f47ce50d79611289e19e8b499b3065497b0e1ec",
-        "32": "4064a12c7712f28f0a85082be3564c088f7861f2220ddb5e4de409c91837511d",
-        "s390x": "c83452b49eb7c9064ca9afd68d5e0afaa820d0eae25e763306e68665bdc800c4",
-        "riscv64": "1159825b0d448fc7f56ca6f12e4872de2bf80a6639964819e0827fa0ad1283e8",
+        "64": "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82",
+        "arm64-v8a": "64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be",
+        "arm32-v7a": "19c51e08a6562705fb1cb032a84fd87df21d7e27b194f035be7e754dbe3a97b3",
+        "arm32-v6": "955be2b84854ba566b2afc6c20186967e5a0ce7b2078e0f4e9a99e3aac662f38",
+        "32": "225343a01db48e23c1d3091e7fa45971b0d12c20943927846a4a87da374e384d",
+        "s390x": "5657912fbd7429d8a0202dccd8815a297fe49d009216a5359af238ebb6f0db4c",
+        "riscv64": "296884b8601ee95dba31e6664c6121d80e33697382a1f564f05b028e61601a84",
     }
     assert module.DIGESTS == published
     assert xrayrpc.PINNED_SHA256 == published
@@ -244,19 +241,18 @@ def test_the_xray_pins_are_the_published_release_digests() -> None:
 
 def test_exactly_one_freeturn_version_is_kept_as_the_fallback() -> None:
     module = load(TURN_AGENT, "freeturn_agent_single_pin")
-    assert len(freeturn.PINNED_SCRIPT_SHA256) == 1
-    assert len(module.SCRIPT_SHA256) == 1
-    assert freeturn.FALLBACK_VERSION == module.FALLBACK_VERSION == "v4.1.2"
-    assert freeturn.VERSION_CHOICES == ("latest", freeturn.FALLBACK_VERSION)
+    assert set(freeturn.PINNED_SCRIPT_SHA256) == {freeturn.MIN_VERSION, freeturn.FALLBACK_VERSION}
+    assert module.SCRIPT_SHA256 == freeturn.PINNED_SCRIPT_SHA256
+    assert freeturn.MIN_VERSION == module.MIN_VERSION == "v4.1.2"
+    assert freeturn.FALLBACK_VERSION == module.FALLBACK_VERSION == "v4.2.1"
+    assert freeturn.VERSION_CHOICES == ("latest", freeturn.MIN_VERSION)
 
 
 def test_a_newer_freeturn_release_installs_with_its_published_digest() -> None:
     published = "d" * 64
     assert freeturn.resolve_version("latest", lambda repo: ("v4.2.0", ""), lambda tag: published) == ("v4.2.0", "api")
-    assert freeturn.resolve_version("latest", lambda repo: ("v4.2.0", ""), lambda tag: "") == (
-        freeturn.FALLBACK_VERSION,
-        "not_pinned",
-    )
+    with pytest.raises(freeturn.FtError, match="no published"):
+        freeturn.resolve_version("latest", lambda repo: ("v4.2.0", ""), lambda tag: "")
     assert freeturn.resolve_version("latest", lambda repo: ("", "rate_limited"), lambda tag: published) == (
         freeturn.FALLBACK_VERSION,
         "fallback",
@@ -291,3 +287,84 @@ def test_the_checksums_are_read_from_github_only(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(freeturn, "fetch_release_digest", lambda tag, timeout=None: "")
     assert freeturn.release_digest("v4.2.0") == ""
     assert freeturn.CHECKSUMS_CACHE["v4.2.0"][1] == ""
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_real_api_rate_limit_uses_recommended_versions_without_tokens(status: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import releases
+
+    headers = Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    seen = []
+
+    def limited(request: object, timeout: float = 0) -> None:
+        seen.append(request)
+        raise urllib.error.HTTPError("https://api.github.com/releases/latest", status, "limited", headers, io.BytesIO(b""))
+
+    releases.clear()
+    monkeypatch.setattr(releases.urllib.request, "urlopen", limited)
+    assert freeturn.resolve_version("latest") == (freeturn.FALLBACK_VERSION, "fallback")
+    ft_agent = load(TURN_AGENT, "freeturn_rate_limit_full")
+    ft_agent.API_CACHE.clear()
+    assert ft_agent.resolve_version("latest") == (ft_agent.FALLBACK_VERSION, "fallback")
+    xr_agent = load(XRAY_AGENT, "xray_rate_limit_full")
+    monkeypatch.setattr(xr_agent, "open_url", limited)
+    monkeypatch.setattr(xr_agent, "install_core", lambda version, url, sha256, force: {"version": version})
+    data = xr_agent.pinned_with_fallback("latest", "", "", False)
+    assert data["version"] == xr_agent.PINNED
+    assert data["fallback"] is True and data["fallback_version"] == xr_agent.PINNED
+    assert seen
+    for request in seen:
+        assert request.get_header("Authorization") is None
+    releases.clear()
+
+
+def test_latest_releases_must_respect_minimum_even_with_valid_digest() -> None:
+    from BOT import dpi
+
+    agent = load(TURN_AGENT, "freeturn_below_min")
+    for lookup in (lambda repo: ("v4.1.1", ""),):
+        with pytest.raises(freeturn.FtError):
+            freeturn.resolve_version("latest", lookup, lambda tag: "a" * 64)
+        with pytest.raises(agent.AgentError):
+            agent.resolve_version("latest", lookup, lambda tag: "a" * 64)
+    assert freeturn.MIN_VERSION == agent.MIN_VERSION == "v4.1.2"
+    assert dpi.MIN_CORE_TAG == "v26.10.31"
+
+
+def test_large_github_release_payload_is_read_completely(monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import releases
+
+    xr = load(XRAY_AGENT, "xray_large_api")
+    body = b'{"tag_name":"v26.12.1","body":"' + b'x' * 100000 + b'"}'
+
+    class Answer:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def read(self, limit):
+            return body[:limit]
+        def geturl(self):
+            return "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+        headers = {}
+
+    monkeypatch.setattr(xr, "open_url", lambda request, timeout: Answer())
+    assert xr.latest_tag(use_cache=False) == "v26.12.1"
+    monkeypatch.setattr(releases.urllib.request, "urlopen", lambda request, timeout: Answer())
+    releases.clear()
+    assert releases.latest_tag("XTLS/Xray-core", use_cache=False) == ("v26.12.1", "")
+    releases.clear()
+
+
+def test_no_fallback_when_latest_xray_asset_download_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    xr = load(XRAY_AGENT, "xray_no_download_fallback")
+    calls = []
+    monkeypatch.setattr(xr, "latest_tag", lambda timeout=15, use_cache=True: "v26.12.1")
+    def fail(version, url, sha256, force):
+        calls.append(version)
+        raise xr.ScriptError("download_failed", "asset unavailable")
+    monkeypatch.setattr(xr, "install_core", fail)
+    with pytest.raises(xr.ScriptError, match="asset unavailable"):
+        xr.pinned_with_fallback("latest", "", "", False)
+    assert calls == ["v26.12.1"]
