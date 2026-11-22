@@ -1,0 +1,2504 @@
+from __future__ import annotations
+
+import asyncio
+import inspect
+import ipaddress
+import logging
+import os
+import re
+import socket
+from pathlib import Path
+from typing import Any
+
+from . import antiddos, i18n, inline, portguard, screens, serverless, subs, xscreens
+from .inline import InlineError
+from .models import ModelError
+from .scan import CONCURRENCY, FAST_SCAN_TARGETS, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit, top_fastest_targets, vps_subnet_cidr
+from .xray import (
+    DEFAULT_IGNOREIP,
+    FINGERPRINTS,
+    LOG_LEVELS,
+    MASS_FINGERPRINTS,
+    NETWORKS,
+    SUB_PORT,
+    SYNTHETIC_FINGERPRINTS,
+    TUNNEL_HOST_RE,
+    VERSION_CHOICES,
+    VLESS_COMBOS,
+    XRAY_VERSION,
+    XrayError,
+    XrayInbound,
+    VlessEncryption,
+    XrayState,
+    current_funnel_port,
+    gen_short_id,
+    inbound_daemon_config,
+    link_for,
+    new_inbound,
+    other_funnel_port,
+    parse_tailnet_input,
+    parse_tailscale_input,
+    random_funnel_port,
+    random_port,
+    sanitize_remark,
+    valid_alpn,
+    valid_cert_path,
+    valid_dest,
+    valid_host_name,
+    valid_padding,
+    valid_request_path,
+    valid_short_id,
+    valid_token,
+    x25519_keypair,
+)
+from .xrayrpc import DEFAULT_VERSION, CoreState, SubState, XrayControl, XrayError as RpcError
+
+log = logging.getLogger("obhod.panel")
+
+DURATION = re.compile(r"^[1-9][0-9]{0,4}[smhdw]$")
+TUNNEL_KEY_RE = re.compile(r"^tskey-[a-z]{2,6}-[A-Za-z0-9]{4,64}(-[A-Za-z0-9]{4,64}){0,4}$")
+SCAN_LIMIT = 24
+CANDIDATE_LIMIT = 512
+FIELDS = frozenset(inline.FIELDS)
+GLOBAL_FIELDS = frozenset(
+    {
+        "xr_scan_targets",
+        "xr_scan_manual",
+        "xr_subnet_cidr",
+        "xr_log_level",
+        "xr_sub_port",
+        "xr_sub_address",
+        "xr_sub_tag",
+        "xr_sub_refresh",
+        "xr_sub_support",
+        "xr_sub_announce",
+        "xr_tunnel_host",
+        "xr_tunnel_key",
+        "xr_tgcloud_key",
+        "xr_ban_ip",
+        "xr_bantime",
+        "xr_ssh_bantime",
+        "xr_ssh_maxretry",
+        "xr_ignoreip",
+        "xr_scan_candidates",
+        "xr_scan_sni",
+        "xr_scan_xver",
+        "xr_dns_servers",
+        "xr_api_port",
+        "xr_access_log",
+        "ssh_new_port",
+        "ssh_pubkey",
+    }
+)
+
+
+class PanelError(Exception):
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message)
+        self.message = str(message)
+
+
+class XrayPanel:
+    def __init__(self, bot: Any, control: XrayControl | None = None) -> None:
+        self.bot = bot
+        self.control = control or XrayControl()
+        self.core: dict[str, Any] = dict(bot.state.xray.last_core)
+        self.draft: dict[str, str] = {}
+        self.results: list[ScanResult] = [ScanResult.from_dict(item) for item in bot.state.xray.scan_results]
+        self.sub_state: dict[str, Any] = {}
+        self.tunnel_exit_node: bool = bool(bot.state.xray.tunnel_exit_node)
+        self.tunnel_tags: str = str(bot.state.xray.tunnel_tags or "")
+        self.tunnel_host_hint: str = ""
+        self.pending_funnel_port: int = 0
+        self.funnel_watch_task: asyncio.Task[None] | None = None
+        self.picked_dest: str = ""
+        self.picked_sni: str = ""
+        self.wiz_network: str = "raw"
+        self.wiz_target: ScanResult | None = None
+        self.auto_scan_on_open: bool = os.geteuid() == 0
+        self.last_subnet: str = ""
+        self.pending_subnet_targets: list[str] = []
+        self.tunnel_key = self.load_tunnel_key()
+        self.tgcloud_token = self.load_tgcloud_token()
+        configured_tag = str(getattr(bot.cfg, "extra", {}).get("OBHOD_TAG", "") or "").strip()
+        hostname_tag = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname().split(".", 1)[0]).strip(".-_")[:32] or "server"
+        self.default_subscription_tag = hostname_tag
+        if configured_tag and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", configured_tag):
+            configured_tag = ""
+        self.subscription_tag = configured_tag or hostname_tag
+        if not configured_tag:
+            try:
+                from .config import write_env_value
+                if getattr(bot.cfg, "env_path", None):
+                    write_env_value(bot.cfg.env_path, "OBHOD_TAG", self.subscription_tag)
+                    bot.cfg.extra["OBHOD_TAG"] = self.subscription_tag
+            except Exception as exc:
+                log.warning("the default Xray subscription tag could not be saved: %s", type(exc).__name__)
+
+    def subscription_title(self) -> str:
+        return subs.title_for_tag(self.subscription_tag)
+
+    def set_subscription_tag(self, value: str) -> str:
+        tag = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", tag):
+            raise PanelError("tag must be 1-32 letters, numbers, dots, underscores or hyphens")
+        from .config import write_env_value
+        path = getattr(self.bot.cfg, "env_path", None)
+        if path is None:
+            raise PanelError("the environment file path is unavailable")
+        write_env_value(path, "OBHOD_TAG", tag)
+        self.bot.cfg.extra["OBHOD_TAG"] = tag
+        self.subscription_tag = tag
+        return tag
+
+    @property
+    def state(self) -> XrayState:
+        return self.bot.state.xray
+
+    def key_path(self) -> Path:
+        return Path(str(getattr(self.bot.cfg, "state_dir", "/var/lib/obhod"))) / "tunnel.key"
+
+    def load_tunnel_key(self) -> str:
+        try:
+            text = self.key_path().read_text(encoding="utf-8").strip()
+        except OSError:
+            text = str(getattr(self.bot, "tunnel_key", "") or "")
+        key, _ = parse_tailnet_input(text)
+        return key
+
+    def store_tunnel_key(self, value: str) -> None:
+        path = self.key_path()
+        if not value:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(value)
+        os.chmod(path, 0o600)
+
+    def tgcloud_key_path(self) -> Path:
+        return Path(str(getattr(self.bot.cfg, "state_dir", "/var/lib/obhod"))) / "tgcloud.key"
+
+    def load_tgcloud_token(self) -> str:
+        try:
+            token = self.tgcloud_key_path().read_text(encoding="utf-8").strip()
+            app_id, _clean = serverless.token_parts(token)
+            self.state.tgcloud_app_id = app_id
+            return token
+        except (OSError, serverless.ServerlessError):
+            return ""
+
+    def store_tgcloud_token(self, value: str) -> None:
+        path = self.tgcloud_key_path()
+        if not value:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(value)
+        os.chmod(path, 0o600)
+
+    def dom_screen(self, view: Any, tunnel: Any = None, key_mask: str = "") -> Any:
+        return xscreens.domain_screen(view, tunnel, key_mask or self.key_mask())
+
+    def key_mask(self) -> str:
+        text = self.tunnel_key or ""
+        if len(text) < 16:
+            return ""
+        return "%s...%s" % (text[:13], text[-4:])
+
+    def public_domain(self) -> str:
+        state = self.state
+        if not state.tunnel_enabled:
+            return ""
+        host = (state.tunnel_host or "").strip().lower()
+        return host if TUNNEL_HOST_RE.match(host) else ""
+
+    def require_domain(self) -> str:
+        host = self.public_domain()
+        if not host:
+            raise PanelError(self.tr()("DOM_REQUIRED"))
+        return host
+
+    def tr(self) -> i18n.Translator:
+        return i18n.translator(self.bot.state.language)
+
+    def save(self) -> None:
+        self.state.last_core = dict(self.core)
+        self.state.scan_results = [item.to_dict() for item in self.results]
+        if int(self.state.sub_port or 0) not in {0, SUB_PORT} and int(self.bot.state.sub_port or SUB_PORT) == SUB_PORT:
+            self.bot.state.sub_port = int(self.state.sub_port)
+        else:
+            self.state.sub_port = int(self.bot.state.sub_port)
+        self.bot.save()
+
+    def view(self, notice: str = "", error: str = "") -> xscreens.XrayView:
+        item = xscreens.XrayView(state=self.state, core=dict(self.core), notice=notice, error=error, lang=self.bot.state.language)
+        item.draft = dict(self.draft)
+        item.address = self.address()
+        item.bundle = self.sub_bundle()
+        item.key_mask = self.key_mask()
+        item.serverless_status = str(getattr(self.bot, "serverless_status", {}).get("status", "unknown"))
+        item.serverless_token_set = bool(self.tgcloud_token)
+        item.picked_dest = self.picked_dest
+        item.picked_sni = self.picked_sni
+        item.vps_subnet = vps_subnet_cidr(item.address)
+        item.last_subnet = self.last_subnet
+        return item
+
+    async def render(self, chat_id: int, msg_id: int, rich: Any) -> None:
+        await self.bot.render(chat_id, msg_id, rich)
+
+    async def send(self, chat_id: int, rich: Any) -> int:
+        res = await self.bot.send(chat_id, rich)
+        return int(res) if isinstance(res, int) else 0
+
+    def address(self) -> str:
+        return self.bot.address()
+
+    def links_of(self, inbound: XrayInbound) -> list[tuple[str, str]]:
+        host = self.address()
+        out: list[tuple[str, str]] = []
+        creds = inbound.clients if inbound.clients else [inbound.ensure_credential()]
+        for client in creds:
+            try:
+                out.append((client.email or inbound.remark, link_for(inbound, client, host, inbound.port)))
+            except XrayError as exc:
+                log.warning("link failed: %s", exc)
+        return out
+
+    def link_of(self, inbound: XrayInbound, email: str) -> str:
+        client = inbound.client(email)
+        if client is None:
+            return ""
+        try:
+            return link_for(inbound, client, self.address(), inbound.port)
+        except XrayError:
+            return ""
+
+    def sub_url(self, email: str) -> tuple[str, str]:
+        sub = self.state.subscription_of(email)
+        if sub is None:
+            return "", ""
+        return sub.path(), subs.url_of(sub, self.state.address(self.address()), self.state.sub_port, self.state.public_base())
+
+    def next_port(self, extra: object = ()) -> int:
+        used = set(self.state.ports()) | {int(item) for item in extra}
+        used.add(int(self.state.sub_port))
+        used.add(int(self.state.api_port))
+        for port in (443, 8443, 2053, 2083, 2087, 2096, 24443, 30443):
+            if port not in used:
+                return port
+        return portguard.free_port(30000, used)
+
+    def own_ports(self) -> list[int]:
+        out = [int(item) for item in (self.core.get("listening") or []) if str(item).isdigit()]
+        if self.state.sub_enabled:
+            out.append(int(self.state.sub_port))
+        return out
+
+    async def live_owners(self) -> list[portguard.Owner]:
+        control = getattr(getattr(self.bot, "freeturn", None), "control", None)
+        if control is None:
+            return []
+        keep = portguard.protected_ports(self.bot.state)
+        try:
+            raw = await control.net_ports(portguard.join(keep))
+        except Exception:
+            return []
+        data = raw if isinstance(raw, dict) else {}
+        return [portguard.Owner.from_dict(item) for item in data.get("ports") or []]
+
+    async def free_of_strangers(self) -> tuple[list[int], list[portguard.Owner]]:
+        owners = await self.live_owners()
+        return portguard.foreign_ports(owners, self.own_ports()), owners
+
+    async def guard_port(self, port: int) -> tuple[int, str]:
+        foreign, owners = await self.free_of_strangers()
+        if int(port) not in foreign:
+            return int(port), ""
+        owner = portguard.owner_label(port, owners)
+        free = portguard.free_port(int(port) + 1, set(foreign) | set(self.own_ports()))
+        if not free:
+            raise PanelError(self.tr()("XR_PORT_BUSY", port=int(port), owner=owner))
+        return free, self.tr()("XR_PORT_MOVED", port=int(port), owner=owner, free=free)
+
+    async def route(self, chat_id: int, msg_id: int, data: str) -> None:
+        parts = data.split(":")
+        head = parts[1] if len(parts) > 1 else "home"
+        arg1 = parts[2] if len(parts) > 2 else ""
+        arg2 = parts[3] if len(parts) > 3 else ""
+        if head == "home":
+            await self.ensure_core_probed()
+            await self.render(chat_id, msg_id, xscreens.home(self.view()))
+            return
+        if head == "list":
+            page = int(arg1) if arg1.isdigit() else 0
+            await self.render(chat_id, msg_id, xscreens.inbounds_list_screen(self.view(), page))
+            return
+        if head == "check":
+            await self.check(chat_id, msg_id)
+            return
+        if head == "new":
+            if not arg1:
+                await self.render(chat_id, msg_id, xscreens.new_menu(self.view()))
+                return
+            await self.create_quick(chat_id, msg_id, arg2 or "reality", arg1, parts[4] if len(parts) > 4 else "")
+            return
+        if head == "wiz":
+            await self.wizard_action(chat_id, msg_id, arg1, arg2, parts[4] if len(parts) > 4 else "")
+            return
+        if head == "custom":
+            if arg1 != "open" or not self.draft:
+                self.draft = {"network": "raw", "security": "reality", "port": str(self.next_port())}
+            await self.render(chat_id, msg_id, xscreens.custom_menu(self.view()))
+            return
+        if head == "cyc":
+            self.cycle(arg1)
+            await self.render(chat_id, msg_id, xscreens.custom_menu(self.view()))
+            return
+        if head == "create":
+            await self.create_custom(chat_id, msg_id)
+            return
+        if head == "in":
+            await self.open_inbound(chat_id, msg_id, arg1)
+            return
+        if head == "instart":
+            await self.start_inbound(chat_id, msg_id, arg1)
+            return
+        if head == "instop":
+            await self.stop_inbound(chat_id, msg_id, arg1)
+            return
+        if head == "inapply":
+            await self.apply_inbound_changes(chat_id, msg_id, arg1)
+            return
+        if head == "edit":
+            await self.render(chat_id, msg_id, xscreens.input_screen(self.view(), arg2, arg1, f"xr:in:{arg1}"))
+            return
+        if head == "toggle":
+            await self.toggle(chat_id, msg_id, arg1)
+            return
+        if head == "keys":
+            await self.regen_keys(chat_id, msg_id, arg1)
+            return
+        if head == "dom":
+            await self.tunnel_action(chat_id, msg_id, arg1)
+            return
+        if head == "enc":
+            await self.encryption_action(chat_id, msg_id, arg1, arg2)
+            return
+        if head == "mldsa":
+            await self.mldsa_action(chat_id, msg_id, arg1, arg2)
+            return
+        if head == "del":
+            t = self.tr()
+            await self.render(
+                chat_id,
+                msg_id,
+                xscreens.confirm_screen(
+                    self.view(),
+                    t("CONFIRM_INBOUND_TITLE"),
+                    t("CONFIRM_INBOUND_BODY", ident=arg1),
+                    f"xr:del2:{arg1}",
+                ),
+            )
+            return
+        if head == "del2":
+            await self.delete_inbound(chat_id, msg_id, arg1)
+            return
+        if head == "link":
+            await self.show_links(chat_id, msg_id, arg1)
+            return
+        if head == "subscan":
+            await self.subscan_action(chat_id, msg_id, arg1, arg2, parts[4] if len(parts) > 4 else "")
+            return
+        if head == "subs":
+            await self.subs_action(chat_id, msg_id, arg1)
+            return
+        if head == "core":
+            await self.core_action(chat_id, msg_id, arg1, arg2)
+            return
+        if head == "logs":
+            await self.logs(chat_id, msg_id, arg1)
+            return
+        if head == "fit":
+            await self.check_target(chat_id, msg_id, arg1)
+            return
+        if head == "scan":
+            await self.scan_action(chat_id, msg_id, arg1, arg2, parts[4] if len(parts) > 4 else "")
+            return
+        await self.render(chat_id, msg_id, xscreens.home(self.view(notice=self.tr()("XR_HOME_NOTICE_UNKNOWN"))))
+
+    def cycle(self, key: str) -> None:
+        self.draft["security"] = "reality"
+        if key != "network":
+            return
+        current = self.draft.get("network", NETWORKS[0])
+        index = NETWORKS.index(current) if current in NETWORKS else 0
+        self.draft["network"] = NETWORKS[(index + 1) % len(NETWORKS)]
+
+    async def ensure_core_probed(self) -> None:
+        if self.core:
+            return
+        if not isinstance(self.control, XrayControl) or os.geteuid() != 0:
+            return
+        try:
+            probed = await self.control.probe(self.bot.state.ssh)
+        except (RpcError, OSError):
+            return
+        self.core = state_report(probed)
+        self.bot.state.last_probe = dict(self.core)
+        self.save()
+
+    def register_ddos_port(self, port: int) -> None:
+        policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+        if int(port) not in policy.ports and len(policy.ports) < antiddos.MAX_PORTS:
+            policy.ports.append(int(port))
+        self.bot.state.ddos = policy.to_dict()
+
+    async def auto_apply_live(self) -> None:
+        if not isinstance(self.control, XrayControl) or os.geteuid() != 0:
+            return
+        try:
+            config = self.state.to_config()
+            applied = await self.control.apply(self.bot.state.ssh, config, version=self.state.install_version())
+            self.core = state_report(applied)
+            self.bot.state.last_probe = dict(self.core)
+            self.save()
+        except Exception as exc:
+            log.debug("auto apply skipped: %s", exc)
+        ddos_state = getattr(self.bot, "ddos_state", None)
+        guard = getattr(self.bot, "guard", None)
+        if ddos_state is not None and getattr(ddos_state, "enabled", False) and guard is not None:
+            try:
+                from .guard import ddos_argv, ddos_call
+
+                policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+                self.bot.ddos_state = await ddos_call(guard, self.bot.state.ssh, ddos_argv("install", policy), 60)
+            except Exception as exc:
+                log.debug("auto ddos sync skipped: %s", exc)
+
+    def mark_inbound_dirty(self, inbound: XrayInbound) -> None:
+        if inbound.enable:
+            inbound.dirty = True
+
+    async def push_subs_live(self, force: bool = False) -> None:
+        subs_sync_fn = getattr(self.bot, "subs_sync", None)
+        if callable(subs_sync_fn):
+            try:
+                try:
+                    res = subs_sync_fn(force=force)
+                except TypeError:
+                    res = subs_sync_fn()
+                if inspect.isawaitable(res):
+                    await res
+            except Exception as exc:
+                log.debug("subs sync skipped: %s", exc)
+        if bool(self.state.tunnel_enabled and self.state.public_base()):
+            host = self.state.address(self.address())
+            if host and hasattr(self.control, "sub_sync"):
+                self.state.ensure_sub_all()
+                port = self.ensure_random_sub_port()
+                domain = (self.state.tunnel_host or "").split(":", 1)[0]
+                registry = self.state.sub_registry(host, [], title=self.subscription_title())
+                try:
+                    if not self.state.sub_enabled and hasattr(self.control, "sub_install"):
+                        await self.control.sub_install(self.bot.state.ssh, port, domain)
+                        self.state.sub_enabled = True
+                    await self.control.sub_sync(self.bot.state.ssh, registry, port, domain)
+                    self.save()
+                except Exception as exc:
+                    log.debug("remote sub_sync skipped: %s", exc)
+
+    async def deploy_inbound_daemon(self, inbound: XrayInbound) -> None:
+        cfg_text = inbound_daemon_config(
+            inbound,
+            log_level=self.state.log_level,
+            dns_servers=list(self.state.dns_servers or []),
+        )
+        self.register_ddos_port(inbound.port)
+        if hasattr(self.control, "inbound_apply"):
+            applied = await self.control.inbound_apply(
+                self.bot.state.ssh,
+                inbound.id,
+                cfg_text,
+                remark=inbound.remark,
+                version=self.state.install_version(),
+            )
+            self.core = state_report(applied)
+            self.bot.state.last_probe = dict(self.core)
+        ddos_state = getattr(self.bot, "ddos_state", None)
+        guard = getattr(self.bot, "guard", None)
+        if ddos_state is not None and getattr(ddos_state, "enabled", False) and guard is not None:
+            try:
+                from .guard import ddos_argv, ddos_call
+
+                policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+                self.bot.ddos_state = await ddos_call(guard, self.bot.state.ssh, ddos_argv("install", policy), 60)
+            except Exception as exc:
+                log.debug("auto ddos sync skipped: %s", exc)
+
+    async def verify_subscriptions_after_inbound_change(self) -> str:
+        await self.push_subs_live(force=True)
+        good, errors = await self.check_public_subscriptions()
+        t = self.tr()
+        if errors:
+            return t("SUBS_VERIFY_FAILED", details="; ".join(errors))
+        configured = bool(
+            (self.state.tunnel_enabled and self.state.public_base())
+            or (self.state.tgcloud_app_id and self.tgcloud_token)
+        )
+        if not configured:
+            return t("SUBS_PROVIDER_REQUIRED")
+        if not good:
+            return t("SUBS_VERIFY_NO_LINKS")
+        return ""
+
+    async def sync_live_and_subs(self) -> str:
+        if not (self.core or {}).get("daemons"):
+            await self.auto_apply_live()
+        return await self.verify_subscriptions_after_inbound_change()
+
+    async def wizard_action(self, chat_id: int, msg_id: int, action: str, arg1: str = "", arg2: str = "") -> None:
+        if action == "net":
+            if arg1 not in NETWORKS:
+                raise PanelError(f"the network {arg1} is not supported")
+            self.wiz_network = arg1
+            self.wiz_target = None
+            if self.auto_scan_on_open and not any(item.feasible for item in self.results):
+                await self.run_wizard_scan(chat_id, msg_id, list(FAST_SCAN_TARGETS))
+                return
+            await self.render(chat_id, msg_id, xscreens.wiz_scan_screen(self.view(), self.wiz_network, self.results))
+            return
+        if action == "back":
+            await self.render(chat_id, msg_id, xscreens.wiz_scan_screen(self.view(), self.wiz_network or "raw", self.results))
+            return
+        if action == "scan":
+            if arg1 == "vps":
+                cidr = vps_subnet_cidr(self.address())
+                if not cidr:
+                    await self.render(
+                        chat_id,
+                        msg_id,
+                        xscreens.wiz_scan_screen(
+                            self.view(error="server public IPv4 is not detected; enter CIDR manually"),
+                            self.wiz_network or "raw",
+                            self.results,
+                        ),
+                    )
+                    return
+                self.last_subnet = cidr
+                await self.run_wizard_scan(chat_id, msg_id, [cidr])
+                return
+            self.last_subnet = ""
+            await self.run_wizard_scan(chat_id, msg_id, list(FAST_SCAN_TARGETS))
+            return
+        if action == "pick":
+            if not arg1.isdigit():
+                raise PanelError("the target number must be a number")
+            idx = int(arg1)
+            top_items = top_fastest_targets(self.results, limit=10, fallback_defaults=True)
+            if idx < 0 or idx >= len(top_items):
+                raise PanelError("the target was not found")
+            chosen = top_items[idx]
+            if chosen.latency_ms == 0 and chosen.cert_chain_bytes == 0 and self.auto_scan_on_open:
+                try:
+                    probed = await probe(chosen.host or chosen.target.rsplit(":", 1)[0], int(chosen.port or 443), chosen.host)
+                    if probed.feasible:
+                        chosen = probed
+                except (ScanError, OSError):
+                    pass
+            self.wiz_target = chosen
+            host = chosen.host or chosen.target.rsplit(":", 1)[0]
+            port = int(chosen.port or 443)
+            sni = (chosen.server_names[0] if chosen.server_names else "") or host
+            self.picked_dest = f"{host}:{port}" if ":" not in host else f"[{host}]:{port}"
+            self.picked_sni = sni
+            await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(), self.wiz_network or "raw", chosen, ctx="wiz"))
+            return
+        if action == "make":
+            await self.finish_wizard_inbound(chat_id, msg_id, arg1)
+            return
+        await self.render(chat_id, msg_id, xscreens.new_menu(self.view()))
+
+    async def run_wizard_scan(self, chat_id: int, msg_id: int, targets: list[str]) -> None:
+        clean = [item for item in targets if str(item).strip()][:CANDIDATE_LIMIT]
+        t = self.tr()
+        has_subnet = any("/" in item for item in clean) or len(clean) > 24
+        shown_count = 254 * sum(1 for item in clean if "/" in item) + sum(1 for item in clean if "/" not in item)
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.busy_screen(
+                t("BUSY_SCAN"),
+                self.bot.state.language,
+                [t("BUSY_SCAN_STEP_COUNT", count=shown_count), t("BUSY_SCAN_STEP_CHECKS")],
+            ),
+        )
+        try:
+            results = await scan_targets(
+                clean,
+                sni=self.state.scan_sni,
+                xver=int(self.state.scan_xver or 0),
+                candidates=self.state.candidates(),
+                concurrency=48 if has_subnet else CONCURRENCY,
+            )
+        except (OSError, ValueError, ScanError) as exc:
+            await self.render(chat_id, msg_id, xscreens.wiz_scan_screen(self.view(error=str(exc)), self.wiz_network or "raw", self.results))
+            return
+        self.results = results
+        self.save()
+        good = sum(1 for item in results if item.feasible)
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.wiz_scan_screen(self.view(notice=t("NOTICE_SCAN_DONE", good=good, total=len(results))), self.wiz_network or "raw", results),
+        )
+
+    async def finish_wizard_inbound(self, chat_id: int, msg_id: int, raw_kind: str) -> None:
+        t = self.tr()
+        network = self.wiz_network if self.wiz_network in NETWORKS else "raw"
+        try:
+            kind = canonical_kind(raw_kind or "reality")
+        except ValueError:
+            raise PanelError("the encryption is not supported") from None
+        if not kind.startswith("reality"):
+            raise PanelError("only reality inbounds are supported")
+        target = self.wiz_target
+        if target is not None:
+            ok, reason = security_fit(target, kind)
+            if not ok:
+                bad = t("XR_SCAN_SEC_BAD", security=xscreens.security_label(kind, self.bot.state.language))
+                msg = f"{bad}: {reason}" if reason else bad
+                await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(error=msg), network, target, ctx="wiz"))
+                return
+        foreign, _owners = await self.free_of_strangers()
+        port = self.next_port(foreign)
+        port, moved = await self.guard_port(port)
+        try:
+            inbound = new_inbound("vless", port, network, "reality")
+        except (XrayError, ValueError) as exc:
+            raise PanelError(str(exc)) from None
+        inbound.remark = f"{network}-reality-{port}"
+        if target is not None:
+            host = target.host or target.target.rsplit(":", 1)[0]
+            tport = int(target.port or 443)
+            sni = (target.server_names[0] if target.server_names else "") or host
+            inbound.dest = f"{host}:{tport}" if ":" not in host else f"[{host}]:{tport}"
+            inbound.sni = sni
+        elif self.picked_dest:
+            inbound.dest = self.picked_dest
+            if self.picked_sni:
+                inbound.sni = self.picked_sni
+        inbound.ensure_credential()
+        inbound.enable = False
+        inbound.dirty = False
+        self.state.add(inbound)
+        self.state.switch_security(inbound.id, kind)
+        if kind_has_mldsa(kind):
+            try:
+                seed, verify = await self.control.mldsa65(self.bot.state.ssh, auto_install=True)
+            except RpcError as exc:
+                self.state.remove(inbound.id)
+                if target is not None:
+                    await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(error=exc.message), network, target, ctx="wiz"))
+                else:
+                    await self.render(chat_id, msg_id, xscreens.new_menu(self.view(error=exc.message)))
+                return
+            self.state.set_mldsa65(inbound.id, seed, verify)
+        self.state.ensure_sub_all()
+        self.register_ddos_port(port)
+        self.save()
+        verification_error = await self.sync_live_and_subs()
+        notice = t("NOTICE_INBOUND_CREATED")
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice, error=verification_error), inbound))
+
+    async def create_quick(self, chat_id: int, msg_id: int, security: str, network: str, port: str = "") -> None:
+        if network not in NETWORKS:
+            raise PanelError(f"the network {network} is not supported")
+        if security != "reality":
+            raise PanelError("only reality inbounds are supported")
+        foreign, _owners = await self.free_of_strangers()
+        number = int(port) if port.isdigit() else self.next_port(foreign)
+        number, moved = await self.guard_port(number)
+        try:
+            inbound = new_inbound("vless", number, network, "reality")
+        except (XrayError, ValueError) as exc:
+            raise PanelError(str(exc)) from None
+        inbound.remark = f"{network}-reality-{number}"
+        if self.picked_dest:
+            inbound.dest = self.picked_dest
+        if self.picked_sni:
+            inbound.sni = self.picked_sni
+        inbound.ensure_credential()
+        self.state.add(inbound)
+        self.state.ensure_sub_all()
+        self.register_ddos_port(number)
+        self.save()
+        verification_error = await self.sync_live_and_subs()
+        notice = self.tr()("NOTICE_INBOUND_CREATED")
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice, error=verification_error), inbound))
+
+    async def create_custom(self, chat_id: int, msg_id: int) -> None:
+        draft = dict(self.draft)
+        network = draft.get("network", "raw")
+        security = draft.get("security", "reality")
+        if network not in NETWORKS:
+            raise PanelError(f"the network {network} is not supported")
+        if security != "reality":
+            raise PanelError("only reality inbounds are supported")
+        foreign, _owners = await self.free_of_strangers()
+        port = int(draft.get("port") or self.next_port(foreign))
+        port, moved = await self.guard_port(port)
+        try:
+            inbound = new_inbound("vless", port, network, "reality")
+        except (XrayError, ValueError) as exc:
+            raise PanelError(str(exc)) from None
+        inbound.remark = f"{network}-reality-{port}"
+        if self.picked_dest:
+            inbound.dest = self.picked_dest
+        if self.picked_sni:
+            inbound.sni = self.picked_sni
+        inbound.ensure_credential()
+        self.state.add(inbound)
+        self.state.ensure_sub_all()
+        self.draft = {}
+        self.save()
+        verification_error = await self.sync_live_and_subs()
+        notice = self.tr()("NOTICE_INBOUND_CREATED")
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice="%s %s" % (notice, moved) if moved else notice, error=verification_error), inbound))
+
+    def get(self, ident: str) -> XrayInbound:
+        item = self.state.inbound(ident)
+        if item is None:
+            raise PanelError(f"inbound {ident} was not found")
+        return item
+
+    async def open_inbound(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(), inbound))
+
+    async def start_inbound(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        t = self.tr()
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_INBOUND_START"), self.bot.state.language))
+        try:
+            await self.deploy_inbound_daemon(inbound)
+        except (RpcError, XrayError) as exc:
+            err_msg = exc.message if isinstance(exc, RpcError) else str(exc)
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=err_msg), inbound))
+            return
+        inbound.enable = True
+        inbound.dirty = False
+        self.state.ensure_sub_all()
+        self.save()
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_STARTED"), error=verification_error), inbound))
+
+    async def stop_inbound(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        t = self.tr()
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_INBOUND_STOP"), self.bot.state.language))
+        if hasattr(self.control, "inbound_stop"):
+            try:
+                stopped = await self.control.inbound_stop(self.bot.state.ssh, inbound.id)
+                self.core = state_report(stopped)
+                self.bot.state.last_probe = dict(self.core)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=exc.message), inbound))
+                return
+        inbound.enable = False
+        inbound.dirty = False
+        self.save()
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_STOPPED"), error=verification_error), inbound))
+
+    async def apply_inbound_changes(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        t = self.tr()
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_INBOUND_RESTART"), self.bot.state.language))
+        try:
+            await self.deploy_inbound_daemon(inbound)
+        except (RpcError, XrayError) as exc:
+            err_msg = exc.message if isinstance(exc, RpcError) else str(exc)
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=err_msg), inbound))
+            return
+        inbound.enable = True
+        inbound.dirty = False
+        self.state.ensure_sub_all()
+        self.save()
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=t("NOTICE_INBOUND_APPLIED"), error=verification_error), inbound))
+
+    async def toggle(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        if inbound.enable:
+            await self.stop_inbound(chat_id, msg_id, ident)
+        else:
+            await self.start_inbound(chat_id, msg_id, ident)
+
+    async def regen_keys(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        if inbound.security != "reality":
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error="reality keys need the reality security"), inbound))
+            return
+        private = ""
+        public = ""
+        if self.core.get("installed"):
+            try:
+                private, public = await self.control.x25519(self.bot.state.ssh)
+            except RpcError as exc:
+                log.warning("remote x25519 failed: %s", exc.message)
+        if not private or not public:
+            private, public = x25519_keypair()
+        self.state.set_reality_keys(inbound.id, private, public)
+        inbound.short_ids = [gen_short_id()]
+        self.mark_inbound_dirty(inbound)
+        self.save()
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=self.tr()("NOTICE_KEYS_REGEN"), error=verification_error), inbound))
+
+    def ensure_random_sub_port(self) -> int:
+        current = int(self.state.sub_port or 0)
+        if current in {0, 80, 443, SUB_PORT}:
+            used = set(self.state.ports()) | {int(self.state.api_port)}
+            current = random_port(used)
+        self.state.sub_port = current
+        self.bot.state.sub_port = current
+        return current
+
+    def adopt_public_ip(self, candidate: object) -> None:
+        raw = str(candidate or "").strip()
+        if not raw or self.state.sub_address:
+            return
+        try:
+            parsed = ipaddress.ip_address(raw)
+        except ValueError:
+            return
+        if parsed.is_private or parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified or parsed.is_multicast:
+            return
+        cur = self.address()
+        if cur:
+            try:
+                cur_ip = ipaddress.ip_address(cur)
+                if not (cur_ip.is_private or cur_ip.is_loopback or cur_ip.is_link_local):
+                    return
+            except ValueError:
+                return
+        self.state.sub_address = str(parsed)
+
+    def sync_tunnel_meta(self, tunnel: Any) -> None:
+        if tunnel is None:
+            return
+        backend = str(getattr(tunnel, "backend", "") or "").strip()
+        if backend:
+            self.state.tunnel_backend = backend[:24]
+        expiry = str(getattr(tunnel, "key_expiry", "") or "").strip()
+        if expiry:
+            if expiry != self.state.tunnel_key_expiry:
+                self.state.tunnel_expiry_notified = ""
+            self.state.tunnel_key_expiry = expiry[:32]
+        expired = bool(getattr(tunnel, "expired", False))
+        self.state.tunnel_expired = expired
+        if expired:
+            self.state.tunnel_enabled = False
+        self.adopt_public_ip(getattr(tunnel, "public_ip", ""))
+
+    async def call_tunnel_up(self, key: str, host_hint: str, port: int, https_port: int) -> Any:
+        kwargs: dict[str, Any] = {
+            "https_port": https_port,
+            "auto_install": True,
+            "exit_node": self.tunnel_exit_node,
+        }
+        if self.tunnel_tags:
+            kwargs["tags"] = self.tunnel_tags
+        return await self.control.tunnel_up(self.bot.state.ssh, key, host_hint, port, **kwargs)
+
+    def approval_note_for(self, url: str = "", step: str = "") -> str:
+        t = self.tr()
+        low = str(url or "").lower()
+        if step == "serve" or "/f/serve" in low:
+            return t("TAILSCALE_SERVE_ENABLE_NOTE")
+        if step == "dns" or "/admin/dns" in low:
+            return t("TAILSCALE_DNS_ENABLE_NOTE")
+        return t("TAILSCALE_FUNNEL_ENABLE_NOTE")
+
+    def stop_funnel_autopilot(self) -> None:
+        task = self.funnel_watch_task
+        self.funnel_watch_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def start_funnel_autopilot(self, chat_id: int, msg_id: int, port: int, https_port: int = 0) -> None:
+        self.stop_funnel_autopilot()
+        if getattr(self.bot, "app", None) is None or msg_id <= 0 or not self.state.tunnel_approval_url:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self.funnel_watch_task = loop.create_task(self.watch_funnel_until_ready(chat_id, msg_id, port, https_port))
+
+    async def watch_funnel_until_ready(self, chat_id: int, msg_id: int, port: int, https_port: int = 0) -> None:
+        chosen_https = int(https_port or self.pending_funnel_port or random_funnel_port())
+        for step_idx in range(85):
+            await asyncio.sleep(3.5)
+            if self.state.tunnel_enabled:
+                return
+            try:
+                tunnel = await self.control.tunnel_status(self.bot.state.ssh)
+            except (RpcError, OSError):
+                tunnel = None
+            if tunnel is not None and getattr(tunnel, "url", ""):
+                ready_notice, err = await self.finalize_tunnel_subs(tunnel, port)
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
+                return
+            if step_idx % 3 == 2:
+                prev_url = self.state.tunnel_approval_url
+                try:
+                    up_tunnel = await self.call_tunnel_up("", self.tunnel_host_hint, port, chosen_https)
+                except RpcError as exc:
+                    err_msg = self.handle_tunnel_error(exc)
+                    if self.state.tunnel_approval_url and self.state.tunnel_approval_url != prev_url:
+                        await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=err_msg), self.sub_rows()))
+                    continue
+                except OSError:
+                    continue
+                ready_notice, err = await self.finalize_tunnel_subs(up_tunnel, port)
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
+                return
+
+    def handle_tunnel_error(self, exc: RpcError) -> str:
+        t = self.tr()
+        code_name = str(getattr(exc, "code", "") or "")
+        data = getattr(exc, "data", None)
+        meta = data if isinstance(data, dict) else {}
+        if code_name == "key_expired":
+            self.state.tunnel_expired = True
+            self.state.tunnel_enabled = False
+            self.save()
+            return t("TAILNET_EXPIRED_NOTE")
+        if code_name == "api_key_wrong":
+            return t("DOM_KEY_API_WRONG")
+        if code_name == "funnel_disabled":
+            expiry = str(meta.get("key_expiry", "") or "").strip()
+            if expiry:
+                self.state.tunnel_key_expiry = expiry[:32]
+            self.state.tunnel_expired = bool(meta.get("expired", False))
+            self.state.tunnel_enabled = False
+            self.state.tunnel_backend = "Running"
+            self.state.tunnel_approval_url = str(meta.get("approval_url", "") or "")[:200]
+            hp = int(meta.get("https_port", 0) or 0)
+            if hp:
+                self.pending_funnel_port = hp
+            self.adopt_public_ip(meta.get("public_ip", ""))
+            self.save()
+            return self.approval_note_for(self.state.tunnel_approval_url, str(meta.get("step", "") or ""))
+        return exc.message
+
+    async def finalize_tunnel_subs(self, tunnel: Any, port: int, raw_host: str = "") -> tuple[str, str]:
+        t = self.tr()
+        domain = ""
+        if getattr(tunnel, "url", ""):
+            domain = str(tunnel.url).strip().lower().removeprefix("https://").removeprefix("http://").strip("/")
+        if not domain or not TUNNEL_HOST_RE.match(domain):
+            candidate = str(getattr(tunnel, "hostname", "") or raw_host).strip().lower().rstrip(".")
+            if candidate and TUNNEL_HOST_RE.match(candidate):
+                domain = candidate
+        if not domain:
+            return "", t("DOM_REQUIRED")
+        self.stop_funnel_autopilot()
+        self.state.sub_port = int(port)
+        self.bot.state.sub_port = int(port)
+        self.state.tunnel_host = domain
+        self.state.tunnel_enabled = True
+        self.state.tunnel_approval_url = ""
+        self.pending_funnel_port = 0
+        self.sync_tunnel_meta(tunnel)
+        if not self.state.tunnel_backend:
+            self.state.tunnel_backend = "Running"
+        await self.ensure_core_probed()
+        self.state.ensure_sub_all()
+        try:
+            await self.control.sub_install(self.bot.state.ssh, port, domain)
+            registry = self.state.sub_registry(self.state.address(self.address()), [], title=self.subscription_title())
+            await self.control.sub_sync(self.bot.state.ssh, registry, port, domain)
+        except (RpcError, OSError) as exc:
+            self.save()
+            return "", str(getattr(exc, "message", exc))
+        self.state.sub_enabled = True
+        self.save()
+        return t("DOM_READY"), ""
+
+    async def refresh_tunnel_meta(self) -> None:
+        if not (
+            self.state.tunnel_enabled
+            or self.state.tunnel_host
+            or self.state.tunnel_key_expiry
+            or self.state.tunnel_approval_url
+        ):
+            return
+        try:
+            tunnel = await self.control.tunnel_status(self.bot.state.ssh)
+        except (RpcError, OSError):
+            return
+        self.sync_tunnel_meta(tunnel)
+        if not self.state.tunnel_enabled and getattr(tunnel, "url", ""):
+            port = int(self.state.sub_port or 0)
+            if port in {0, 80, 443}:
+                port = self.ensure_random_sub_port()
+            self.bot.state.sub_port = port
+            await self.finalize_tunnel_subs(tunnel, port)
+            return
+        self.save()
+
+    async def setup_domain_subs(self) -> tuple[str, str]:
+        t = self.tr()
+        port = self.ensure_random_sub_port()
+        await self.ensure_core_probed()
+        raw_host = (self.state.tunnel_host or "").strip().lower()
+        if raw_host and not TUNNEL_HOST_RE.match(raw_host):
+            return "", t("DOM_HOST_BAD")
+        host_hint = raw_host.split(":", 1)[0] if raw_host else self.tunnel_host_hint
+        funnel_port = self.pending_funnel_port or current_funnel_port(raw_host) or random_funnel_port()
+        self.pending_funnel_port = funnel_port
+        try:
+            tunnel = await self.call_tunnel_up(self.tunnel_key, host_hint, port, funnel_port)
+        except RpcError as exc:
+            return "", self.handle_tunnel_error(exc)
+        return await self.finalize_tunnel_subs(tunnel, port, raw_host)
+
+    async def tunnel_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        t = self.tr()
+        tunnel = None
+        if action == "install":
+            await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL"), self.bot.state.language))
+            try:
+                tunnel = await self.control.tunnel_install(self.bot.state.ssh)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
+                return
+        elif action == "up":
+            raw_host = (self.state.tunnel_host or "").strip().lower()
+            if raw_host and not TUNNEL_HOST_RE.match(raw_host):
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=t("DOM_HOST_BAD")), None))
+                return
+            has_live_node = bool(self.state.tunnel_key_expiry and not self.state.tunnel_expired)
+            if not self.tunnel_key and not has_live_node:
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=t("DOM_KEY_MISSING")), None))
+                return
+            await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_UP"), self.bot.state.language))
+            port = int(self.state.sub_port or 0)
+            if port in {0, 80, 443}:
+                port = self.ensure_random_sub_port()
+            self.bot.state.sub_port = port
+            key_arg = "" if has_live_node else self.tunnel_key
+            host_arg = raw_host or self.tunnel_host_hint
+            funnel_port = self.pending_funnel_port or current_funnel_port(raw_host) or random_funnel_port()
+            self.pending_funnel_port = funnel_port
+            try:
+                tunnel = await self.call_tunnel_up(key_arg, host_arg, port, funnel_port)
+            except RpcError as exc:
+                err_msg = self.handle_tunnel_error(exc)
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=err_msg), self.sub_rows()))
+                if self.state.tunnel_approval_url:
+                    self.start_funnel_autopilot(chat_id, msg_id, port, self.pending_funnel_port)
+                return
+            ready_notice, err = await self.finalize_tunnel_subs(tunnel, port, raw_host)
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice, error=err), self.sub_rows()))
+            return
+        elif action == "port":
+            raw_host = (self.state.tunnel_host or "").strip().lower()
+            target_port = other_funnel_port(current_funnel_port(raw_host))
+            port = int(self.state.sub_port or 0)
+            if port in {0, 80, 443}:
+                port = self.ensure_random_sub_port()
+            self.bot.state.sub_port = port
+            host_arg = raw_host.split(":", 1)[0] if raw_host else self.tunnel_host_hint
+            self.pending_funnel_port = target_port
+            await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_UP"), self.bot.state.language))
+            try:
+                tunnel = await self.call_tunnel_up("", host_arg, port, target_port)
+            except RpcError as exc:
+                err_msg = self.handle_tunnel_error(exc)
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=err_msg), self.sub_rows()))
+                return
+            ready_notice, err = await self.finalize_tunnel_subs(tunnel, port, raw_host)
+            shown = "" if err else t("NOTICE_FUNNEL_PORT", port=target_port)
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=shown or ready_notice, error=err), self.sub_rows()))
+            return
+        elif action == "off":
+            self.stop_funnel_autopilot()
+            try:
+                tunnel = await self.control.tunnel_down(self.bot.state.ssh)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
+                return
+            self.state.tunnel_enabled = False
+            self.sync_tunnel_meta(tunnel)
+            if self.state.sub_enabled:
+                self.state.sub_enabled = False
+                try:
+                    await self.control.sub_stop(self.bot.state.ssh, self.state.sub_port)
+                except RpcError:
+                    pass
+            self.save()
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=t("DOM_OFF_DONE")), self.sub_rows()))
+            return
+        else:
+            await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_TUNNEL_CHECK"), self.bot.state.language))
+            try:
+                tunnel = await self.control.tunnel_status(self.bot.state.ssh)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, self.dom_screen(self.view(error=exc.message), None))
+                return
+            self.sync_tunnel_meta(tunnel)
+            self.save()
+        notice = t("DOM_READY") if tunnel is not None and tunnel.healthy() else ""
+        await self.render(chat_id, msg_id, self.dom_screen(self.view(notice=notice), tunnel))
+
+    async def encryption_action(self, chat_id: int, msg_id: int, ident: str, combo: str) -> None:
+        t = self.tr()
+        inbound = self.state.inbound(ident) if ident else self.target_inbound()
+        if inbound is None:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=t("XR_CHECK_MISSING")), None))
+            return
+        wanted = combo if "/" in combo else ""
+        if wanted and wanted not in VLESS_COMBOS:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=t("XR_ENC_COMBO_BAD")), inbound))
+            return
+        if not wanted:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(), inbound))
+            return
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_KEYS"), self.bot.state.language))
+        try:
+            data = await self.control.vlessenc(self.bot.state.ssh, auto_install=True)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=exc.message), inbound))
+            return
+        items = [item for item in data.get("items") or [] if isinstance(item, dict)]
+        chosen = None
+        for item in items:
+            candidate = VlessEncryption().set_pair(item, str(item.get("auth", "")))
+            if "%s/%s" % (candidate.mode, candidate.auth_kind()) == wanted:
+                chosen = candidate
+                break
+        if chosen is None:
+            await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(error=t("XR_ENC_NO_PAIR", combo=wanted)), inbound))
+            return
+        inbound.encryption = chosen
+        self.mark_inbound_dirty(inbound)
+        self.save()
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        await self.render(chat_id, msg_id, xscreens.encryption_screen(self.view(notice=t("XR_ENC_APPLIED", combo=wanted), error=verification_error), inbound))
+
+    async def mldsa_action(self, chat_id: int, msg_id: int, ident: str, action: str) -> None:
+        inbound = self.get(ident)
+        if inbound.security != "reality":
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error="ml-dsa-65 needs the reality security"), inbound))
+            return
+        if action == "gen":
+            seed = ""
+            verify = ""
+            try:
+                seed, verify = await self.control.mldsa65(self.bot.state.ssh, auto_install=True)
+            except RpcError as exc:
+                await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(error=exc.message), inbound))
+                return
+            self.state.set_mldsa65(inbound.id, seed, verify)
+            self.mark_inbound_dirty(inbound)
+            self.save()
+            verification_error = await self.verify_subscriptions_after_inbound_change()
+            await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(notice=self.tr()("NOTICE_MI_MLDSA_GENERATED"), error=verification_error), inbound))
+            return
+        if action == "clear":
+            self.state.clear_mldsa65(inbound.id)
+            self.mark_inbound_dirty(inbound)
+            self.save()
+            verification_error = await self.verify_subscriptions_after_inbound_change()
+            await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(notice=self.tr()("NOTICE_MLDSA_REMOVED"), error=verification_error), inbound))
+            return
+        await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(), inbound))
+
+    async def delete_inbound(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        remark = inbound.remark
+        if hasattr(self.control, "inbound_remove"):
+            try:
+                removed = await self.control.inbound_remove(self.bot.state.ssh, inbound.id)
+                self.core = state_report(removed)
+                self.bot.state.last_probe = dict(self.core)
+            except RpcError as exc:
+                log.debug("inbound_remove skipped: %s", exc)
+        self.state.remove(ident)
+        self.save()
+        verification_error = await self.verify_subscriptions_after_inbound_change()
+        notice = self.tr()("NOTICE_INBOUND_DELETED", remark=remark)
+        if self.state.inbounds:
+            await self.render(chat_id, msg_id, xscreens.inbounds_list_screen(self.view(notice=notice, error=verification_error)))
+        else:
+            await self.render(chat_id, msg_id, xscreens.home(self.view(notice=notice, error=verification_error)))
+
+    async def show_links(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.get(ident)
+        links = self.links_of(inbound)
+        await self.render(chat_id, msg_id, xscreens.links_screen(self.view(), inbound, self.address(), links))
+
+    def sub_rows(self) -> list[tuple[str, str, str]]:
+        out: list[tuple[str, str, str]] = []
+        host = self.state.address(self.address())
+        bundle = self.sub_bundle(host)
+        if bundle is not None:
+            out.append((self.tr()("XR_SUBS_ALL"), bundle.path(), subs.url_of(bundle, host, self.state.sub_port, self.state.public_base())))
+            if self.state.tgcloud_app_id and bundle.links:
+                try:
+                    url = serverless.subscription_url(self.state.tgcloud_app_id, bundle.id, bundle.key)
+                    try:
+                        serverless.validate_subscription(self.tgcloud_token, url, bundle.links, title=self.subscription_title())
+                    except TypeError as exc:
+                        if "title" not in str(exc):
+                            raise
+                        serverless.validate_subscription(self.tgcloud_token, url, bundle.links)
+                except serverless.ServerlessError:
+                    out.append(("__TGCLOUD_VERIFY_ERROR__", "", ""))
+                else:
+                    out.append((self.tr()("TGCLOUD_SUB"), bundle.path(), url))
+        return out
+
+    async def refresh_traffic(self) -> bool:
+        try:
+            stats = await self.control.stats(self.bot.state.ssh)
+        except (RpcError, OSError):
+            return False
+        emails = {client.email for client in self.state.only_client()}
+        self.state.traffic = {email: subs.usage_of(stats, email) for email in emails}
+        self.save()
+        return True
+
+    def sub_bundle(self, host: str = ""):
+        address = str(host or self.state.address(self.address()))
+        try:
+            return subs.aggregate(self.state, [], address, self.state.sub_port, title=self.subscription_title())
+        except subs.SubError:
+            return None
+
+    async def check_public_subscriptions(self) -> tuple[list[str], list[str]]:
+        host = self.state.address(self.address())
+        try:
+            bundle = self.sub_bundle(host)
+        except Exception:
+            bundle = None
+        checks: list[tuple[str, Any]] = []
+        base = self.state.public_base()
+        if self.state.tunnel_enabled and base:
+            checks.append(("Tailscale", lambda: subs.validate_public_subscription(
+                bundle.public_url(base) if bundle is not None else "", bundle.links if bundle is not None else [], title=self.subscription_title())))
+        if self.state.tgcloud_app_id and self.tgcloud_token:
+            try:
+                url = serverless.subscription_url(self.state.tgcloud_app_id, bundle.id if bundle is not None else "", bundle.key if bundle is not None else "")
+            except serverless.ServerlessError as exc:
+                return [], ["Telegram Serverless: " + exc.message]
+            checks.append(("Telegram Serverless", lambda: serverless.validate_subscription(
+                self.tgcloud_token, url, bundle.links if bundle is not None else [], title=self.subscription_title())))
+        if not checks:
+            return [], []
+        if bundle is None or not bundle.links:
+            return [], ["%s: no active Xray configurations are available to verify" % label for label, _check in checks]
+        good: list[str] = []
+        errors: list[str] = []
+        for label, check in checks:
+            try:
+                await asyncio.to_thread(check)
+            except Exception as exc:
+                status = int(getattr(exc, "status", 0) or 0)
+                detail = str(getattr(exc, "message", "") or type(exc).__name__)
+                errors.append("%s: HTTP %s; %s" % (label, status if status else "unavailable", detail))
+            else:
+                good.append(label)
+        return good, errors
+
+    async def recover_public_subscriptions(self) -> tuple[list[str], list[str]]:
+        good, errors = await self.check_public_subscriptions()
+        if not errors:
+            return good, []
+        diagnostics = list(errors)
+        try:
+            await self.bot.subs_sync(force=True)
+        except Exception as exc:
+            diagnostics.append("publication refresh failed: " + type(exc).__name__)
+        if self.state.tunnel_enabled and any(item.startswith("Tailscale:") for item in errors):
+            try:
+                status = await self.control.tunnel_status(self.bot.state.ssh)
+                if not bool(getattr(status, "installed", False)) or not str(getattr(status, "url", "") or ""):
+                    await self.control.tunnel_install(self.bot.state.ssh)
+                    port = int(self.state.sub_port or self.ensure_random_sub_port())
+                    tunnel = await self.call_tunnel_up(self.tunnel_key, self.tunnel_host_hint, port, self.pending_funnel_port or random_funnel_port())
+                    notice, failure = await self.finalize_tunnel_subs(tunnel, port)
+                    if failure:
+                        diagnostics.append("Tailscale recreation did not complete subscription setup")
+                    elif notice:
+                        diagnostics.append("Tailscale tunnel recreated and subscription publication refreshed")
+                else:
+                    await self.control.tunnel_down(self.bot.state.ssh)
+                    await self.control.tunnel_install(self.bot.state.ssh)
+                    port = int(self.state.sub_port or self.ensure_random_sub_port())
+                    tunnel = await self.call_tunnel_up(self.tunnel_key, self.tunnel_host_hint, port, self.pending_funnel_port or random_funnel_port())
+                    notice, failure = await self.finalize_tunnel_subs(tunnel, port)
+                    if failure:
+                        diagnostics.append("Tailscale recreation did not complete subscription setup")
+                    elif notice:
+                        diagnostics.append("Tailscale tunnel fully recreated and subscription publication refreshed")
+            except Exception as exc:
+                diagnostics.append("Tailscale recreation failed: " + type(exc).__name__)
+        good, retry_errors = await self.check_public_subscriptions()
+        if retry_errors:
+            diagnostics.append("retry check failed: " + " | ".join(retry_errors))
+        else:
+            diagnostics.append("retry check passed; public subscription link refreshed")
+        return good, diagnostics
+
+    async def subs_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        if action == "skip_tag":
+            try:
+                tag = self.set_subscription_tag(self.default_subscription_tag)
+                await self.bot.subs_sync(force=True)
+            except Exception as exc:
+                await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=str(getattr(exc, "message", exc))), self.sub_rows()))
+                return
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice="Xray subscription title set to %s" % subs.title_for_tag(tag)), self.sub_rows()))
+            return
+        if not action:
+            await self.render(chat_id, msg_id, xscreens.busy_screen("Checking Xray subscriptions and recovering public links...", self.bot.state.language, ["Loading the current Xray list", "Checking HTTP status and exact configuration list", "Repairing publication if needed"]))
+            await self.ensure_core_probed()
+            await self.refresh_traffic()
+            await self.refresh_tunnel_meta()
+            await self.push_subs_live()
+            health_ok, health_diagnostics = await self.recover_public_subscriptions()
+            health_error = "\n".join(health_diagnostics) if health_diagnostics else ""
+            health_notice = "Xray public subscriptions verified: " + ", ".join(health_ok) if health_ok else ""
+            if not self.state.tunnel_enabled and self.state.tunnel_approval_url and not self.state.tunnel_expired:
+                port = int(self.state.sub_port or 0)
+                if port in {0, 80, 443}:
+                    port = self.ensure_random_sub_port()
+                self.bot.state.sub_port = port
+                funnel_port = self.pending_funnel_port or random_funnel_port()
+                self.pending_funnel_port = funnel_port
+                try:
+                    up_tunnel = await self.call_tunnel_up("", self.tunnel_host_hint, port, funnel_port)
+                except RpcError as exc:
+                    err_msg = self.handle_tunnel_error(exc)
+                    await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=err_msg), self.sub_rows()))
+                    if self.state.tunnel_approval_url:
+                        self.start_funnel_autopilot(chat_id, msg_id, port, self.pending_funnel_port)
+                    return
+                except OSError:
+                    pass
+                else:
+                    ready_notice, err = await self.finalize_tunnel_subs(up_tunnel, port)
+                    await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=ready_notice or health_notice, error=err or health_error), self.sub_rows()))
+                    return
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=health_notice, error=health_error), self.sub_rows()))
+            return
+        if action == "apply":
+            await self.subs_apply(chat_id, msg_id)
+            return
+        if action == "status":
+            await self.subs_status(chat_id, msg_id)
+            return
+        if action == "traffic":
+            ok = await self.refresh_traffic()
+            notice = self.tr()("NOTICE_SUBS_TRAFFIC") if ok else ""
+            error = "" if ok else self.tr()("ERR_SUBS_TRAFFIC")
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=notice, error=error), self.sub_rows()))
+            return
+        if action == "stop":
+            await self.subs_stop(chat_id, msg_id)
+            return
+        if action == "rotate":
+            self.state.ensure_sub_all()
+            self.save()
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
+            return
+        await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(), self.sub_rows()))
+
+    async def subs_apply(self, chat_id: int, msg_id: int) -> None:
+        state = self.state
+        t = self.tr()
+        try:
+            domain = self.require_domain()
+        except PanelError as exc:
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
+            return
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.busy_screen(t("BUSY_SUBS_WRITE"), self.bot.state.language, [t("BUSY_STEP_FILE"), t("BUSY_STEP_REGISTRY"), t("BUSY_STEP_SERVICE")]),
+        )
+        try:
+            port = self.ensure_random_sub_port()
+            await self.control.sub_install(self.bot.state.ssh, port, domain)
+            registry = state.sub_registry(state.address(self.address()), [], title=self.subscription_title())
+            await self.control.sub_sync(self.bot.state.ssh, registry, port, domain)
+        except (RpcError, OSError) as exc:
+            message = getattr(exc, "message", str(exc))
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=str(message)), self.sub_rows()))
+            return
+        state.sub_enabled = True
+        self.save()
+        await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=t("NOTICE_SUBS_APPLIED")), self.sub_rows()))
+
+    async def subs_status(self, chat_id: int, msg_id: int) -> None:
+        try:
+            state: SubState = await self.control.sub_status(self.bot.state.ssh, self.state.sub_port)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
+            return
+        t = self.tr()
+        notice = t("NOTICE_SUBS_PORT", port=state.port) if state.listening else t("NOTICE_SUBS_NO_PORT")
+        self.state.sub_enabled = bool(state.listening)
+        self.save()
+        await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=notice), self.sub_rows()))
+
+    async def subs_stop(self, chat_id: int, msg_id: int) -> None:
+        try:
+            await self.control.sub_stop(self.bot.state.ssh, self.state.sub_port)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(error=exc.message), self.sub_rows()))
+            return
+        self.state.sub_enabled = False
+        self.save()
+        await self.render(chat_id, msg_id, xscreens.subs_screen(self.view(notice=self.tr()("NOTICE_SUBS_STOPPED")), self.sub_rows()))
+
+    async def check(self, chat_id: int, msg_id: int) -> None:
+        t = self.tr()
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_CORE_READ"), self.bot.state.language))
+        try:
+            state = await self.control.probe(self.bot.state.ssh)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=exc.message)))
+            return
+        self.core = state_report(state)
+        self.save()
+        await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=t("NOTICE_CORE_READ"))))
+
+    async def core_action(self, chat_id: int, msg_id: int, action: str, extra: str) -> None:
+        if action in {"", "open"}:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view()))
+            return
+        if action == "ver":
+            await self.set_version(chat_id, msg_id, extra)
+            return
+        t = self.tr()
+        if action == "purge":
+            await self.render(
+                chat_id,
+                msg_id,
+                xscreens.confirm_screen(self.view(), t("CONFIRM_PURGE_TITLE"), t("CONFIRM_PURGE_BODY"), "xr:core:purge2"),
+            )
+            return
+        if action == "purge2":
+            await self.purge(chat_id, msg_id)
+            return
+        if action == "install":
+            await self.install_core(chat_id, msg_id)
+            return
+        if action == "apply":
+            await self.apply(chat_id, msg_id)
+            return
+        if action == "restart":
+            await self.run_core(chat_id, msg_id, t("BUSY_CORE_RESTART"), self.control.restart)
+            return
+        if action == "stop":
+            await self.run_core(chat_id, msg_id, t("BUSY_CORE_STOP"), self.control.stop)
+            return
+        await self.render(chat_id, msg_id, xscreens.core_screen(self.view()))
+
+    async def set_version(self, chat_id: int, msg_id: int, choice: str) -> None:
+        value = XRAY_VERSION if choice == "pin" else "latest"
+        t = self.tr()
+        if value not in VERSION_CHOICES:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=t("NOTICE_CORE_UNKNOWN_VERSION"))))
+            return
+        self.state.version = value
+        self.save()
+        await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=t("NOTICE_VERSION_SELECTED", value=value))))
+
+    async def install_core(self, chat_id: int, msg_id: int) -> None:
+        version = self.state.install_version()
+        t = self.tr()
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.busy_screen(
+                t("BUSY_CORE_INSTALL", version=version),
+                self.bot.state.language,
+                [t("BUSY_STEP_DOWNLOAD"), t("BUSY_STEP_HASH"), t("BUSY_STEP_UNPACK")],
+            ),
+        )
+        try:
+            response = await self.control.install_core(self.bot.state.ssh, version, force=True)
+            state = CoreState.from_dict(response.data)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=exc.message)))
+            return
+        if self.state.inbounds:
+            try:
+                applied = await self.control.apply(self.bot.state.ssh, self.state.to_config(), version=version)
+                state = applied
+            except (RpcError, XrayError):
+                pass
+        self.core = state_report(state)
+        self.bot.state.last_probe = dict(self.core)
+        self.save()
+        subs_sync_fn = getattr(self.bot, "subs_sync", None)
+        if callable(subs_sync_fn):
+            try:
+                res = subs_sync_fn()
+                if inspect.isawaitable(res):
+                    await res
+            except Exception as exc:
+                log.debug("subs sync skipped: %s", exc)
+        installed = str(self.core.get("version", version))
+        if state.fallback:
+            notice = t("NOTICE_CORE_FALLBACK", version=installed, fallback=state.fallback_version or DEFAULT_VERSION)
+        else:
+            notice = t("NOTICE_CORE_INSTALLED", version=installed)
+        await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=notice)))
+
+    async def apply(self, chat_id: int, msg_id: int) -> None:
+        t = self.tr()
+        if not self.state.inbounds:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error="there are no inbounds to apply")))
+            return
+        moves, clashes = await self.check_ports()
+        if clashes:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error="; ".join(clashes))))
+            return
+        if moves:
+            self.save()
+        try:
+            config = self.state.to_config()
+        except XrayError as exc:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=str(exc))))
+            return
+        version = self.state.install_version()
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.busy_screen(t("BUSY_CONFIG_WRITE"), self.bot.state.language, [t("BUSY_STEP_VALIDATE"), t("BUSY_STEP_RESTART")]),
+        )
+        try:
+            state = await self.control.apply(self.bot.state.ssh, config, version=version)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=exc.message)))
+            return
+        self.core = state_report(state)
+        self.bot.state.last_probe = dict(self.core)
+        self.save()
+        subs_sync_fn = getattr(self.bot, "subs_sync", None)
+        if callable(subs_sync_fn):
+            try:
+                res = subs_sync_fn()
+                if inspect.isawaitable(res):
+                    await res
+            except Exception as exc:
+                log.debug("subs sync skipped: %s", exc)
+        ports = ", ".join(str(item) for item in self.core.get("listening") or [])
+        notice = t("NOTICE_CORE_APPLIED_PORTS", ports=ports) if ports else t("NOTICE_CORE_APPLIED")
+        if moves:
+            notice = "%s %s" % (notice, self.moved_text(moves))
+        await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=notice)))
+
+    async def check_ports(self) -> tuple[list[tuple[str, int, int]], list[str]]:
+        t = self.tr()
+        foreign, owners = await self.free_of_strangers()
+        self.state.sub_port = int(self.bot.state.sub_port)
+        moves = self.state.resolve_ports(foreign)
+        self.bot.state.sub_port = int(self.state.sub_port)
+        clashes = [
+            t("XR_PORT_BUSY", port=inbound.port, owner=portguard.owner_label(inbound.port, owners))
+            for inbound in self.state.inbounds
+            if int(inbound.port) in foreign
+        ]
+        return moves, clashes
+
+    def moved_text(self, moves: list[tuple[str, int, int]]) -> str:
+        t = self.tr()
+        parts = []
+        for label, old, new in moves:
+            key = {"api": "NOTICE_API_MOVED", "sub": "NOTICE_SUB_MOVED"}.get(label, "NOTICE_METRICS_MOVED")
+            parts.append(t(key, old=old, new=new))
+        return " ".join(parts)
+
+    async def run_core(self, chat_id: int, msg_id: int, title: str, action: Any) -> None:
+        await self.render(chat_id, msg_id, xscreens.busy_screen(title, self.bot.state.language))
+        try:
+            state = await action(self.bot.state.ssh)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=exc.message)))
+            return
+        self.core = state_report(state)
+        self.save()
+        await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=self.tr()("NOTICE_CORE_DONE", action=title))))
+
+    async def purge(self, chat_id: int, msg_id: int) -> None:
+        t = self.tr()
+        await self.render(chat_id, msg_id, xscreens.busy_screen(t("BUSY_CORE_PURGE"), self.bot.state.language))
+        try:
+            await self.control.uninstall(self.bot.state.ssh)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.core_screen(self.view(error=exc.message)))
+            return
+        self.core = {}
+        self.bot.state.last_probe = {}
+        self.save()
+        await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=t("NOTICE_CORE_PURGED"))))
+
+    async def logs(self, chat_id: int, msg_id: int, tail: str) -> None:
+        size = 200
+        if tail:
+            try:
+                size = max(20, min(2000, int(tail)))
+            except ValueError:
+                size = 200
+        try:
+            lines = await self.control.logs(self.bot.state.ssh, size)
+        except RpcError as exc:
+            await self.render(chat_id, msg_id, xscreens.logs_screen(self.view(error=exc.message), [], size))
+            return
+        await self.render(chat_id, msg_id, xscreens.logs_screen(self.view(), lines, size))
+
+    async def scan_action(self, chat_id: int, msg_id: int, action: str, extra: str, tail: str = "") -> None:
+        if not action:
+            await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(), self.results))
+            return
+        if action == "targets":
+            await self.render(chat_id, msg_id, xscreens.scan_targets_screen(self.view()))
+            return
+        if action == "reset":
+            self.state.scan_targets = self.state.candidates()
+            self.save()
+            await self.render(chat_id, msg_id, xscreens.scan_targets_screen(self.view(notice=self.tr()("NOTICE_TARGETS_RESET"))))
+            return
+        if action == "run":
+            await self.run_scan(chat_id, msg_id, self.state.scan_targets)
+            return
+        if action == "use":
+            await self.use_target(chat_id, msg_id, extra)
+            return
+        if action == "fit":
+            await self.show_mismatch(chat_id, msg_id, extra)
+            return
+        if action == "sec":
+            await self.switch_and_use(chat_id, msg_id, extra, tail)
+            return
+        await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(), self.results))
+
+    async def subscan_action(self, chat_id: int, msg_id: int, arg1: str, arg2: str = "", arg3: str = "") -> None:
+        t = self.tr()
+        if arg1 in {"", "new", "custom"} or arg1.isdigit():
+            ctx = arg1 or "new"
+            await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(), self.results, ctx=ctx))
+            return
+        if arg1 == "vps":
+            ctx = arg2 or "new"
+            cidr = vps_subnet_cidr(self.address())
+            if not cidr:
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    xscreens.subnet_scan_screen(self.view(error="server public IPv4 is not detected; enter CIDR manually"), self.results, ctx=ctx),
+                )
+                return
+            self.last_subnet = cidr
+            await self.run_subnet_scan(chat_id, msg_id, [cidr], ctx)
+            return
+        if arg1 == "cand":
+            ctx = arg2 or "new"
+            self.last_subnet = ""
+            await self.run_subnet_scan(chat_id, msg_id, list(FAST_SCAN_TARGETS), ctx)
+            return
+        if arg1 == "sec":
+            ctx = arg2
+            inbound = self.get(ctx)
+            try:
+                kind = canonical_kind(arg3 or "reality")
+            except ValueError:
+                raise PanelError("the encryption is not supported") from None
+            target = self.wiz_target
+            if target is not None:
+                ok, reason = security_fit(target, kind)
+                if not ok:
+                    bad = t("XR_SCAN_SEC_BAD", security=xscreens.security_label(kind, self.bot.state.language))
+                    msg = f"{bad}: {reason}" if reason else bad
+                    await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(error=msg), inbound.network, target, ctx=ctx))
+                    return
+                host = target.host or target.target.rsplit(":", 1)[0]
+                port = int(target.port or 443)
+                sni = (target.server_names[0] if target.server_names else "") or host
+                self.state.adopt_scan(inbound.id, host, sni, port)
+            self.state.switch_security(inbound.id, kind)
+            if kind_has_mldsa(kind) and not (inbound.mldsa65_seed and inbound.mldsa65_verify):
+                try:
+                    seed, verify = await self.control.mldsa65(self.bot.state.ssh, auto_install=True)
+                except RpcError as exc:
+                    await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(error=exc.message), inbound))
+                    return
+                self.state.set_mldsa65(inbound.id, seed, verify)
+            self.mark_inbound_dirty(inbound)
+            self.save()
+            verification_error = await self.verify_subscriptions_after_inbound_change()
+            notice = t("XR_SUBSCAN_PICKED_NOTICE", dest=inbound.dest, sni=inbound.sni)
+            await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice, error=verification_error), inbound))
+            return
+        if arg1 == "pick":
+            ctx = arg2 or "new"
+            _, item = self.result_at(arg3)
+            if not item.feasible:
+                await self.render(
+                    chat_id,
+                    msg_id,
+                    xscreens.subnet_scan_screen(self.view(error="the selected target is not suitable for Reality"), self.results, ctx=ctx),
+                )
+                return
+            host = item.host or item.target
+            port = int(item.port or 443)
+            sni = (item.server_names[0] if item.server_names else "") or host
+            dest = f"{host}:{port}"
+            self.picked_dest = dest
+            self.picked_sni = sni
+            self.wiz_target = item
+            notice = t("XR_SUBSCAN_PICKED_NOTICE", dest=dest, sni=sni)
+            if ctx.isdigit():
+                inbound = self.get(ctx)
+                ok, _ = security_fit(item, inbound.security_kind())
+                if not ok:
+                    await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(), inbound.network, item, ctx=ctx))
+                    return
+                self.state.adopt_scan(inbound.id, host, sni, port)
+                self.mark_inbound_dirty(inbound)
+                self.save()
+                verification_error = await self.verify_subscriptions_after_inbound_change()
+                await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice, error=verification_error), inbound))
+                return
+            if ctx == "custom":
+                await self.render(chat_id, msg_id, xscreens.custom_menu(self.view(notice=notice)))
+                return
+            await self.render(chat_id, msg_id, xscreens.wiz_sec_screen(self.view(notice=notice), self.wiz_network or "raw", item, ctx="wiz"))
+            return
+        await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(), self.results, ctx="new"))
+
+    async def run_subnet_scan(self, chat_id: int, msg_id: int, targets: list[str], ctx: str = "new") -> None:
+        clean = [item for item in targets if str(item).strip()][:CANDIDATE_LIMIT]
+        t = self.tr()
+        if not clean:
+            await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(error="the scan list is empty"), self.results, ctx=ctx))
+            return
+        has_subnet = any("/" in item for item in clean) or len(clean) > 24
+        shown_count = 254 * sum(1 for item in clean if "/" in item) + sum(1 for item in clean if "/" not in item)
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.busy_screen(
+                t("BUSY_SCAN"),
+                self.bot.state.language,
+                [t("BUSY_SCAN_STEP_COUNT", count=shown_count), t("BUSY_SCAN_STEP_CHECKS")],
+            ),
+        )
+        try:
+            results = await scan_targets(
+                clean,
+                sni=self.state.scan_sni,
+                xver=int(self.state.scan_xver or 0),
+                candidates=self.state.candidates(),
+                concurrency=48 if has_subnet else CONCURRENCY,
+            )
+        except (OSError, ValueError, ScanError) as exc:
+            await self.render(chat_id, msg_id, xscreens.subnet_scan_screen(self.view(error=str(exc)), self.results, ctx=ctx))
+            return
+        self.results = results
+        self.save()
+        good = sum(1 for item in results if item.feasible)
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.subnet_scan_screen(self.view(notice=t("NOTICE_SCAN_DONE", good=good, total=len(results))), results, ctx=ctx),
+        )
+
+    async def run_scan(self, chat_id: int, msg_id: int, targets: list[str]) -> None:
+        clean = [item for item in targets if item.strip()][:SCAN_LIMIT]
+        t = self.tr()
+        if not clean:
+            await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error="the scan list is empty"), self.results))
+            return
+        await self.render(
+            chat_id,
+            msg_id,
+            xscreens.busy_screen(
+                t("BUSY_SCAN"),
+                self.bot.state.language,
+                [t("BUSY_SCAN_STEP_COUNT", count=len(clean)), t("BUSY_SCAN_STEP_CHECKS")],
+            ),
+        )
+        try:
+            results = await scan_targets(
+                clean,
+                sni=self.state.scan_sni,
+                xver=int(self.state.scan_xver or 0),
+                candidates=self.state.candidates(),
+                concurrency=CONCURRENCY,
+            )
+        except (OSError, ValueError) as exc:
+            await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error=str(exc)), self.results))
+            return
+        self.results = results
+        self.save()
+        good = sum(1 for item in results if item.feasible)
+        await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(notice=t("NOTICE_SCAN_DONE", good=good, total=len(results))), results))
+
+    def target_inbound(self) -> XrayInbound | None:
+        for item in self.state.inbounds:
+            if item.security in {"reality", "tls"}:
+                return item
+        return None
+
+    def apply_target(self, inbound: XrayInbound, result: ScanResult) -> None:
+        sni = (result.server_names[0] if result.server_names else "") or result.host or result.target
+        self.state.adopt_scan(inbound.id, result.host or result.target, sni, result.port)
+
+    def result_at(self, index: str) -> tuple[int, ScanResult]:
+        if not index.isdigit():
+            raise PanelError("the target number must be a number")
+        position = int(index)
+        if position < 0 or position >= len(self.results):
+            raise PanelError("the target was not found")
+        return position, self.results[position]
+
+    async def use_target(self, chat_id: int, msg_id: int, index: str) -> None:
+        position, result = self.result_at(index)
+        inbound = self.target_inbound()
+        if inbound is None:
+            await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error="create a reality inbound first"), self.results))
+            return
+        ok, _ = security_fit(result, inbound.security_kind())
+        if not ok:
+            await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(), result, inbound, position))
+            return
+        self.apply_target(inbound, result)
+        self.save()
+        notice = self.tr()("NOTICE_TARGET_APPLIED", target=result.target, remark=inbound.remark)
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
+
+    async def check_target(self, chat_id: int, msg_id: int, ident: str) -> None:
+        inbound = self.inbound_of_ctx(ident) if ident else self.target_inbound()
+        if inbound is None or inbound.security not in {"reality", "tls"}:
+            await self.render(chat_id, msg_id, xscreens.target_check_screen(self.view(error=self.tr()("XR_CHECK_MISSING")), self.target_inbound(), None))
+            return
+        host, port = host_port(inbound.dest)
+        try:
+            result = await probe(host, port, inbound.sni or host)
+        except (ScanError, OSError) as exc:
+            await self.render(chat_id, msg_id, xscreens.target_check_screen(self.view(error=str(exc)), inbound, None))
+            return
+        await self.render(chat_id, msg_id, xscreens.target_check_screen(self.view(), inbound, result))
+
+    async def show_mismatch(self, chat_id: int, msg_id: int, index: str) -> None:
+        position, result = self.result_at(index)
+        inbound = self.target_inbound()
+        if inbound is None:
+            await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error="create a reality inbound first"), self.results))
+            return
+        await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(), result, inbound, position))
+
+    async def switch_and_use(self, chat_id: int, msg_id: int, kind: str, index: str) -> None:
+        position, result = self.result_at(index)
+        try:
+            kind = canonical_kind(kind)
+        except ValueError:
+            raise PanelError("the encryption is not supported") from None
+        inbound = self.target_inbound()
+        if inbound is None:
+            await self.render(chat_id, msg_id, xscreens.scan_screen(self.view(error="create a reality inbound first"), self.results))
+            return
+        ok, _ = security_fit(result, kind)
+        if not ok:
+            bad = self.tr()("XR_SCAN_SEC_BAD", security=xscreens.security_label(kind, self.bot.state.language))
+            await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(error=bad), result, inbound, position))
+            return
+        try:
+            self.state.switch_security(inbound.id, kind)
+        except XrayError as exc:
+            await self.render(chat_id, msg_id, xscreens.scan_mismatch_screen(self.view(error=str(exc)), result, inbound, position))
+            return
+        if kind_has_mldsa(kind) and not (inbound.mldsa65_seed and inbound.mldsa65_verify):
+            try:
+                seed, verify = await self.control.mldsa65(self.bot.state.ssh)
+            except RpcError as exc:
+                self.save()
+                await self.render(chat_id, msg_id, xscreens.mldsa_screen(self.view(error=exc.message), inbound))
+                return
+            self.state.set_mldsa65(inbound.id, seed, verify)
+        self.apply_target(inbound, result)
+        self.save()
+        notice = self.tr()("XR_SCAN_SEC_APPLIED", security=xscreens.security_label(kind, self.bot.state.language), target=result.target, remark=inbound.remark)
+        await self.render(chat_id, msg_id, xscreens.inbound_screen(self.view(notice=notice), inbound))
+
+    def inbound_of_ctx(self, ctx: str) -> XrayInbound | None:
+        ident = ctx.split(":", 1)[0]
+        return self.state.inbound(ident) if ident.isdigit() else None
+
+    def set_field(self, ident: str, ctx: str, value: str) -> str:
+        t = self.tr()
+        if ident not in FIELDS:
+            raise PanelError(f"the field {ident} is not supported")
+        if ident in GLOBAL_FIELDS:
+            return self.set_global(ident, ctx, value)
+        text = (value or "").strip()
+        inbound = self.inbound_of_ctx(ctx)
+        if inbound is None and ident == "xr_port" and ctx in {"-", "custom"}:
+            port = parse_port(text)
+            for item in self.state.inbounds:
+                if item.port == port:
+                    raise PanelError(f"the port {port} is used by the inbound {item.remark}")
+            self.draft["port"] = str(port)
+            return t("NOTICE_PORT", port=port)
+        if inbound is None:
+            raise PanelError("the inbound for the input was not found")
+        if ident == "xr_port":
+            port = parse_port(text)
+            for item in self.state.inbounds:
+                if item.port == port and item.id != inbound.id:
+                    raise PanelError(f"the port {port} is used by the inbound {item.remark}")
+            inbound.port = port
+            return t("NOTICE_PORT", port=port)
+        if ident == "xr_remark":
+            inbound.remark = checked(sanitize_remark, text, 40)
+            return t("NOTICE_NAME")
+        if ident == "xr_sni":
+            host = checked(valid_host_name, text, "the server name")
+            inbound.sni = host
+            inbound.dest = f"{host}:443"
+            return t("NOTICE_SNI", value=host)
+        if ident == "xr_dest":
+            inbound.dest = checked(valid_dest, text)
+            if not inbound.sni:
+                inbound.sni = inbound.dest.rsplit(":", 1)[0]
+            return t("NOTICE_DEST", value=inbound.dest)
+        if ident == "xr_short_id":
+            inbound.short_ids = [valid_short_id(text or gen_short_id())]
+            return t("NOTICE_SHORT_ID")
+        if ident == "xr_spider_x":
+            inbound.spider_x = checked(valid_request_path, text, "the spider path")
+            return t("NOTICE_SPIDER")
+        if ident == "xr_fingerprint":
+            if text not in FINGERPRINTS:
+                raise PanelError("the fingerprint is not supported")
+            inbound.fingerprint = text
+            if text in MASS_FINGERPRINTS:
+                return t("NOTICE_FINGERPRINT_MASS", value=text)
+            if text in SYNTHETIC_FINGERPRINTS:
+                return t("NOTICE_FINGERPRINT_SYNTHETIC", value=text)
+            return t("NOTICE_FINGERPRINT", value=text)
+        if ident == "xr_alpn":
+            inbound.alpn = checked(valid_alpn, text)
+            return t("NOTICE_ALPN")
+        if ident == "xr_cert_file":
+            inbound.cert_file = checked(valid_cert_path, text, "the certificate path")
+            return t("NOTICE_CERT")
+        if ident == "xr_key_file":
+            inbound.key_file = checked(valid_cert_path, text, "the key path")
+            return t("NOTICE_KEY")
+        if ident == "xr_path":
+            inbound.path = checked(valid_request_path, text, "the path")
+            return t("NOTICE_PATH", value=inbound.path)
+        if ident == "xr_host_header":
+            inbound.host_header = checked(valid_host_name, text, "the host header")
+            return t("NOTICE_HOST_HEADER")
+        if ident == "xr_service":
+            inbound.service_name = checked(valid_token, text, "the service name")
+            return t("NOTICE_SERVICE")
+        if ident == "xr_padding":
+            inbound.encryption.padding = valid_padding(text) if text else ""
+            return t("NOTICE_PADDING")
+        if ident == "xr_mldsa65_seed":
+            if inbound.security != "reality":
+                raise PanelError("ml-dsa-65 needs the reality security")
+            if text:
+                inbound.mldsa65_seed = text
+                return t("NOTICE_MLDSA_SEED")
+            inbound.mldsa65_seed = ""
+            inbound.mldsa65_verify = ""
+            return t("NOTICE_MLDSA_REMOVED")
+        if ident == "xr_mldsa65_verify":
+            if inbound.security != "reality":
+                raise PanelError("ml-dsa-65 needs the reality security")
+            inbound.mldsa65_verify = text
+            return t("NOTICE_MLDSA_VERIFY")
+        raise PanelError(f"the field {ident} is not supported")
+
+    def set_global(self, ident: str, ctx: str, value: str) -> str:
+        t = self.tr()
+        text = (value or "").strip()
+        if ident == "xr_subnet_cidr":
+            targets, bad = normalize_targets(text, CANDIDATE_LIMIT)
+            if not targets and not bad:
+                raise PanelError("the scan list is empty")
+            if not targets:
+                raise PanelError(bad[0])
+            self.last_subnet = text
+            self.pending_subnet_targets = targets
+            return t("NOTICE_TARGETS_COUNT", count=len(targets))
+        if ident == "xr_scan_targets":
+            targets, bad = normalize_targets(text, SCAN_LIMIT)
+            if not targets and not bad:
+                raise PanelError("the scan list is empty")
+            if not targets:
+                raise PanelError(bad[0])
+            self.state.scan_targets = targets
+            note = t("NOTICE_TARGETS_COUNT", count=len(targets))
+            return note + (" " + t("NOTICE_TARGETS_SKIPPED", count=len(bad)) if bad else "")
+        if ident == "xr_scan_manual":
+            target = manual_target(text)
+            if target not in self.state.scan_targets:
+                if len(self.state.scan_targets) >= SCAN_LIMIT:
+                    raise PanelError(f"no more than {SCAN_LIMIT} targets are allowed")
+                self.state.scan_targets.append(target)
+            return t("NOTICE_TARGET_ADDED", target=target)
+        if ident == "xr_log_level":
+            level = text.lower()
+            if level not in LOG_LEVELS:
+                raise PanelError("the log level must be debug, info, warning or error")
+            self.state.log_level = level
+            return t("NOTICE_LOG_LEVEL", value=level)
+        if ident == "xr_sub_port":
+            port = parse_port(text)
+            for inbound in self.state.inbounds:
+                if inbound.port == port:
+                    raise PanelError(f"the port {port} is used by the inbound {inbound.remark}")
+            self.state.sub_port = port
+            self.bot.state.sub_port = port
+            return t("NOTICE_SUB_PORT", port=port)
+        if ident == "xr_sub_address":
+            self.state.sub_address = text
+            return t("NOTICE_SUB_ADDRESS", value=text) if text else t("NOTICE_SUB_ADDRESS_RESET")
+        if ident == "xr_sub_tag":
+            self.set_subscription_tag(text)
+            return "Xray subscription title set to %s" % self.subscription_title()
+        if ident == "xr_bantime":
+            if not text.isdigit() or int(text) < 1:
+                raise PanelError("the ban time must be a positive number of minutes")
+            self.bot.state.xray.fail2ban_bantime = int(text)
+            return t("NOTICE_BANTIME", value=text)
+        if ident == "xr_ssh_bantime":
+            value = parse_duration(text)
+            self.bot.state.xray.fail2ban_ssh_bantime = value
+            return t("NOTICE_SSH_BANTIME", value=value)
+        if ident == "xr_ssh_maxretry":
+            if not text.isdigit() or not 1 <= int(text) <= 50:
+                raise PanelError("the ssh retry count must be between 1 and 50")
+            self.bot.state.xray.fail2ban_ssh_maxretry = int(text)
+            return t("NOTICE_SSH_MAXRETRY", value=text)
+        if ident == "xr_ignoreip":
+            values = parse_addresses(text)
+            self.bot.state.xray.fail2ban_ignoreip = " ".join(values)
+            return t("NOTICE_IGNOREIP", value=", ".join(values) or DEFAULT_IGNOREIP)
+        if ident == "xr_sub_refresh":
+            if not text.isdigit() or not 1 <= int(text) <= 168:
+                raise PanelError("the refresh interval must be between 1 and 168 hours")
+            self.state.sub_refresh = int(text)
+            return t("NOTICE_SUB_REFRESH", value=self.state.sub_refresh)
+        if ident == "xr_sub_support":
+            if text and (not text.startswith(("http://", "https://")) or len(text) > 200 or " " in text):
+                raise PanelError(t("ERR_SUB_SUPPORT"))
+            self.state.sub_support_url = text
+            return t("NOTICE_SUB_SUPPORT", value=text or "-")
+        if ident == "xr_sub_announce":
+            if len(text) > 200 or "\n" in text or "\r" in text:
+                raise PanelError(t("ERR_SUB_ANNOUNCE"))
+            self.state.sub_announce = text
+            return t("NOTICE_SUB_ANNOUNCE", value=text or "-")
+        if ident == "xr_ban_ip":
+            if not text:
+                raise PanelError("the ip address must not be empty")
+            return t("NOTICE_ADDRESS", value=text)
+        if ident == "xr_scan_candidates":
+            values = parse_candidates(text)
+            if values:
+                clean, bad = normalize_targets(text, CANDIDATE_LIMIT)
+                if clean:
+                    values = clean
+            if len(values) > CANDIDATE_LIMIT:
+                raise PanelError(f"no more than {CANDIDATE_LIMIT} candidates are allowed")
+            self.state.scan_candidates = values
+            return t("NOTICE_CANDIDATES", count=len(values))
+        if ident == "xr_scan_sni":
+            self.state.scan_sni = text
+            return t("NOTICE_SCAN_SNI", value=text) if text else t("NOTICE_SCAN_SNI", value=t("UI_NONE"))
+        if ident == "xr_scan_xver":
+            if not text.isdigit() or int(text) not in (0, 1, 2):
+                raise PanelError("the proxy protocol version must be 0, 1 or 2")
+            self.state.scan_xver = int(text)
+            return t("NOTICE_SCAN_XVER", value=self.state.scan_xver)
+        if ident == "xr_dns_servers":
+            servers = parse_dns(text)
+            self.state.dns_servers = servers
+            return t("NOTICE_DNS", value=", ".join(servers) or t("UI_NONE"))
+        if ident == "xr_api_port":
+            port = parse_port(text)
+            for inbound in self.state.inbounds:
+                if inbound.port == port:
+                    raise PanelError(f"the port {port} is used by the inbound {inbound.remark}")
+            self.state.api_port = port
+            return t("NOTICE_API_PORT", port=port)
+        if ident == "xr_tunnel_host":
+            host = text.lower().rstrip(".")
+            if host and not TUNNEL_HOST_RE.match(host):
+                raise PanelError(t("DOM_HOST_BAD"))
+            self.state.tunnel_host = host
+            if not host:
+                self.state.tunnel_enabled = False
+            return t("NOTICE_TUNNEL_HOST", value=host or t("UI_NONE"))
+        if ident == "xr_tunnel_key":
+            if not text:
+                self.tunnel_key = ""
+                self.tunnel_exit_node = False
+                self.tunnel_tags = ""
+                self.tunnel_host_hint = ""
+                self.state.tunnel_exit_node = False
+                self.state.tunnel_tags = ""
+                self.state.tunnel_approval_url = ""
+                self.bot.tunnel_key = ""
+                self.store_tunnel_key("")
+                return t("NOTICE_TUNNEL_KEY_CLEARED")
+            parsed = parse_tailscale_input(text)
+            if parsed.kind == "api_token":
+                raise PanelError(t("DOM_KEY_API_WRONG"))
+            if not parsed.key:
+                raise PanelError(t("DOM_KEY_BAD"))
+            self.tunnel_key = parsed.key
+            self.tunnel_exit_node = parsed.exit_node
+            self.tunnel_tags = parsed.tags
+            self.tunnel_host_hint = parsed.hostname
+            self.state.tunnel_exit_node = parsed.exit_node
+            self.state.tunnel_tags = parsed.tags
+            self.state.tunnel_approval_url = ""
+            self.bot.tunnel_key = parsed.key
+            self.store_tunnel_key(parsed.key)
+            return t("NOTICE_TUNNEL_KEY", value=self.key_mask())
+        if ident == "xr_access_log":
+            if not text.startswith("/") or "\n" in text or "\r" in text:
+                raise PanelError("the access log path must be an absolute path without newlines")
+            self.state.access_log = text
+            return t("NOTICE_ACCESS_LOG", value=text)
+        if ident == "ssh_new_port":
+            port = parse_port(text)
+            return t("NOTICE_SSH_PORT", port=port)
+        if ident == "ssh_pubkey":
+            if not text.startswith(("ssh-", "ecdsa-", "sk-")):
+                raise PanelError("the value is not a public key")
+            return t("NOTICE_PUBKEY")
+        raise PanelError(f"the field {ident} is not supported")
+
+    async def apply_tgcloud_key(self, chat_id: int, value: str) -> None:
+        token = (value or "").strip()
+        if not token:
+            self.tgcloud_token = ""
+            self.state.tgcloud_app_id = ""
+            self.store_tgcloud_token("")
+            self.save()
+            await self.send(chat_id, xscreens.subs_screen(self.view(notice=self.tr()("NOTICE_TGCLOUD_CLEARED")), self.sub_rows()))
+            return
+        try:
+            app_id, token = serverless.token_parts(token)
+            await asyncio.to_thread(serverless.verify_token, token)
+        except serverless.ServerlessError as exc:
+            await self.send(chat_id, self.error_screen("xr_tgcloud_key", "subs", exc.message))
+            return
+        self.tgcloud_token = token
+        self.state.tgcloud_app_id = app_id
+        self.store_tgcloud_token(token)
+        self.save()
+        synced = False
+        try:
+            synced = await self.bot.subs_sync(force=True)
+        except Exception as exc:
+            log.warning("Telegram Serverless subscription sync failed: %s", type(exc).__name__)
+        notice = self.tr()("NOTICE_TGCLOUD_SET", app_id=app_id)
+        error = "" if synced else self.tr()("TGCLOUD_SYNC_PENDING")
+        await self.send(chat_id, xscreens.subs_screen(self.view(notice=notice, error=error), self.sub_rows()))
+
+    async def apply_input(self, chat_id: int, ident: str, ctx: str, value: str) -> None:
+        if ident == "xr_tgcloud_key":
+            await self.apply_tgcloud_key(chat_id, value)
+            return
+        try:
+            notice = self.set_field(ident, ctx, value)
+        except (PanelError, XrayError, InlineError, ModelError, ValueError) as exc:
+            await self.send(chat_id, self.error_screen(ident, ctx, str(exc)))
+            return
+        edited_inbound = self.inbound_of_ctx(ctx) if ident not in GLOBAL_FIELDS else None
+        if edited_inbound is not None:
+            self.mark_inbound_dirty(edited_inbound)
+        self.save()
+        verification_error = ""
+        if edited_inbound is not None:
+            verification_error = await self.verify_subscriptions_after_inbound_change()
+        if ident in {"xr_sub_address", "xr_sub_tag", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce"}:
+            await self.push_subs_live()
+        if ident == "xr_subnet_cidr":
+            clean = list(self.pending_subnet_targets)[:CANDIDATE_LIMIT]
+            self.pending_subnet_targets = []
+            scan_ctx = ctx if (ctx in {"wiz", "new", "custom"} or ctx.isdigit()) else "new"
+            is_single_host = len(clean) == 1 and "/" not in clean[0]
+            has_subnet = any("/" in item for item in clean) or len(clean) > 24
+            shown_count = 254 * sum(1 for item in clean if "/" in item) + sum(1 for item in clean if "/" not in item)
+            t = self.tr()
+            busy_id = 0
+            send_prog = getattr(self.bot, "send_progress", None)
+            if callable(send_prog):
+                busy_id = await send_prog(
+                    chat_id,
+                    xscreens.busy_screen(
+                        t("BUSY_SCAN"),
+                        self.bot.state.language,
+                        [t("BUSY_SCAN_STEP_COUNT", count=shown_count), t("BUSY_SCAN_STEP_CHECKS")],
+                    ),
+                )
+            err = ""
+            try:
+                results = await scan_targets(
+                    clean,
+                    sni=self.state.scan_sni,
+                    xver=int(self.state.scan_xver or 0),
+                    candidates=self.state.candidates(),
+                    concurrency=48 if has_subnet else CONCURRENCY,
+                )
+            except (OSError, ValueError, ScanError) as exc:
+                err = str(exc)
+                results = self.results
+            else:
+                self.results = results
+                self.save()
+            if busy_id:
+                drop = getattr(self.bot, "drop_marker", None)
+                if callable(drop):
+                    await drop(chat_id, busy_id)
+            if scan_ctx == "wiz":
+                if not err and is_single_host and results and results[0].feasible:
+                    chosen = results[0]
+                    self.wiz_target = chosen
+                    host = chosen.host or chosen.target.rsplit(":", 1)[0]
+                    port = int(chosen.port or 443)
+                    sni = (chosen.server_names[0] if chosen.server_names else "") or host
+                    self.picked_dest = f"{host}:{port}" if ":" not in host else f"[{host}]:{port}"
+                    self.picked_sni = sni
+                    await self.send(chat_id, xscreens.wiz_sec_screen(self.view(), self.wiz_network or "raw", chosen, ctx="wiz"))
+                    return
+                if not err and is_single_host and results and not results[0].feasible:
+                    err = results[0].reason or "the target is not suitable for Reality"
+                good = sum(1 for item in results if item.feasible)
+                shown_notice = "" if err else t("NOTICE_SCAN_DONE", good=good, total=len(results))
+                await self.send(chat_id, xscreens.wiz_scan_screen(self.view(notice=shown_notice, error=err), self.wiz_network or "raw", results))
+                return
+            good = sum(1 for item in results if item.feasible)
+            shown_notice = "" if err else t("NOTICE_SCAN_DONE", good=good, total=len(results))
+            await self.send(chat_id, xscreens.subnet_scan_screen(self.view(notice=shown_notice, error=err), results, ctx=scan_ctx))
+            return
+        if ident == "xr_tunnel_key":
+            if not (value or "").strip():
+                self.stop_funnel_autopilot()
+                if self.state.tunnel_enabled:
+                    try:
+                        await self.control.tunnel_down(self.bot.state.ssh)
+                    except RpcError:
+                        pass
+                    self.state.tunnel_enabled = False
+                if self.state.sub_enabled:
+                    try:
+                        await self.control.sub_stop(self.bot.state.ssh, self.state.sub_port)
+                    except RpcError:
+                        pass
+                    self.state.sub_enabled = False
+                self.save()
+                await self.send(chat_id, xscreens.subs_screen(self.view(notice=notice), self.sub_rows()))
+                return
+            busy_id = 0
+            send_prog = getattr(self.bot, "send_progress", None)
+            if callable(send_prog):
+                busy_id = await send_prog(chat_id, xscreens.busy_screen(self.tr()("BUSY_TUNNEL_UP"), self.bot.state.language))
+            ready_notice, err = await self.setup_domain_subs()
+            if busy_id:
+                drop = getattr(self.bot, "drop_marker", None)
+                if callable(drop):
+                    await drop(chat_id, busy_id)
+            shown_notice = "" if err else (ready_notice or notice)
+            sent_id = await self.send(chat_id, xscreens.subs_screen(self.view(notice=shown_notice, error=err), self.sub_rows()))
+            if err and self.state.tunnel_approval_url and sent_id > 0:
+                self.start_funnel_autopilot(chat_id, sent_id, int(self.state.sub_port or 0), self.pending_funnel_port)
+            return
+        if edited_inbound is not None:
+            await self.send(chat_id, xscreens.inbound_screen(self.view(notice=notice, error=verification_error), edited_inbound))
+            return
+        await self.send(chat_id, await self.screen_for(ident, ctx, notice))
+
+    def error_screen(self, ident: str, ctx: str, message: str) -> Any:
+        try:
+            return xscreens.input_screen(self.view(error=message), ident, ctx, self.back_target(ctx, ident))
+        except InlineError:
+            return xscreens.home(self.view(error=message))
+
+    def back_target(self, ctx: str, ident: str = "") -> str:
+        if ident == "xr_subnet_cidr":
+            if ctx == "wiz":
+                return "xr:wiz:back"
+            scan_ctx = ctx if (ctx in {"new", "custom"} or ctx.isdigit()) else "new"
+            return f"xr:subscan:{scan_ctx}"
+        if ident == "xr_port" and ctx in {"-", "custom"}:
+            return "xr:custom:open"
+        parts = ctx.split(":", 1)
+        return f"xr:in:{parts[0]}" if parts[0].isdigit() else "xr:home"
+
+    async def screen_for(self, ident: str, ctx: str, notice: str) -> Any:
+        inbound = self.inbound_of_ctx(ctx)
+        if inbound is None and ident == "xr_port" and ctx in {"-", "custom"}:
+            return xscreens.custom_menu(self.view(notice=notice))
+        if inbound is not None:
+            return xscreens.inbound_screen(self.view(notice=notice), inbound)
+        if ident in {"xr_scan_targets", "xr_scan_manual", "xr_scan_candidates", "xr_scan_sni", "xr_scan_xver"}:
+            return xscreens.scan_targets_screen(self.view(notice=notice))
+        if ident in {"xr_dns_servers", "xr_api_port", "xr_access_log"}:
+            return screens.settings(self.bot.view(notice=notice))
+        if ident == "xr_log_level":
+            return xscreens.core_screen(self.view(notice=notice))
+        if ident in {"xr_sub_port", "xr_sub_address", "xr_sub_tag", "xr_sub_refresh", "xr_sub_support", "xr_sub_announce", "xr_tunnel_host", "xr_tunnel_key", "xr_tgcloud_key"}:
+            return xscreens.subs_screen(self.view(notice=notice), self.sub_rows())
+        if ident in {"xr_ban_ip", "xr_bantime", "xr_ssh_bantime", "xr_ssh_maxretry", "xr_ignoreip"}:
+            return screens.ban_screen(self.bot.ban_view(notice=notice))
+        if ident in {"ssh_new_port", "ssh_pubkey"}:
+            return screens.sshd_screen(self.bot.sshd_view(notice=notice))
+        return xscreens.home(self.view(notice=notice))
+
+
+def manual_target(text: str) -> str:
+    try:
+        return normalize_target(text)
+    except ScanError as exc:
+        raise PanelError(str(exc)) from None
+
+
+def checked(func, *args):
+    try:
+        return func(*args)
+    except XrayError as exc:
+        raise PanelError(str(exc)) from None
+
+
+def host_port(value: object) -> tuple[str, int]:
+    text = str(value or "").strip()
+    if not text:
+        raise PanelError("a host:port value is required")
+    host = text
+    port = 443
+    if text.startswith("["):
+        host, _, rest = text[1:].partition("]")
+        rest = rest.lstrip(":")
+        if rest:
+            port = parse_port(rest)
+    elif text.count(":") == 1:
+        host, raw_port = text.split(":", 1)
+        port = parse_port(raw_port)
+    host = host.strip()
+    if not host or any(char.isspace() for char in host):
+        raise PanelError("the address must not contain spaces")
+    return host, port
+
+
+DNS_ENTRY = re.compile(r"^[A-Za-z0-9._:-]{1,253}$")
+
+
+def parse_dns(value: object) -> list[str]:
+    text = str(value or "").replace(";", ",").replace(" ", ",")
+    out: list[str] = []
+    for item in text.split(","):
+        token = item.strip()
+        if not token:
+            continue
+        if token.startswith(("https://", "tls://", "quic://", "h2c://")):
+            if any(char.isspace() for char in token) or len(token) > 300:
+                raise PanelError("the dns server looks wrong")
+            if token not in out:
+                out.append(token)
+            continue
+        body = token.split(":", 1)[0] if token.count(":") == 1 else token
+        if not DNS_ENTRY.match(token) or not body:
+            raise PanelError(f"{token} is not a dns server")
+        if token not in out:
+            out.append(token)
+    return out[:8]
+
+
+def parse_duration(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not DURATION.match(text):
+        raise PanelError("the duration must be a number with s, m, h, d or w, for example 3d")
+    return text
+
+
+def parse_addresses(value: object) -> list[str]:
+    text = str(value or "").replace(";", ",").replace(" ", ",")
+    out: list[str] = []
+    for item in text.split(","):
+        token = item.strip()
+        if not token:
+            continue
+        try:
+            network = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            raise PanelError(f"{token} is not an address or a network") from None
+        rendered = str(network.network_address) + ("/" + str(network.prefixlen) if network.prefixlen != network.max_prefixlen else "")
+        if rendered not in out:
+            out.append(rendered)
+    if not out:
+        raise PanelError("at least one address is required")
+    return out
+
+
+def parse_port(value: object) -> int:
+    text = str(value or "").strip()
+    if not text.isdigit():
+        raise PanelError("the port must be a number")
+    port = int(text)
+    if port < 1 or port > 65535:
+        raise PanelError("the port must be between 1 and 65535")
+    return port
+
+
+def state_report(state: CoreState) -> dict[str, Any]:
+    return {
+        "installed": state.installed,
+        "version": state.version,
+        "pinned": state.pinned,
+        "core_path": state.core_path,
+        "config_path": state.config_path,
+        "config_exists": state.config_exists,
+        "config_digest": state.config_digest,
+        "inbounds": state.inbounds,
+        "port": state.port,
+        "ports": state.ports,
+        "listening": state.listening,
+        "service": state.service,
+        "unit": state.unit,
+        "systemd": state.systemd,
+        "arch": state.arch,
+    }
+
+

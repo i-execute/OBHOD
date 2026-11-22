@@ -1,0 +1,41 @@
+[Unit]
+Description=OBHOD telegram control bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=@ENV_FILE@
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=@PREFIX@
+ExecStart=@PREFIX@/venv/bin/python -m BOT
+Restart=always
+RestartSec=5
+StateDirectory=obhod
+LogsDirectory=obhod
+LogsDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@STATE_DIR@ /var/log /root/.goygram -/etc/fail2ban -/etc/ssh -/etc/systemd/system -/usr/local/bin -/usr/local/etc/xray -/usr/local/share/xray -/var/lib/xray-manager -/root/.ssh -/home -/opt -/var/tmp/obhod-stage -/etc/obhod -/etc/wireguard -/etc/sysctl.d -/etc/ufw -/etc/firewalld -/var/lib/tailscale -/run/tailscale
+Environment=OBHOD_SECURITY_LOG=/var/log/obhod/security.log
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+PrivateDevices=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+MemoryDenyWriteExecute=false
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
