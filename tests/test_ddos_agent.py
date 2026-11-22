@@ -62,7 +62,7 @@ def bench(tmp_path: Path):
                 "#!/bin/sh",
                 'printf "%s\\n" "$*" >> "$STUB_LOG"',
                 'case "$1" in',
-                '  list) if [ -s "$STUB_LOADED" ]; then cat "$STUB_LOADED"; exit 0; fi; echo "nft: no such file" >&2; exit 1 ;;',
+                '  list) if [ "$2" = tables ]; then if [ -s "$STUB_LOADED" ]; then echo "table inet obhod_ddos"; fi; exit 0; fi; if [ -s "$STUB_LOADED" ]; then sed -n "/^table inet obhod_ddos/,\\$p" "$STUB_LOADED"; exit 0; fi; echo "nft: no such file" >&2; exit 1 ;;',
                 '  -c) exit "${STUB_CHECK:-0}" ;;',
                 '  -f) if [ -f "$STUB_FAIL" ]; then echo "syntax error" >&2; exit 1; fi; cp "$2" "$STUB_LOADED"; exit 0 ;;',
                 "  delete) exit 0 ;;",
@@ -164,7 +164,7 @@ def test_install_writes_and_loads(bench) -> None:
 def test_the_unit_and_the_sysctl_file_are_written(bench) -> None:
     bench.run("install")
     unit = (bench.root / "obhod-ddos.service").read_text(encoding="utf-8")
-    assert "ExecStart=" in unit and "delete table inet obhod_ddos" in unit
+    assert "ExecStart=" in unit and "restore" in unit and "ExecStop=" not in unit
     assert "RemainAfterExit=yes" in unit
     knobs = (bench.root / "99-obhod-ddos.conf").read_text(encoding="utf-8")
     assert "net.ipv4.tcp_syncookies = 1" in knobs
@@ -275,7 +275,7 @@ def test_missing_nft_is_reported_not_hidden(bench) -> None:
     payload = bench.run("install", "--nft=/nonexistent/nft")
     assert payload["ok"] is False
     assert payload["code"] == "no_nft"
-    assert (bench.root / "ddos.nft").is_file()
+    assert not (bench.root / "ddos.nft").exists()
 
 
 def test_the_render_command_shows_both_files(bench) -> None:

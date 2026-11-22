@@ -331,7 +331,7 @@ def write_unit():
 
 ALLOWED_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 ALLOWED_FILES = ("/usr/local/bin/", "/tmp/", "/opt/")
-SAFE_VERSION = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+SAFE_VERSION = re.compile(r"^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$")
 
 
 def safe_url(url, redirect=False):
@@ -436,7 +436,7 @@ def latest_tag(timeout=15, use_cache=True):
         with open_url(request, timeout) as response:
             body = json.loads(response.read(1024 * 1024).decode("utf-8"))
         candidate = str(body.get("tag_name", "") or "").strip()
-        if candidate.startswith("v"):
+        if SAFE_VERSION.fullmatch(candidate):
             tag = candidate
             reason = ""
         else:

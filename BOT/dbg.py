@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import secrets
 import time
 from typing import Any
 
-from . import antiddos, cores, dpi, dscreens, fwguard, guard, i18n, ipscan, net, notify, portguard, scripts
+from . import antiddos, cores, dpi, dscreens, fwguard, guard, i18n, ipscan, net, notify, portguard, rkn_live, scripts
 from .freeturn import FtError
 
 SCAN_COOLDOWN = 3.0
@@ -19,6 +22,8 @@ MAX_LOG = 12
 DPI_LIMIT = 20.0
 VK_LIMIT = 40.0
 NET_LIMIT = 120.0
+RKN_LIVE_INTERVAL = 10.0
+RKN_LIVE_DURATION = 300.0
 
 
 OFFLINE_CODES = {"network", "timeout", "unreachable", "rate_limited", "http_000"}
@@ -59,6 +64,10 @@ class DebugPanel:
         self.ddos_page = 0
         self.ddos_in_ips = False
         self.rkn_sync_errors: list[str] = []
+        self.rkn_live_tasks: dict[tuple[int, int], asyncio.Task[Any]] = {}
+        self.ddos_reconcile_confirm: dict[tuple[int, int], tuple[str, str, float]] = {}
+        self.ddos_wal_confirm: dict[tuple[int, int], tuple[str, str, float]] = {}
+        self.ddos_adopt_confirm: dict[tuple[int, int], tuple[str, str, str, float]] = {}
 
     def make_centre(self) -> Any:
         centre = getattr(self.bot, "notify", None)
@@ -91,6 +100,7 @@ class DebugPanel:
             ddos_busy=self.ddos_busy,
             ddos_page=self.ddos_page,
             ddos_alerts=bool(self.notify.settings.on(notify.KIND_DDOS)),
+            ddos_bot_mismatch=bool(self.ddos is not None and self.ddos.installed and antiddos.firewall_policy_differs(antiddos.Policy.from_dict(getattr(self.bot.state, "ddos", {})), self.ddos.policy)),
             emoji=self.bot.emoji_enabled,
             lang=self.tr().language,
         )
@@ -121,7 +131,96 @@ class DebugPanel:
         self.error = ""
         self.trace_text = ""
 
+    def stop_rkn_live(self, chat_id: int, msg_id: int) -> None:
+        task = self.rkn_live_tasks.pop((chat_id, msg_id), None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def render_rkn_live(self, chat_id: int, msg_id: int, rich: Any) -> None:
+        app = getattr(self.bot, "app", None)
+        if app is None:
+            raise RuntimeError("Telegram session unavailable")
+        try:
+            await app.edit_rich(chat_id, msg_id, rich, via="mt")
+        except Exception as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
+
+    async def rkn_live(self, chat_id: int, msg_id: int, kind: str, initial: str) -> None:
+        key = (chat_id, msg_id)
+        text = initial
+        deadline = time.monotonic() + RKN_LIVE_DURATION
+        try:
+            while time.monotonic() < deadline:
+                await asyncio.sleep(min(RKN_LIVE_INTERVAL, max(0.0, deadline - time.monotonic())))
+                if time.monotonic() >= deadline:
+                    break
+                client = guard.GuardClient(self.bot.control)
+                response = await client._call(getattr(self.bot.state, "ssh", None), guard.DDOS_SCRIPT, "ddos script", ["logs", "--kind=" + kind], 30)
+                text = str(response.data.get("text", ""))
+                enabled = antiddos.Policy.from_dict(self.bot.state.ddos).rkn_logging
+                await self.render_rkn_live(chat_id, msg_id, dscreens.ddos_logs_screen(self.view(), text, kind, enabled, live=True))
+            enabled = antiddos.Policy.from_dict(self.bot.state.ddos).rkn_logging
+            await self.render_rkn_live(chat_id, msg_id, dscreens.ddos_logs_screen(self.view(), text, kind, enabled))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            enabled = antiddos.Policy.from_dict(self.bot.state.ddos).rkn_logging
+            error = str(getattr(exc, "message", exc))[:160]
+            try:
+                await self.render_rkn_live(chat_id, msg_id, dscreens.ddos_logs_screen(self.view(error=error), text, kind, enabled))
+            except Exception:
+                pass
+        finally:
+            if self.rkn_live_tasks.get(key) is asyncio.current_task():
+                self.rkn_live_tasks.pop(key, None)
+
+    async def rkn_live_stream(self, chat_id: int, msg_id: int, kind: str, initial: str, cursor: str, started_at: int) -> None:
+        key = (chat_id, msg_id)
+        lines = initial.splitlines()[-40:] if initial != "No journal entries" else []
+        deadline = time.monotonic() + RKN_LIVE_DURATION
+        next_update = time.monotonic() + RKN_LIVE_INTERVAL
+        stream = rkn_live.journal_stream(self.bot.control.shell, kind, cursor, started_at)
+        reader = asyncio.create_task(anext(stream))
+        dirty = False
+        try:
+            while time.monotonic() < deadline:
+                timeout = max(0.0, min(deadline, next_update) - time.monotonic())
+                completed, _pending = await asyncio.wait({reader}, timeout=timeout)
+                if completed:
+                    line = reader.result()
+                    lines.append(line)
+                    lines = lines[-40:]
+                    dirty = True
+                    reader = asyncio.create_task(anext(stream))
+                now = time.monotonic()
+                if now >= next_update:
+                    if dirty:
+                        enabled = antiddos.Policy.from_dict(self.bot.state.ddos).rkn_logging
+                        await self.render_rkn_live(chat_id, msg_id, dscreens.ddos_logs_screen(self.view(), "\n".join(lines), kind, enabled, live=True, stream=True))
+                        dirty = False
+                    next_update = now + RKN_LIVE_INTERVAL
+            enabled = antiddos.Policy.from_dict(self.bot.state.ddos).rkn_logging
+            await self.render_rkn_live(chat_id, msg_id, dscreens.ddos_logs_screen(self.view(), "\n".join(lines), kind, enabled))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            enabled = antiddos.Policy.from_dict(self.bot.state.ddos).rkn_logging
+            error = str(getattr(exc, "message", exc))[:160]
+            try:
+                await self.render_rkn_live(chat_id, msg_id, dscreens.ddos_logs_screen(self.view(error=error), "\n".join(lines), kind, enabled))
+            except Exception:
+                pass
+        finally:
+            if not reader.done():
+                reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+            await stream.aclose()
+            if self.rkn_live_tasks.get(key) is asyncio.current_task():
+                self.rkn_live_tasks.pop(key, None)
+
     async def route(self, chat_id: int, msg_id: int, data: str) -> None:
+        self.stop_rkn_live(chat_id, msg_id)
         parts = data.split(":")
         head = parts[1] if len(parts) > 1 else "home"
         arg1 = parts[2] if len(parts) > 2 else ""
@@ -479,20 +578,44 @@ class DebugPanel:
                 protected.append(cleaned)
         return protected
 
+    def rkn_source_cache(self) -> dict[str, Any]:
+        path = getattr(getattr(self.bot, "store", None), "path", None)
+        if not path:
+            return {}
+        target = path.parent / "rkn_sources_cache.json"
+        try:
+            if target.is_symlink() or target.stat().st_size > 32 * antiddos.MAX_RKN_BYTES:
+                return {}
+            data = json.loads(target.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
     async def auto_sync_rkn(self) -> tuple[int, int, int]:
         policy = antiddos.Policy.from_dict(getattr(self.bot.state, "ddos", {}))
+        client = guard.GuardClient(self.bot.control)
+        cfg = getattr(self.bot.state, "ssh", None)
+        observed = await guard.ddos_call(client, cfg, ["status"], 60)
+        if observed.transaction_state != "none" or observed.table_inspection == "unknown" or (observed.table and not observed.installed) or (observed.installed and antiddos.firewall_policy_differs(policy, observed.policy)) or observed.saved_policy_consistency in ("mismatch", "unknown") or observed.live_rate_consistency in ("mismatch", "unknown"):
+            raise antiddos.DDoSerror("firewall policy needs review before source update")
+        digest = observed.policy_sha256
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise antiddos.DDoSerror("firewall policy digest is unavailable; source update cancelled")
         extra = [*self._protected_rkn_ips(), *policy.rkn_allow]
         v4, v6, ok_sources, errors = await asyncio.to_thread(
             antiddos.fetch_rkn_subnets,
             custom_sources=policy.custom_sources,
             extra_protected=extra,
             timeout=10.0,
+            cache_path=getattr(getattr(self.bot, "store", None), "path", None).parent / "rkn_sources_cache.json" if getattr(getattr(self.bot, "store", None), "path", None) else None,
+            disabled_sources=policy.disabled_sources,
         )
+        current = antiddos.Policy.from_dict(getattr(self.bot.state, "ddos", {}))
+        if antiddos.firewall_policy_differs(current, policy) or (current.custom_sources, current.disabled_sources) != (policy.custom_sources, policy.disabled_sources):
+            raise antiddos.DDoSerror("RKN policy changed during update; retry")
         zhex = antiddos.encode_rkn_zhex(v4, v6)
-        client = guard.GuardClient(self.bot.control)
-        cfg = getattr(self.bot.state, "ssh", None)
-        args = ["rkn-sync", "--rkn_zhex=-"]
-        if errors:
+        args = ["rkn-sync", "--rkn_zhex=-", "--expected_policy_sha=" + digest]
+        if any("(no cache)" in err or "(cached)" not in err for err in errors):
             args.append("--preserve_existing=1")
         status = await guard.ddos_call(
             client,
@@ -529,6 +652,9 @@ class DebugPanel:
                 items = [entry for entry in items if entry != cleaned]
                 notice = "-%s" % cleaned
             else:
+                if len(items) >= antiddos.MAX_CUSTOM_ENTRIES:
+                    await self.bot.send(chat_id, target_screen(self.view(error=t("DDOS_LIST_FULL"))))
+                    return
                 items.append(cleaned)
                 notice = "+%s" % cleaned
                 if field_name == "manual_bans":
@@ -538,11 +664,6 @@ class DebugPanel:
                     policy.manual_bans = [entry for entry in policy.manual_bans if entry != cleaned]
         setattr(policy, field_name, items)
         policy.normalise()
-        self.bot.state.ddos = policy.to_dict()
-        if hasattr(self.bot, "save"):
-            self.bot.save()
-        if self.ddos is not None:
-            self.ddos.policy = policy
         if self.ddos is not None and self.ddos.installed:
             client = guard.GuardClient(self.bot.control)
             cfg = getattr(self.bot.state, "ssh", None)
@@ -552,20 +673,20 @@ class DebugPanel:
                     self.bot.ddos_state = self.ddos
             except Exception as exc:
                 self.error = str(getattr(exc, "message", exc))[:160]
+                self.note("dd", field_name, "fail")
+                await self.bot.send(chat_id, target_screen(self.view()))
+                return
+        elif self.ddos is not None:
+            self.ddos.policy = policy
+        self.bot.state.ddos = policy.to_dict()
+        if hasattr(self.bot, "save"):
+            self.bot.save()
         self.note("dd", field_name, notice)
         await self.bot.send(chat_id, target_screen(self.view(notice=notice)))
 
     def _resolve_ddos_token(self, token: str) -> str:
         raw = str(token or "").strip()
-        if raw.startswith("@") and self.ddos is not None:
-            try:
-                idx = int(raw[1:])
-                records = self.ddos.ip_records()
-                if 0 <= idx < len(records):
-                    return records[idx].address
-            except (ValueError, IndexError):
-                return ""
-        return raw
+        return "" if raw.startswith("@") else raw
 
     async def _toggle_ddos_ip(self, chat_id: int, msg_id: int, mode: str, page_str: str, token: str) -> None:
         t = self.tr()
@@ -580,10 +701,17 @@ class DebugPanel:
         if not cleaned or (mode == "rb" and cleaned in self._protected_rkn_ips()):
             await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(error=t("DDOS_BAD_ENTRY"))))
             return
+        records = self.ddos.ip_records() if self.ddos is not None else []
+        if not any(item.address == cleaned and item.blocked == (mode == "ub") for item in records):
+            await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(error=t("DDOS_IP_STALE"))))
+            return
         policy = antiddos.Policy.from_dict(self.bot.state.ddos)
         if mode == "ub":
             policy.manual_bans = [item for item in policy.manual_bans if item != cleaned]
             if cleaned not in policy.rkn_allow:
+                if len(policy.rkn_allow) >= antiddos.MAX_CUSTOM_ENTRIES:
+                    await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(error=t("DDOS_LIST_FULL"))))
+                    return
                 policy.rkn_allow.append(cleaned)
             policy.unbanned = [cleaned, *[item for item in policy.unbanned if item != cleaned]][:64]
             cmd_name = "unban"
@@ -592,20 +720,13 @@ class DebugPanel:
             policy.rkn_allow = [item for item in policy.rkn_allow if item != cleaned]
             policy.unbanned = [item for item in policy.unbanned if item != cleaned]
             if cleaned not in policy.manual_bans:
+                if len(policy.manual_bans) >= antiddos.MAX_CUSTOM_ENTRIES:
+                    await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(error=t("DDOS_LIST_FULL"))))
+                    return
                 policy.manual_bans.append(cleaned)
             cmd_name = "reban"
             toast = t("DDOS_TOAST_REBANNED", ip=cleaned)
         policy.normalise()
-        self.bot.state.ddos = policy.to_dict()
-        if hasattr(self.bot, "save"):
-            self.bot.save()
-        if self.ddos is not None:
-            if mode == "ub":
-                for bucket in ("syn_flood", "conn_flood", "udp_flood", "icmp_flood", "scan"):
-                    cur = list(getattr(self.ddos, bucket, []) or [])
-                    if cleaned in cur:
-                        setattr(self.ddos, bucket, [item for item in cur if item != cleaned])
-            self.ddos.policy = policy
         if self.ddos is not None and self.ddos.installed:
             client = guard.GuardClient(self.bot.control)
             cfg = getattr(self.bot.state, "ssh", None)
@@ -615,29 +736,343 @@ class DebugPanel:
                     self.bot.ddos_state = self.ddos
             except Exception as exc:
                 self.error = str(getattr(exc, "message", exc))[:160]
+                self.note("dd", cmd_name, "fail")
+                await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view()))
+                return
+        elif self.ddos is not None:
+            if mode == "ub":
+                for bucket in ("syn_flood", "conn_flood", "udp_flood", "icmp_flood", "scan"):
+                    cur = list(getattr(self.ddos, bucket, []) or [])
+                    if cleaned in cur:
+                        setattr(self.ddos, bucket, [item for item in cur if item != cleaned])
+            self.ddos.policy = policy
+        self.bot.state.ddos = policy.to_dict()
+        if hasattr(self.bot, "save"):
+            self.bot.save()
         self.note("dd", cmd_name, cleaned)
         await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(notice=toast)))
 
     async def ddos_action(self, chat_id: int, msg_id: int, action: str) -> None:
         t = self.tr()
         self.ddos_busy = False
+        key = (chat_id, msg_id)
+        if action != "adopt_policy" and not action.startswith("adopt_do:"):
+            self.ddos_adopt_confirm.pop(key, None)
+        if action != "wal_recover" and not action.startswith("wal_do:"):
+            self.ddos_wal_confirm.pop(key, None)
+        if action != "reconcile" and not action.startswith("reconcile_do:"):
+            self.ddos_reconcile_confirm.pop(key, None)
+        if action == "adopt_policy":
+            self.ddos_adopt_confirm.pop(key, None)
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                client = guard.GuardClient(self.bot.control)
+                current = await guard.ddos_call(client, getattr(self.bot.state, "ssh", None), ["status"], 60)
+                digest = current.policy_sha256
+                if not current.installed or current.transaction_state != "none" or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                    raise ValueError(t("DDOS_ADOPT_UNAVAILABLE"))
+                local = antiddos.Policy.from_dict(self.bot.state.ddos)
+                if not antiddos.firewall_policy_differs(local, current.policy):
+                    raise ValueError(t("DDOS_ADOPT_UNAVAILABLE"))
+                local_sha = hashlib.sha256(json.dumps(local.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                now = time.monotonic()
+                for pending, item in list(self.ddos_adopt_confirm.items()):
+                    if pending[0] == chat_id or item[3] < now:
+                        self.ddos_adopt_confirm.pop(pending, None)
+                if len(self.ddos_adopt_confirm) >= 64:
+                    oldest = min(self.ddos_adopt_confirm, key=lambda item: self.ddos_adopt_confirm[item][3])
+                    self.ddos_adopt_confirm.pop(oldest, None)
+                token = secrets.token_hex(8)
+                self.ddos_adopt_confirm[key] = (token, digest, local_sha, now + 120.0)
+                self.ddos = current
+                self.error = ""
+                await self.render(chat_id, msg_id, dscreens.ddos_adopt_screen(self.view(), current, token))
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        if action.startswith("adopt_do:"):
+            confirm = self.ddos_adopt_confirm.pop(key, None)
+            token = action.split(":", 1)[1]
+            if not confirm or not secrets.compare_digest(token, confirm[0]) or time.monotonic() > confirm[3]:
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(error=t("DDOS_RECONCILE_STALE"))))
+                return
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                client = guard.GuardClient(self.bot.control)
+                current = await guard.ddos_call(client, getattr(self.bot.state, "ssh", None), ["status"], 60)
+                local = antiddos.Policy.from_dict(self.bot.state.ddos)
+                local_sha = hashlib.sha256(json.dumps(local.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                if not current.installed or current.transaction_state != "none" or current.policy_sha256 != confirm[1] or local_sha != confirm[2]:
+                    raise ValueError(t("DDOS_RECONCILE_STALE"))
+                merged = current.policy.to_dict()
+                merged["custom_sources"] = local.custom_sources
+                merged["disabled_sources"] = local.disabled_sources
+                previous = self.bot.state.ddos
+                self.bot.state.ddos = antiddos.Policy.from_dict(merged).to_dict()
+                try:
+                    self.bot.save()
+                except Exception:
+                    self.bot.state.ddos = previous
+                    raise
+                self.ddos = current
+                if hasattr(self.bot, "ddos_state"):
+                    self.bot.ddos_state = current
+                self.error = ""
+                self.note("dd", "adopt_policy", "ok")
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DDOS_ADOPT_DONE"))))
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                self.note("dd", "adopt_policy", "fail")
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        if action == "wal_recover":
+            self.ddos_wal_confirm.pop(key, None)
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                client = guard.GuardClient(self.bot.control)
+                current = await guard.ddos_call(client, getattr(self.bot.state, "ssh", None), ["status"], 60)
+                digest = current.transaction_digest
+                if current.transaction_state not in ("automatic", "manual") or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                    raise ValueError(t("DDOS_WAL_UNAVAILABLE"))
+                now = time.monotonic()
+                for pending, item in list(self.ddos_wal_confirm.items()):
+                    if pending[0] == chat_id or item[2] < now:
+                        self.ddos_wal_confirm.pop(pending, None)
+                if len(self.ddos_wal_confirm) >= 64:
+                    oldest = min(self.ddos_wal_confirm, key=lambda item: self.ddos_wal_confirm[item][2])
+                    self.ddos_wal_confirm.pop(oldest, None)
+                token = secrets.token_hex(8)
+                self.ddos_wal_confirm[key] = (token, digest, now + 120.0)
+                self.ddos = current
+                self.error = ""
+                await self.render(chat_id, msg_id, dscreens.ddos_wal_screen(self.view(), current, token))
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        if action.startswith("wal_do:"):
+            confirm = self.ddos_wal_confirm.pop(key, None)
+            token = action.split(":", 1)[1]
+            if not confirm or not secrets.compare_digest(token, confirm[0]) or time.monotonic() > confirm[2]:
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(error=t("DDOS_RECONCILE_STALE"))))
+                return
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                client = guard.GuardClient(self.bot.control)
+                await client._call(getattr(self.bot.state, "ssh", None), guard.DDOS_SCRIPT, "ddos script", ["recover-policy", "--expected_sha=" + confirm[1]], 180)
+                self.error = ""
+                await self.ddos_refresh(probe=False)
+                if self.ddos is None or self.error:
+                    raise ValueError(t("DDOS_WAL_STATUS_FAILED"))
+                if hasattr(self.bot, "ddos_state"):
+                    self.bot.ddos_state = self.ddos
+                self.note("dd", "wal_recover", "ok")
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DDOS_WAL_DONE"))))
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                self.note("dd", "wal_recover", "fail")
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        if action == "reconcile":
+            self.ddos_reconcile_confirm.pop(key, None)
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                client = guard.GuardClient(self.bot.control)
+                current = await guard.ddos_call(client, getattr(self.bot.state, "ssh", None), ["status"], 60)
+                fingerprint = current.reconcile_fingerprint
+                if len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint):
+                    raise ValueError(t("DDOS_RECONCILE_UNAVAILABLE"))
+                now = time.monotonic()
+                for pending, item in list(self.ddos_reconcile_confirm.items()):
+                    if pending[0] == chat_id or item[2] < now:
+                        self.ddos_reconcile_confirm.pop(pending, None)
+                if len(self.ddos_reconcile_confirm) >= 64:
+                    oldest = min(self.ddos_reconcile_confirm, key=lambda item: self.ddos_reconcile_confirm[item][2])
+                    self.ddos_reconcile_confirm.pop(oldest, None)
+                token = secrets.token_hex(8)
+                self.ddos_reconcile_confirm[key] = (token, fingerprint, now + 120.0)
+                self.ddos = current
+                self.error = ""
+                await self.render(chat_id, msg_id, dscreens.ddos_reconcile_screen(self.view(), current, token))
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
+        if action.startswith("reconcile_do:"):
+            confirm = self.ddos_reconcile_confirm.pop(key, None)
+            token = action.split(":", 1)[1]
+            if not confirm or not secrets.compare_digest(token, confirm[0]) or time.monotonic() > confirm[2]:
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(error=t("DDOS_RECONCILE_STALE"))))
+                return
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                client = guard.GuardClient(self.bot.control)
+                self.ddos = await guard.ddos_call(client, getattr(self.bot.state, "ssh", None), ["reconcile", "--expected_sha=" + confirm[1]], 180)
+                if hasattr(self.bot, "ddos_state"):
+                    self.bot.ddos_state = self.ddos
+                self.error = ""
+                self.note("dd", "reconcile", "ok")
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view(notice=t("DDOS_RECONCILE_DONE"))))
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                self.note("dd", "reconcile", "fail")
+                await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
+            return
         if action in ("", "open", "refresh"):
             self.ddos_in_ips = False
             await self.render(chat_id, msg_id, dscreens.busy(self.view()))
             await self.ddos_refresh(probe=action == "open")
             await self.render(chat_id, msg_id, dscreens.ddos_screen(self.view()))
             return
-        if action == "logs":
+        if action in ("schedule", "sched12", "sched6", "schedoff"):
+            client = guard.GuardClient(self.bot.control)
+            cfg = getattr(self.bot.state, "ssh", None)
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                argv = ["schedule-status"] if action == "schedule" else ["schedule-set", "--mode=" + ("off" if action == "schedoff" else ("calendar" if action == "sched6" else "hours")), "--value=" + ("06:00" if action == "sched6" else "12")]
+                response = await client._call(cfg, guard.DDOS_SCRIPT, "ddos script", argv, 60)
+                schedule = response.data
+                for current in (self.ddos, getattr(self.bot, "ddos_state", None)):
+                    if current is not None:
+                        current.timer_active = bool(schedule.get("active"))
+                        current.timer_configured = bool(schedule.get("configured"))
+                        current.timer_mode = str(schedule.get("mode", ""))
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                schedule = {}
+            await self.render(chat_id, msg_id, dscreens.ddos_schedule_screen(self.view(), schedule))
+            return
+        if action == "exceptions":
+            await self.render(chat_id, msg_id, dscreens.ddos_exceptions_screen(self.view(), antiddos.Policy.from_dict(self.bot.state.ddos)))
+            return
+        if action == "src" or action.startswith("src:"):
+            policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+            parts = action.split(":")
+            page = 0
+            if len(parts) == 3 and parts[1] == "p":
+                try:
+                    page = max(0, int(parts[2]))
+                except ValueError:
+                    page = 0
+            elif len(parts) == 3 and parts[1] in ("t", "d"):
+                entries = [url for _, url in antiddos.RKN_SOURCES] + policy.custom_sources
+                matches = [url for url in entries if hashlib.sha256(url.encode("utf-8")).hexdigest()[:12] == parts[2]]
+                if len(matches) != 1:
+                    self.error = t("DDOS_SOURCE_STALE")
+                else:
+                    url = matches[0]
+                    if parts[1] == "d":
+                        if url not in policy.custom_sources:
+                            self.error = t("DDOS_SOURCE_STALE")
+                        elif url not in policy.disabled_sources and len([item for item in entries if item not in policy.disabled_sources]) <= 1:
+                            self.error = t("DDOS_SOURCE_LAST")
+                        else:
+                            policy.custom_sources.remove(url)
+                            policy.disabled_sources = [item for item in policy.disabled_sources if item != url]
+                    elif url in policy.disabled_sources:
+                        policy.disabled_sources.remove(url)
+                    elif len([item for item in entries if item not in policy.disabled_sources]) <= 1:
+                        self.error = t("DDOS_SOURCE_LAST")
+                    else:
+                        policy.disabled_sources.append(url)
+                    if not self.error:
+                        self.bot.state.ddos = policy.to_dict()
+                        if hasattr(self.bot, "save"):
+                            self.bot.save()
+                        if self.ddos is not None and self.ddos.installed and policy.enabled and policy.rkn_enabled:
+                            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+                            try:
+                                await self.auto_sync_rkn()
+                                if self.rkn_sync_errors:
+                                    self.error = t("DDOS_RKN_PARTIAL", errors=len(self.rkn_sync_errors))
+                            except Exception as exc:
+                                self.error = str(getattr(exc, "message", exc))[:160]
+            await self.render(chat_id, msg_id, dscreens.ddos_sources_screen(self.view(), policy, page, self.rkn_source_cache()))
+            return
+        if action == "log_toggle":
+            policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+            policy.rkn_logging = not policy.rkn_logging
+            try:
+                if self.ddos is not None and self.ddos.installed:
+                    client = guard.GuardClient(self.bot.control)
+                    self.ddos = await guard.ddos_call(client, getattr(self.bot.state, "ssh", None), guard.ddos_argv("install", policy), 300)
+                    if hasattr(self.bot, "ddos_state"):
+                        self.bot.ddos_state = self.ddos
+                self.bot.state.ddos = policy.to_dict()
+                if hasattr(self.bot, "save"):
+                    self.bot.save()
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+            action = "logs:v4"
+        if action in ("upstream", "upstream_confirm", "upstream_install"):
+            if action == "upstream_confirm":
+                await self.render(chat_id, msg_id, dscreens.ddos_upstream_screen(self.view(), {}, confirm=True))
+                return
             await self.render(chat_id, msg_id, dscreens.busy(self.view()))
             try:
                 client = guard.GuardClient(self.bot.control)
-                response = await client._call(getattr(self.bot.state, "ssh", None), guard.DDOS_SCRIPT, "ddos script", ["logs"], 30)
-                self.error = ""
+                response = await client._call(getattr(self.bot.state, "ssh", None), guard.RKN_UPSTREAM_SCRIPT, "upstream rkn-guard script", ["install" if action == "upstream_install" else "status"], 240 if action == "upstream_install" else 30)
+                data = response.data
+                if action == "upstream_install":
+                    self.note("dd", "upstream_install", "ok")
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                data = {}
+                self.note("dd", "upstream", "fail")
+            await self.render(chat_id, msg_id, dscreens.ddos_upstream_screen(self.view(), data))
+            return
+        if action == "fwdiag":
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                client = guard.GuardClient(self.bot.control)
+                response = await client._call(getattr(self.bot.state, "ssh", None), guard.DDOS_SCRIPT, "ddos script", ["firewall-diagnose"], 45)
+                data = response.data
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+                data = {}
+            await self.render(chat_id, msg_id, dscreens.ddos_firewall_diag_screen(self.view(), data))
+            return
+        if action == "stats_reset":
+            await self.render(chat_id, msg_id, dscreens.ddos_stats_reset_screen(self.view()))
+            return
+        if action == "stats_reset_confirm":
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            try:
+                client = guard.GuardClient(self.bot.control)
+                await client._call(getattr(self.bot.state, "ssh", None), guard.DDOS_SCRIPT, "ddos script", ["stats-reset"], 30)
+                self.note("dd", "stats_reset", "ok")
+            except Exception as exc:
+                self.error = str(getattr(exc, "message", exc))[:160]
+            action = "logs:top"
+        live_kinds = ("service", "update", "v4", "v6", "top")
+        start_live = action.startswith("live:") and action.split(":", 1)[1] in live_kinds and bool(msg_id)
+        stop_live = action.startswith("live_stop:") and action.split(":", 1)[1] in live_kinds
+        if action == "logs" or action in tuple("logs:" + item for item in live_kinds) or start_live or stop_live:
+            kind = action.split(":", 1)[1] if ":" in action else "v4"
+            await self.render(chat_id, msg_id, dscreens.busy(self.view()))
+            shell = getattr(self.bot.control, "shell", None)
+            streaming = bool(start_live and kind in ("v4", "v6") and isinstance(shell, rkn_live.LocalShell) and not shell.escalated)
+            cursor = ""
+            started_at = 0
+            try:
+                client = guard.GuardClient(self.bot.control)
+                response = await client._call(getattr(self.bot.state, "ssh", None), guard.DDOS_SCRIPT, "ddos script", ["logs-live-snapshot" if streaming else "logs", "--kind=" + kind], 30)
                 text = str(response.data.get("text", ""))
+                cursor = str(response.data.get("cursor", ""))
+                started_at = int(response.data.get("started_at", 0) or 0)
             except Exception as exc:
                 self.error = str(getattr(exc, "message", exc))[:160]
                 text = ""
-            await self.render(chat_id, msg_id, dscreens.ddos_logs_screen(self.view(), text))
+            logging_enabled = antiddos.Policy.from_dict(self.bot.state.ddos).rkn_logging
+            active = start_live and not self.error
+            await self.render(chat_id, msg_id, dscreens.ddos_logs_screen(self.view(), text, kind, logging_enabled, live=active, stream=streaming and active))
+            if active:
+                for live_chat, live_message in list(self.rkn_live_tasks):
+                    if live_chat == chat_id:
+                        self.stop_rkn_live(live_chat, live_message)
+                worker = self.rkn_live_stream(chat_id, msg_id, kind, text, cursor, started_at) if streaming else self.rkn_live(chat_id, msg_id, kind, text)
+                self.rkn_live_tasks[(chat_id, msg_id)] = asyncio.create_task(worker)
             return
         if action == "ips" or action.startswith("ips:"):
             self.ddos_in_ips = True
@@ -850,6 +1285,76 @@ class DebugPanel:
             if ident == "dbg_hops":
                 self.hops = net.parse_hops(text)
                 await self.bot.send(chat_id, dscreens.trace_screen_view(self.view(notice=str(self.hops))))
+                return
+            if ident == "dbg_rkn_schedule":
+                mode = "off" if text.lower() == "off" else ("hours" if text.isascii() and text.isdigit() else "calendar")
+                client = guard.GuardClient(self.bot.control)
+                try:
+                    response = await client._call(getattr(self.bot.state, "ssh", None), guard.DDOS_SCRIPT, "ddos script", ["schedule-set", "--mode=" + mode, "--value=" + text], 60)
+                    schedule = response.data
+                    for current in (self.ddos, getattr(self.bot, "ddos_state", None)):
+                        if current is not None:
+                            current.timer_active = bool(schedule.get("active"))
+                            current.timer_configured = bool(schedule.get("configured"))
+                            current.timer_mode = str(schedule.get("mode", ""))
+                    self.error = ""
+                except Exception as exc:
+                    self.error = str(getattr(exc, "message", exc))[:160]
+                    schedule = {}
+                await self.bot.send(chat_id, dscreens.ddos_schedule_screen(self.view(), schedule))
+                return
+            if ident == "dbg_rkn_exception":
+                policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+                remove = text.startswith("-")
+                parsed = antiddos.parse_rkn_exceptions(text[1:].strip() if text[:1] in ("+", "-") else text)
+                if len(parsed) != 1:
+                    await self.bot.send(chat_id, dscreens.ddos_exceptions_screen(self.view(error=self.tr()("DDOS_EXCEPTION_BAD")), policy))
+                    return
+                entry = parsed[0]
+                if remove:
+                    policy.rkn_exceptions = [item for item in policy.rkn_exceptions if item != entry]
+                elif entry not in policy.rkn_exceptions:
+                    if len(policy.rkn_exceptions) >= 128:
+                        await self.bot.send(chat_id, dscreens.ddos_exceptions_screen(self.view(error=self.tr()("DDOS_EXCEPTION_BAD")), policy))
+                        return
+                    policy.rkn_exceptions.append(entry)
+                try:
+                    if self.ddos is not None and self.ddos.installed:
+                        client = guard.GuardClient(self.bot.control)
+                        self.ddos = await guard.ddos_call(client, getattr(self.bot.state, "ssh", None), guard.ddos_argv("install", policy), 300)
+                        if hasattr(self.bot, "ddos_state"):
+                            self.bot.ddos_state = self.ddos
+                    self.bot.state.ddos = policy.to_dict()
+                    if hasattr(self.bot, "save"):
+                        self.bot.save()
+                    self.error = ""
+                except Exception as exc:
+                    self.error = str(getattr(exc, "message", exc))[:160]
+                    policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+                await self.bot.send(chat_id, dscreens.ddos_exceptions_screen(self.view(), policy))
+                return
+            if ident == "dbg_rkn_source":
+                policy = antiddos.Policy.from_dict(self.bot.state.ddos)
+                url = antiddos.normalize_source_url(text)
+                known = [item for _, item in antiddos.RKN_SOURCES] + policy.custom_sources
+                if not url or url in known or len(policy.custom_sources) >= antiddos.MAX_CUSTOM_SOURCES:
+                    await self.bot.send(chat_id, dscreens.ddos_sources_screen(self.view(error=self.tr()("DDOS_SOURCE_BAD")), policy))
+                    return
+                try:
+                    lines = await asyncio.to_thread(antiddos._download_source_lines, url, 10.0)
+                    antiddos.validate_custom_source(lines)
+                    v4, v6 = antiddos.sanitize_rkn_networks(lines)
+                    if not v4 and not v6:
+                        raise ValueError("empty list")
+                except Exception as exc:
+                    await self.bot.send(chat_id, dscreens.ddos_sources_screen(self.view(error=self.tr()("DDOS_SOURCE_CHECK_FAILED", reason=type(exc).__name__)), policy))
+                    return
+                policy.custom_sources.append(url)
+                policy.disabled_sources.append(url)
+                self.bot.state.ddos = policy.to_dict()
+                if hasattr(self.bot, "save"):
+                    self.bot.save()
+                await self.bot.send(chat_id, dscreens.ddos_sources_screen(self.view(notice=self.tr()("DDOS_SOURCE_ADDED")), policy, (len(known)) // 3, self.rkn_source_cache()))
                 return
             if ident == "dbg_ddos_ban":
                 await self._mutate_ddos_entries(chat_id, "manual_bans", text, allow_private=False)

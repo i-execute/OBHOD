@@ -4,7 +4,7 @@
 
 # OBHOD
 
-MTProto Telegram panel that manages `Xray` (post-quantum `VLESS` over `REALITY` / `TLS` with `mlkem768x25519plus` and `ML-DSA-65`) and `FreeTurn` (WireGuard over VK call TURN relays) locally on your Linux server.
+MTProto Telegram panel for locally managing `Xray` (post-quantum `VLESS` over `REALITY` / `TLS` with `mlkem768x25519plus` and `ML-DSA-65`) and `FreeTurn` (WireGuard over VK call TURN relays) on a Linux server.
 
 ## Install
 
@@ -12,24 +12,25 @@ MTProto Telegram panel that manages `Xray` (post-quantum `VLESS` over `REALITY` 
 curl -fsSL https://raw.githubusercontent.com/i-execute/OBHOD/main/get.sh | sudo bash
 ```
 
-Requires root on a systemd Linux host. Installs into `/opt/obhod`, keeps state in `/var/lib/obhod`, writes `/etc/obhod/obhod.env` with `0600` permissions, and runs `obhod.service`. Run `sudo obhod` in a terminal to open the management TUI.
+Requires root on a systemd Linux host with Python 3.13+. It installs to `/opt/obhod`, keeps state in `/var/lib/obhod`, protects `/etc/obhod/obhod.env` with mode `0600`, and runs `obhod.service`. Use `sudo obhod` for the management TUI.
 
-## Core release versions
+## Releases
 
-By default, OBHOD asks the GitHub releases API for the latest stable release.
-If the API is unavailable or rate-limited, it uses the recommended pinned fallback:
+OBHOD asks the GitHub releases API for the latest stable component release. If that API is unavailable or rate-limited, it uses the recommended pinned fallback; a latest release without a verifiable checksum is refused rather than silently substituted.
 
-| Component | Recommended API fallback | Minimum |
+| Component | Recommended fallback | Minimum |
 | --- | --- | --- |
 | Xray | `v26.11.9` | `v26.10.31` |
 | FreeTurn | `v4.2.1` | `v4.1.2` |
-The latest release reported by the API is used when available; the recommended
-fallback is used only when the API cannot provide a release, including rate limiting.
-Releases below the minimum are refused. The fallback uses pinned SHA-256 digests;
-an API-selected release without a verifiable checksum is refused instead of silently
-changing versions. The pins live in both the bot and the standalone remote agents;
-when updating them, update both copies and the bundled FreeTurn installer. No GitHub
-token is needed, but Xray still requires access to the release download asset.
+
+Pins live in the bot and remote agents. Updating FreeTurn pins also requires updating its bundled installer artifact. No GitHub token is used.
+## RKN / Anti-DDoS
+
+The native `nftables` Anti-DDoS and optional RKN scanner-subnet filter operate in `table inet obhod_ddos`. A system install attempts activation, but verify live state in **Tools -> Anti-DDoS** and keep an out-of-band server console before changing firewall policy.
+The screen includes source-list controls with a last-good cache, allowlists, scoped IP/protocol/port exceptions, manual bans, bounded logs, scheduled source updates, and explicit recovery confirmation. The optional RKN-Guard binary is a separately pinned v3.0.0 diagnostic helper only: it never replaces the native backend, starts an upstream service, or changes firewall rules. See the [RKN protection guide](docs/RKN.md).
+## Interface languages
+
+English, Russian, and Chinese catalogs are checked by the CI i18n audit.
 
 ## Clients
 
@@ -41,5 +42,4 @@ token is needed, but Xray still requires access to the release download asset.
 
 ## Credits
 
-- **RKN-Guard & Scanner Subnet Defense**: inspired by [rkn-guard](https://github.com/Flecksis/rkn-guard) by [@Flecksis](https://github.com/Flecksis), re-engineered natively on `nftables` (`table inet obhod_ddos`) with interval CIDR collapsing, offline seed fallback, allowlists, manual bans, and live background synchronization.
-
+RKN-Guard and Scanner Subnet Defense are inspired by [rkn-guard](https://github.com/Flecksis/rkn-guard) by [@Flecksis](https://github.com/Flecksis), re-engineered natively with interval CIDR collapsing, offline seed fallback, allowlists, manual bans, and background synchronization.

@@ -441,13 +441,13 @@ class VKCallsPanel:
         self.auth_pending[int(self.bot.admin_id)] = time.monotonic() + AUTH_TTL
         await self.auth_screen(chat_id, msg_id)
 
-    async def delete_token_message(self, chat_id: int, msg_id: int) -> None:
-        await asyncio.sleep(TOKEN_DELETE_DELAY)
+    async def delete_token_message(self, chat_id: int, msg_id: int, immediate: bool = False) -> None:
+        await asyncio.sleep(0.0 if immediate else TOKEN_DELETE_DELAY)
         await self.bot.drop_marker(chat_id, msg_id)
 
-    async def schedule_token_delete(self, chat_id: int, msg_id: int) -> None:
+    async def schedule_token_delete(self, chat_id: int, msg_id: int, immediate: bool = False) -> None:
         if msg_id:
-            await self.bot.track(self.delete_token_message(chat_id, msg_id), "vk-token-delete")
+            await self.bot.track(self.delete_token_message(chat_id, msg_id, immediate), "vk-token-delete")
 
     async def handle_message(self, evt: object, text: str) -> bool:
         who = int(getattr(evt, "from_id", 0) or 0)
@@ -470,10 +470,11 @@ class VKCallsPanel:
             if not token:
                 return False
         if pending:
-            await self.schedule_token_delete(chat_id, msg_id)
             if chat_id != int(self.bot.admin_id or 0):
+                await self.schedule_token_delete(chat_id, msg_id, immediate=True)
                 await self.bot.send(chat_id, vkscreens.home_screen(self.tr().language, error=self.tr()("VKCALLS_PRIVATE_AUTH")))
                 return True
+            await self.schedule_token_delete(chat_id, msg_id)
             if not token:
                 await self.bot.send(chat_id, vkscreens.home_screen(self.tr().language, error=self.tr()("VKCALLS_BAD_TOKEN")))
                 return True
@@ -489,7 +490,7 @@ class VKCallsPanel:
             await self.bot.send(chat_id, vkscreens.home_screen(self.tr().language, notice=self.tr()("VKCALLS_AUTH_OK", user_id=user_id), authorized=True))
             return True
         if token:
-            await self.schedule_token_delete(chat_id, msg_id)
+            await self.schedule_token_delete(chat_id, msg_id, immediate=chat_id != int(self.bot.admin_id or 0))
             await self.bot.send(chat_id, vkscreens.home_screen(self.tr().language, error=self.tr()("VKCALLS_AUTH_REQUIRED")))
             return True
         return False
@@ -511,9 +512,12 @@ class VKCallsPanel:
         return t("VKCALLS_API_FAILED")
 
     async def route(self, chat_id: int, msg_id: int, data: str) -> None:
+        t = self.tr()
+        if int(chat_id or 0) != int(self.bot.admin_id or 0):
+            await self.bot.render(chat_id, msg_id, vkscreens.home_screen(t.language, error=t("VKCALLS_PRIVATE_AUTH")))
+            return
         parts = str(data or "").split(":")
         action = parts[1] if len(parts) > 1 else "home"
-        t = self.tr()
         if action in {"", "home"}:
             await self.bot.render(chat_id, msg_id, vkscreens.home_screen(t.language, authorized=bool(self.service.token), user_id=self.service.user_id))
             return

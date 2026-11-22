@@ -179,6 +179,16 @@ def test_bot_interactive_unban_and_reban_cycle_without_repeat_block(tmp_path: Pa
             ip = argv[1].split("=", 1)[1]
             if ip in live_syn:
                 live_syn.remove(ip)
+            pol.manual_bans = [item for item in pol.manual_bans if item != ip]
+            if ip not in pol.rkn_allow:
+                pol.rkn_allow.append(ip)
+            pol.unbanned = [ip, *[item for item in pol.unbanned if item != ip]][:64]
+        elif argv[0] == "reban":
+            ip = argv[1].split("=", 1)[1]
+            pol.rkn_allow = [item for item in pol.rkn_allow if item != ip]
+            pol.unbanned = [item for item in pol.unbanned if item != ip]
+            if ip not in pol.manual_bans:
+                pol.manual_bans.append(ip)
         return antiddos.Status(installed=True, enabled=True, table=True, syn_flood=list(live_syn), policy=pol)
 
     monkeypatch.setattr(bot, "render", fake_render)

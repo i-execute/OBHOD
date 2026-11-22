@@ -368,3 +368,32 @@ def test_no_fallback_when_latest_xray_asset_download_fails(monkeypatch: pytest.M
     with pytest.raises(xr.ScriptError, match="asset unavailable"):
         xr.pinned_with_fallback("latest", "", "", False)
     assert calls == ["v26.12.1"]
+
+
+
+def test_release_tags_have_bounded_numeric_components(monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import releases
+
+    oversized = "v" + "9" * 7000 + ".1.1"
+    assert releases.tag_of(("{\"tag_name\":\"" + oversized + "\"}").encode("ascii")) == ""
+    with pytest.raises(freeturn.FtError):
+        freeturn.resolve_version(oversized)
+    ft_agent = load(TURN_AGENT, "freeturn_oversized_tag")
+    with pytest.raises(ft_agent.AgentError):
+        ft_agent.resolve_version(oversized)
+    xr = load(XRAY_AGENT, "xray_oversized_tag")
+    with pytest.raises(xr.ScriptError):
+        xr.install_core(oversized, "", "", False)
+
+    class Answer:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def read(self, _limit):
+            return ("{\"tag_name\":\"" + oversized + "\"}").encode("ascii")
+
+    xr.API_CACHE.clear()
+    monkeypatch.setattr(xr, "open_url", lambda request, timeout: Answer())
+    assert xr.latest_tag(use_cache=False) == ""
+    assert xr.API_REASON == "no_tag"

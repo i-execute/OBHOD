@@ -11,8 +11,8 @@ import urllib.request
 
 API = "https://api.github.com/repos/%s/releases/latest"
 ALLOWED_HOSTS = ("api.github.com", "github.com")
-TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
-ANY_TAG_RE = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+$")
+TAG_RE = re.compile(r"^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$")
+ANY_TAG_RE = re.compile(r"^v?[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$")
 AGENT = "obhod-releases/1"
 TIMEOUT = 8.0
 MAX_BODY = 1024 * 1024

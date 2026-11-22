@@ -13,3 +13,8 @@ venv/
 .DS_Store
 *.swp
 *.swo
+
+# Local validation captures, audit lists, and one-off delivery notes are not release sources.
+evidence/
+VKCalls_delivery_README.txt
+tools/i18n_removed_keys.txt

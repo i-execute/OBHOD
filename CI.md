@@ -1,15 +1,15 @@
 # CI
 
-Every push and every pull request is checked by three workflows, all of them cheap enough for the free plan.
+`ci.yml` and `codeql.yml` run for pushes to `main` or `master`, every pull request, and manual dispatches. The focused protection workflow runs when a change touches its protected source paths; all checks are sized for the free plan.
 
 | Workflow | Triggers | What it does | Rough time |
 | --- | --- | --- | --- |
-| `ci.yml` job `fast` | push to `main` or `master`, every pull request, manual | whole suite except the pentest files on Python 3.12, then `pyflakes` over `BOT`, `Storage/remote`, `tools` and `tests` | two minutes |
+| `ci.yml` job `fast` | push to `main` or `master`, every pull request, manual | all tests except `tests/test_pentest.py` and `tests/test_security.py` on Python 3.13, then `pyflakes` and the i18n catalog audit | two minutes |
 | `ci.yml` job `security` | same, after `fast` | `tests/test_pentest.py`, `tests/test_security.py`, the protection policy, the protection baseline and the watchdog self tests | one minute |
-| `ci.yml` job `full` | push to `main` or `master`, manual | the complete suite on Python 3.11 and 3.13, so a version specific break is caught | four minutes |
+| `ci.yml` job `full` | push to `main` or `master`, manual | the complete suite on Python 3.13 | four minutes |
 | `protection.yml` | push and pull request touching `BOT/**`, `Storage/**` or `tools/**` | policy and baseline only, and a comment on the pull request when a protected file changed without a new baseline | thirty seconds |
-| `codeql.yml` | push to `main`, every pull request, weekly schedule | GitHub CodeQL with `security-extended` queries, results in the security tab | three minutes |
-| `dependabot.yml` | weekly, monthly for actions | one grouped pull request for python packages, one for the actions | none |
+| `codeql.yml` | push to `main` or `master`, every pull request, weekly schedule | GitHub CodeQL with `security-extended` queries, results in the security tab | three minutes |
+| `dependabot.yml` | weekly for Python, monthly for actions | one grouped Python dependency pull request; GitHub Actions updates with at most three open pull requests | none |
 
 ## Why the limits do not bite
 
@@ -18,23 +18,23 @@ Every push and every pull request is checked by three workflows, all of them che
   with `persist-credentials: false`, so a malicious step cannot push with the workflow token.
 * `timeout-minutes` is set on every job, so a hung test cannot burn the monthly allowance.
 * `pip` caching comes from `actions/setup-python`, `fetch-depth: 1` avoids a full clone.
-* The heavy work on pull requests is two jobs of about three minutes; the wide matrix only runs on `main`.
+* The heavy work on pull requests is two jobs of about three minutes; the complete 3.13 suite runs after direct pushes to `main` or `master`.
 * `paths` on `protection.yml` keeps documentation only pushes out of it.
 
-Free plan for a public repository is unlimited for standard runners, and for a private one the four workflows above cost
-roughly twenty runner minutes per busy day, which fits the 2000 minute monthly allowance of the free organisation plan.
+For a private repository, budget the three workflows above at roughly twenty runner minutes per busy day and check the current GitHub plan allowance before enabling them. Public repositories use the standard GitHub Actions allowance for public projects.
 
 ## The watchdog
 
 `tools/obhod_watchdog.py` has two layers.
 
-* `policy` is a set of assertions over the source, twelve of them, each tied to a decision that must not be lost: no
+* `policy` is a set of assertions over the source, thirteen of them, each tied to a decision that must not be lost: no
   `shell=True`, `eval`, `exec` or `os.system`, no iptables default policy change and no flush of `INPUT`, constant time
   subscription comparison, the owner gate and `is_personal` and `cache_time=0` in `BOT/app.py`, the hmac token and the
-  random secret in `BOT/inline.py`, `clean_public_key` and `O_NOFOLLOW` in the ssh agent, the release host allowlist, the
-  three rate limits, no credential field, the subscription segment length and `secrets.choice`, the state file mode.
+  random secret in `BOT/inline.py`, `clean_public_key` and `O_NOFOLLOW` in the ssh agent, the release host allowlist,
+  pins and token-free API lookup, the three rate limits, no credential field and protected state mode, the subscription
+  segment length and `secrets.choice`, and audit-log secret/symlink protections.
   A policy line cannot be silenced by re-sealing, the assertion itself fails.
-* `verify` compares a sha256 of thirteen protected files against `tools/obhod_protection.baseline.json`. It catches an
+* `verify` compares a sha256 of twenty-two protected files against `tools/obhod_protection.baseline.json`. It catches an
   edit that slipped past review even when the edit looks harmless.
 
 Re-sealing is a deliberate act:
@@ -50,7 +50,9 @@ gate.
 
 ## Branch protection, the one step that lives in the settings
 
-A workflow cannot defend itself. In `Settings`, `Branches`, add a rule for `main` with `Require a pull request before
-merging`, `Require status checks to pass` and pick `tests 3.12`, `pentest and protection drift` and `protection drift`,
-then `Do not allow bypassing the above settings`. Without that rule, a direct push to `main` can delete
+A workflow cannot defend itself. In `Settings`, `Branches`, add a rule for the protected default branch (`main` or
+`master`) with `Require a pull request before merging`, `Require status checks to pass`, and select `tests 3.13` and
+`pentest and protection drift`. Add `analyze python` if CodeQL must also block merges, then enable `Do not allow
+bypassing the above settings`. `protection drift` is path-filtered, so do not make it a required check unless its
+workflow is changed to run for every pull request. Without branch protection, a direct push can delete
 `.github/workflows` and nothing will run.

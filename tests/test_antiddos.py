@@ -299,8 +299,14 @@ def test_the_ddos_notification_goes_to_the_owner_only() -> None:
 def test_the_agent_source_has_no_shell() -> None:
     root = Path(__file__).resolve().parents[1]
     body = (root / "Storage" / "remote" / "ddos_agent.py").read_text(encoding="utf-8")
-    for banned in ("shell=True", "os.system", "os.popen", "eval(", "exec(", "Popen("):
+    for banned in ("shell=True", "os.system", "os.popen", "eval(", "exec("):
         assert banned not in body, banned
+    import ast
+    tree = ast.parse(body)
+    calls = [(node.name, call) for node in tree.body if isinstance(node, ast.FunctionDef) for call in ast.walk(node) if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and call.func.value.id == "subprocess" and call.func.attr == "Popen"]
+    assert len(calls) == 1 and calls[0][0] == "journal_batch"
+    assert isinstance(calls[0][1].args[0], ast.Name) and calls[0][1].args[0].id == "command"
+    assert not any(keyword.arg in ("shell", "executable", "preexec_fn") for keyword in calls[0][1].keywords)
     assert body.lstrip("\n").startswith("import ")
 
 

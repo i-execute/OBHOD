@@ -265,6 +265,63 @@ def test_admin_vk_command_and_navigation_are_integrated(tmp_path: Path) -> None:
     assert bot.rendered
 
 
+def test_vk_calls_stay_in_the_admin_private_chat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import vkcalls
+
+    bot = make_bot(tmp_path)
+    api = StubAPI()
+    service = VKCallsService(tmp_path, api=api)
+    service._calls[CALL_ID] = service._normalize_call({"call_id": CALL_ID, "join_link": JOIN_LINK})
+    bot.vkcalls = VKCallsPanel(bot, service=service)
+    sleep_calls = []
+
+    async def immediate_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(vkcalls.asyncio, "sleep", immediate_sleep)
+
+    async def scenario() -> None:
+        await bot.on_command(FakeEvent(cmd="vkcall", from_id=7, chat_id=-100))
+        await bot.vkcalls.route(-100, 77, "vk:detail:" + CALL_ID)
+        bot.vkcalls.auth_pending[7] = time.monotonic() + 600
+        await bot.handle_message(FakeEvent(text=TOKEN, from_id=7, chat_id=-100, msg_id=94))
+        await bot.idle()
+
+    run(scenario())
+    assert api.calls == []
+    assert service.token == ""
+    assert (-100, 94) in bot.app.deleted
+    assert sleep_calls == [0.0]
+    rendered = [item.to_html() for item in bot.sent + bot.rendered]
+    assert all(JOIN_LINK not in item for item in rendered)
+
+
+def test_nonprivate_unsolicited_vk_token_is_deleted_immediately(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from BOT import vkcalls
+
+    bot = make_bot(tmp_path)
+    api = StubAPI()
+    service = VKCallsService(tmp_path, api=api)
+    bot.vkcalls = VKCallsPanel(bot, service=service)
+    sleep_calls = []
+
+    async def immediate_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(vkcalls.asyncio, "sleep", immediate_sleep)
+    url = "https://oauth.vk.ru/blank.html#access_token=" + TOKEN + "&expires_in=0"
+
+    async def scenario() -> None:
+        await bot.handle_message(FakeEvent(text=url, from_id=7, chat_id=-101, msg_id=95))
+        await bot.idle()
+
+    run(scenario())
+    assert api.calls == []
+    assert service.token == ""
+    assert (-101, 95) in bot.app.deleted
+    assert sleep_calls == [0.0]
+
+
 def test_auth_check_route_validates_the_stored_token(tmp_path: Path) -> None:
     from BOT import i18n
 

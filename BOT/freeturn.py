@@ -211,7 +211,7 @@ def release_digest(version: str) -> str:
 
 
 def require_supported_version(tag: str) -> None:
-    if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+    if not re.fullmatch(r"v\d{1,6}\.\d{1,6}\.\d{1,6}", tag):
         raise FtError("the version must be latest or vX.Y.Z", "bad_arg")
     if tuple(map(int, tag[1:].split("."))) < tuple(map(int, MIN_VERSION[1:].split("."))):
         raise FtError("freeturn %s is below the minimum %s" % (tag, MIN_VERSION), "bad_arg")

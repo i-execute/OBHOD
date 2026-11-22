@@ -529,6 +529,99 @@ def test_the_installer_never_chmods_a_shared_directory(tmp_path: Path) -> None:
         assert path in body
 
 
+def test_private_directory_rejects_relative_path(tmp_path: Path) -> None:
+    script = (
+        "source {installer}\n"
+        "ensure_private_dir relative-state\n"
+    ).format(installer=shlex.quote(str(INSTALLER)))
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "OBHOD_LIB": "1"},
+        cwd=tmp_path,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "must be an absolute directory" in result.stderr
+    assert not (tmp_path / "relative-state").exists()
+
+
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        ("relative-state", "must be an absolute path"),
+        ("/etc", "shared system directory"),
+        ("/opt/../etc", "must not contain dot path components"),
+    ],
+)
+def test_managed_paths_reject_unsafe_locations(tmp_path: Path, path: str, message: str) -> None:
+    script = (
+        "source {installer}\n"
+        "DEV=1\n"
+        "managed_path install-prefix {path}\n"
+    ).format(installer=shlex.quote(str(INSTALLER)), path=shlex.quote(path))
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "OBHOD_LIB": "1"},
+        cwd=tmp_path,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
+def test_managed_paths_reject_symlinks_and_validate_safe_dev_layout(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+    rejected = (
+        "source {installer}\n"
+        "DEV=1\n"
+        "managed_dir install-prefix {link}\n"
+    ).format(installer=shlex.quote(str(INSTALLER)), link=shlex.quote(str(link)))
+    result = subprocess.run(
+        ["bash", "-c", rejected],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "OBHOD_LIB": "1"},
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "symbolic links" in result.stderr
+    root = tmp_path / "layout"
+    accepted = (
+        "source {installer}\n"
+        "DEV=1\n"
+        "PREFIX={prefix}\n"
+        "CONF_DIR={conf}\n"
+        "ENV_FILE={env}\n"
+        "STATE_DIR={state}\n"
+        "validate_install_paths\n"
+    ).format(
+        installer=shlex.quote(str(INSTALLER)),
+        prefix=shlex.quote(str(root / "app")),
+        conf=shlex.quote(str(root / "etc")),
+        env=shlex.quote(str(root / "etc" / "obhod.env")),
+        state=shlex.quote(str(root / "state")),
+    )
+    result = subprocess.run(
+        ["bash", "-c", accepted],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "OBHOD_LIB": "1"},
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    source = INSTALLER.read_text(encoding="utf-8")
+    for function in ("cmd_install", "cmd_uninstall", "cmd_nuke", "cmd_update", "purge_install"):
+        body = source.split(function + "() {", 1)[1].split("\n}\n", 1)[0]
+        assert "validate_install_paths" in body
+
+
 def test_the_unit_carries_the_product_name() -> None:
     unit = (INSTALLER.parent / "obhod.service").read_text(encoding="utf-8")
     assert "Description=OBHOD telegram control bot" in unit
@@ -631,6 +724,74 @@ def test_without_a_runtime_the_unit_keeps_the_venv_path() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "/nonexistent-prefix/venv/bin/python"
+
+
+def test_production_uninstall_removes_rkn_and_ddos_units_only(tmp_path: Path) -> None:
+    trace = tmp_path / "schedule.trace"
+    script = (
+        "source {installer}\n"
+        "trace={trace}\n"
+        "systemctl() {{ printf 'systemctl %s\\n' \"$*\" >> \"$trace\"; }}\n"
+        "rm() {{ printf 'rm %s\\n' \"$*\" >> \"$trace\"; }}\n"
+        "DEV=0\n"
+        "remove_rkn_schedule_service\n"
+        "remove_ddos_persistence_unit\n"
+        "DEV=1\n"
+        "remove_rkn_schedule_service\n"
+    ).format(installer=shlex.quote(str(INSTALLER)), trace=shlex.quote(str(trace)))
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "OBHOD_LIB": "1"},
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert trace.read_text(encoding="utf-8").splitlines() == [
+        "systemctl disable --now obhod-rkn-update.timer obhod-rkn-stats.timer",
+        "rm -f /etc/systemd/system/obhod-rkn-update.timer /etc/systemd/system/obhod-rkn-update.service /etc/systemd/system/obhod-rkn-stats.timer /etc/systemd/system/obhod-rkn-stats.service",
+        "systemctl daemon-reload",
+        "systemctl disable --now obhod-ddos.service",
+        "rm -f /etc/systemd/system/obhod-ddos.service",
+        "systemctl daemon-reload",
+    ]
+
+
+def test_update_recreates_rkn_schedule_units(tmp_path: Path) -> None:
+    trace = tmp_path / "update.trace"
+    script = (
+        "source {installer}\n"
+        "trace={trace}\n"
+        "DEV=1\n"
+        "PREFIX={prefix}\n"
+        "STATE_DIR={state}\n"
+        "ui_init() {{ :; }}\n"
+        "banner() {{ :; }}\n"
+        "step() {{ :; }}\n"
+        "check_python() {{ :; }}\n"
+        "ensure_private_dir() {{ :; }}\n"
+        "heal_system() {{ :; }}\n"
+        "install_payload() {{ :; }}\n"
+        "write_service() {{ printf 'service\\n' >> \"$trace\"; }}\n"
+        "write_rkn_schedule_service() {{ printf 'rkn-schedule\\n' >> \"$trace\"; }}\n"
+        "summary_box() {{ :; }}\n"
+        "say() {{ :; }}\n"
+        "cmd_update\n"
+    ).format(
+        installer=shlex.quote(str(INSTALLER)),
+        trace=shlex.quote(str(trace)),
+        prefix=shlex.quote(str(tmp_path / "prefix")),
+        state=shlex.quote(str(tmp_path / "state")),
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "OBHOD_LIB": "1"},
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert trace.read_text(encoding="utf-8").splitlines() == ["service", "rkn-schedule"]
 
 
 def test_cmd_update_copies_full_storage_heals_corrupt_state_and_reports_both_cores(tmp_path: Path) -> None:

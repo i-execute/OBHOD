@@ -13,6 +13,7 @@ FAIL2BAN_SCRIPT = REMOTE_DIR / "fail2ban_agent.py"
 SSH_SCRIPT = REMOTE_DIR / "ssh_agent.py"
 HONEYPOT_SCRIPT = REMOTE_DIR / "honeypot_agent.py"
 DDOS_SCRIPT = REMOTE_DIR / "ddos_agent.py"
+RKN_UPSTREAM_SCRIPT = REMOTE_DIR / "rkn_upstream_agent.py"
 
 DEFAULT_BANTIME = 10080
 DEFAULT_BAN_DAYS = 7
@@ -317,13 +318,12 @@ def ddos_argv(action: str, policy: antiddos.Policy | None = None) -> list[str]:
     shaped = policy.normalise()
     argv.append("--enabled=%d" % (1 if shaped.enabled else 0))
     argv.append("--rkn_enabled=%d" % (1 if shaped.rkn_enabled else 0))
+    argv.append("--rkn_logging=%d" % (1 if shaped.rkn_logging else 0))
     argv.append("--ports=" + ",".join(str(item) for item in shaped.ports))
-    if shaped.rkn_allow:
-        argv.append("--rkn_allow=" + shaped.allow_csv())
-    if shaped.manual_bans:
-        argv.append("--manual_bans=" + shaped.bans_csv())
-    if shaped.unbanned:
-        argv.append("--unbanned=" + shaped.unbanned_csv())
+    argv.append("--rkn_allow=" + shaped.allow_csv())
+    argv.append("--manual_bans=" + shaped.bans_csv())
+    argv.append("--unbanned=" + shaped.unbanned_csv())
+    argv.append("--rkn_exceptions=" + ";".join(shaped.rkn_exceptions))
     for name in ("syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size"):
         argv.append("--%s=%d" % (name, int(getattr(shaped, name))))
     return argv
@@ -336,7 +336,10 @@ async def ddos_call(
     timeout: float = 180.0,
     stdin: bytes | None = None,
 ) -> antiddos.Status:
-    response = await guard._call(cfg, DDOS_SCRIPT, "ddos script", argv, timeout, stdin=stdin)
+    args = list(argv)
+    if args and args[0] == "install":
+        args.append("--agent_path=" + str(DDOS_SCRIPT.resolve()))
+    response = await guard._call(cfg, DDOS_SCRIPT, "ddos script", args, timeout, stdin=stdin)
     return antiddos.Status.from_dict(response.data)
 
 

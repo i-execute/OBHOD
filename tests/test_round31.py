@@ -169,9 +169,9 @@ def test_ddos_agent_rkn_sync_ban_allow_and_counters(tmp_path: Path) -> None:
             [
                 "#!/bin/sh",
                 'case "$1" in',
-                '  list) if [ -s "$STUB_LOADED" ]; then cat "$STUB_LOADED"; exit 0; fi; exit 1 ;;',
+                '  list) if [ "$2" = tables ]; then if [ -s "$STUB_LOADED" ]; then echo "table inet obhod_ddos"; fi; exit 0; fi; if [ -s "$STUB_LOADED" ]; then sed -n "/^table inet obhod_ddos/,\\$p" "$STUB_LOADED"; exit 0; fi; exit 1 ;;',
                 "  -c) exit 0 ;;",
-                '  -f) cp "$2" "$STUB_LOADED"; exit 0 ;;',
+                '  -f) if grep -q "^flush set inet obhod_ddos" "$2"; then cp "$(dirname "$2")/ddos.nft" "$STUB_LOADED"; else cp "$2" "$STUB_LOADED"; fi; exit 0 ;;',
                 "  delete) exit 0 ;;",
                 "esac",
                 "exit 0",
@@ -276,6 +276,7 @@ def test_debug_panel_rkn_toggle_sync_and_inline_mutations(tmp_path: Path, monkey
             enabled=True,
             table=True,
             policy=pol,
+            policy_sha256="a" * 64,
             rkn_enabled=pol.rkn_enabled,
             rkn_v4_count=2594 if pol.rkn_enabled else 0,
             rkn_v6_count=40 if pol.rkn_enabled else 0,
@@ -293,7 +294,7 @@ def test_debug_panel_rkn_toggle_sync_and_inline_mutations(tmp_path: Path, monkey
 
     bot.debug.ddos = antiddos.Status(installed=True, enabled=True, table=True)
     asyncio.run(bot.debug.ddos_action(7, 1, "rkn_sync"))
-    assert calls[-1][0] == ["rkn-sync", "--rkn_zhex=-"]
+    assert calls[-1][0] == ["rkn-sync", "--rkn_zhex=-", "--expected_policy_sha=" + "a" * 64]
     assert calls[-1][1] is not None and len(calls[-1][1]) > 10
 
     bot.debug.marks.clear()

@@ -436,8 +436,79 @@ check_credential() {
   [ "${#value}" -le 200 ] || die "$name is too long"
 }
 
+managed_path() {
+  local label="$1" path="$2" part cursor="" owner mode
+  local -a parts
+  case "$path" in
+    /*) ;;
+    *) die "$label must be an absolute path" ;;
+  esac
+  if [[ "$path" == *$'\n'* || "$path" == *$'\r'* || "$path" == *$'\t'* || "$path" == *'//' ]]; then
+    die "$label contains an unsafe path component"
+  fi
+  case "$path" in
+    */./*|*/../*|*/.|*/..) die "$label must not contain dot path components" ;;
+  esac
+  if [ "$DEV" = "0" ] && [[ ! "$path" =~ ^(/[A-Za-z0-9_.-]+)+$ ]]; then
+    die "$label contains unsupported characters"
+  fi
+  case "$path" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var|/var/lib|/var/log|/var/cache|/var/tmp|/etc/systemd|/usr/local|/usr/local/bin|/usr/local/etc)
+      die "$label is a shared system directory"
+      ;;
+  esac
+  IFS='/' read -r -a parts <<< "${path#/}"
+  for part in "${parts[@]}"; do
+    cursor="$cursor/$part"
+    if [ -L "$cursor" ]; then
+      die "$label must not traverse symbolic links"
+    fi
+    if [ -e "$cursor" ] && [ "$DEV" = "0" ]; then
+      owner="$(stat -c '%u' "$cursor" 2>/dev/null || echo unknown)"
+      mode="$(stat -c '%a' "$cursor" 2>/dev/null || echo unknown)"
+      if [ "$owner" != "0" ] || [[ ! "$mode" =~ ^[0-7]{3,4}$ ]] || [ $((8#$mode & 022)) -ne 0 ]; then
+        die "$label must stay under root-controlled directories"
+      fi
+    fi
+  done
+}
+
+managed_dir() {
+  local label="$1" path="$2"
+  managed_path "$label" "$path"
+  if [ -e "$path" ] && [ ! -d "$path" ]; then
+    die "$label must be a directory"
+  fi
+}
+
+managed_file() {
+  local label="$1" path="$2"
+  managed_path "$label" "$path"
+  if [ -e "$path" ] && [ ! -f "$path" ]; then
+    die "$label must be a regular file"
+  fi
+}
+
+validate_install_paths() {
+  managed_dir "install prefix" "$PREFIX"
+  managed_dir "config directory" "$CONF_DIR"
+  managed_file "config file" "$ENV_FILE"
+  managed_dir "state directory" "$STATE_DIR"
+  if [ "$DEV" = "0" ]; then
+    managed_dir "log directory" "${LOG_DIR:-/var/log/obhod}"
+  fi
+  if [ "$(dirname -- "$ENV_FILE")" != "$CONF_DIR" ]; then
+    die "the config file must live directly in the configured directory"
+  fi
+}
+
 ensure_private_dir() {
   local path="$1"
+  case "$path" in
+    /*) ;;
+    *) die "$path must be an absolute directory" ;;
+  esac
+  managed_dir "private directory" "$path"
   case "$path" in
     /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
       die "$path is a shared system directory, point the config, the state and the logs at their own directory"
@@ -624,6 +695,10 @@ install_payload() {
       fi
     fi
   fi
+  if [ "$DEV" = "0" ]; then
+    chown -R root:root "$PREFIX/Storage" "$PREFIX/BOT"
+    if [ -d "$PREFIX/tools" ]; then chown -R root:root "$PREFIX/tools"; fi
+  fi
   chmod -R go-w "$PREFIX/Storage"
   chmod -R go-w "$PREFIX/BOT"
   find "$PREFIX/BOT" "$PREFIX/Storage" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
@@ -806,16 +881,22 @@ heal_system() {
   mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray /etc/systemd/system /opt/free-turn-proxy
   mkdir -p /var/lib/xray-manager /var/log/xray
   ensure_private_dir "${LOG_DIR:-/var/log/obhod}"
-  if [ "$SKIP_DEPS" = "0" ] && ! command -v nft >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables >/dev/null 2>&1 || true
-    elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y -q nftables >/dev/null 2>&1 || true
-    elif command -v pacman >/dev/null 2>&1; then
-      pacman -Sy --noconfirm nftables >/dev/null 2>&1 || true
-    elif command -v apk >/dev/null 2>&1; then
-      apk add --no-cache nftables >/dev/null 2>&1 || true
+  if [ "$SKIP_DEPS" = "0" ]; then
+    local firewall_packages="" iproute_package="iproute2"
+    if command -v dnf >/dev/null 2>&1 && ! command -v apt-get >/dev/null 2>&1; then iproute_package="iproute"; fi
+    if ! command -v nft >/dev/null 2>&1; then firewall_packages="nftables"; fi
+    if ! command -v ss >/dev/null 2>&1; then firewall_packages="$firewall_packages $iproute_package"; fi
+    if [ -n "${firewall_packages// /}" ]; then
+      if command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $firewall_packages >/dev/null 2>&1 || true
+      elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y -q $firewall_packages >/dev/null 2>&1 || true
+      elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm $firewall_packages >/dev/null 2>&1 || true
+      elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache $firewall_packages >/dev/null 2>&1 || true
+      fi
     fi
   fi
 
@@ -951,6 +1032,79 @@ render_unit() {
   sed -e "s|@PREFIX@/venv/bin/python|$runtime|g" -e "s|@PREFIX@|$PREFIX|g" -e "s|@ENV_FILE@|$ENV_FILE|g" -e "s|@STATE_DIR@|$STATE_DIR|g" "$UNIT_SRC" > "$target"
 }
 
+write_rkn_schedule_service() {
+  if [ "$DEV" != "0" ] || ! command -v systemctl >/dev/null 2>&1; then return 0; fi
+  local runtime result
+  runtime="$(unit_runtime)"
+  if [[ ! "$PREFIX" =~ ^(/[A-Za-z0-9_.-]+)+$ ]] || [[ ! "$STATE_DIR" =~ ^(/[A-Za-z0-9_.-]+)+$ ]] || [[ ! "$runtime" =~ ^(/[A-Za-z0-9_.-]+)+$ ]]; then
+    warn_line "RKN timer not configured: unsupported paths"
+    return 0
+  fi
+  cat > /etc/systemd/system/obhod-rkn-update.service <<EOF
+[Unit]
+Description=OBHOD RKN source update
+After=network-online.target obhod-ddos.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$PREFIX
+Environment=OBHOD_STATE_DIR=$STATE_DIR
+ExecStart=$runtime -m BOT.rkn_update
+UMask=0077
+NoNewPrivileges=true
+EOF
+  cat > /etc/systemd/system/obhod-rkn-stats.service <<EOF
+[Unit]
+Description=OBHOD RKN event collector
+After=systemd-journald.service
+
+[Service]
+Type=oneshot
+ExecStart=$runtime $PREFIX/Storage/remote/ddos_agent.py stats-collect
+UMask=0077
+NoNewPrivileges=true
+EOF
+  cat > /etc/systemd/system/obhod-rkn-stats.timer <<EOF
+[Unit]
+Description=Collect OBHOD RKN event statistics
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=obhod-rkn-stats.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if ! systemctl enable --now obhod-rkn-stats.timer >/dev/null 2>&1; then
+    warn_line "RKN statistics collector not confirmed; check journal access"
+  fi
+  result="$("${PYTHON_BIN:-python3}" "$PREFIX/Storage/remote/ddos_agent.py" schedule-set --mode=hours --value=12 --default=1 2>/dev/null)" || true
+  if printf '%s' "$result" | "${PYTHON_BIN:-python3}" -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)' 2>/dev/null; then
+    ok_line "RKN update timer configured"
+  else
+    warn_line "RKN update timer not confirmed; check Tools"
+  fi
+}
+
+remove_rkn_schedule_service() {
+  if [ "$DEV" = "0" ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now obhod-rkn-update.timer obhod-rkn-stats.timer >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/obhod-rkn-update.timer /etc/systemd/system/obhod-rkn-update.service /etc/systemd/system/obhod-rkn-stats.timer /etc/systemd/system/obhod-rkn-stats.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+}
+
+remove_ddos_persistence_unit() {
+  if [ "$DEV" = "0" ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now obhod-ddos.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/obhod-ddos.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+}
+
 write_service() {
   [ -n "$SERVICE" ] || return 0
   if ! command -v systemctl >/dev/null 2>&1; then
@@ -1002,6 +1156,7 @@ cmd_install() {
   if [ "$DEV" = "0" ]; then
     require_root
   fi
+  validate_install_paths
   ui_init
   STEP_TOTAL=7
   banner
@@ -1108,14 +1263,15 @@ cmd_install() {
   ok_line "config $ENV_FILE, mode 600, subscription $SUB_PORT, api $API_PORT"
   if [ "$DEV" = "0" ] && [ -f "$PREFIX/Storage/remote/ddos_agent.py" ]; then
     local ddos_result
-    ddos_result="$("${PYTHON_BIN:-python3}" "$PREFIX/Storage/remote/ddos_agent.py" install --ports="22,443,${SUB_PORT}" 2>/dev/null)" || true
+    ddos_result="$("${PYTHON_BIN:-python3}" "$PREFIX/Storage/remote/ddos_agent.py" install --ports="22,443,${SUB_PORT}" --ssh_session="${SSH_CONNECTION:-}" 2>/dev/null)" || true
     if printf '%s' "$ddos_result" | "${PYTHON_BIN:-python3}" -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("ok") and d.get("data",{}).get("table") and d.get("data",{}).get("enabled") else 1)' 2>/dev/null; then
-      ok_line "anti-ddos and rkn-guard active out of the box"
+      ok_line "OBHOD anti-ddos, scanner filter, and rkn-guard active"
     else
-      warn_line "anti-ddos/rkn-guard not confirmed; check Tools > Anti-DDoS"
+      warn_line "OBHOD protection not confirmed; check Tools > Anti-DDoS"
     fi
   fi
   write_service
+  write_rkn_schedule_service
 
   summary_box
   if [ "$REBUILD" = "1" ]; then
@@ -1129,6 +1285,9 @@ cmd_uninstall() {
   if [ "$DEV" = "0" ]; then
     require_root
   fi
+  validate_install_paths
+  remove_rkn_schedule_service
+  remove_ddos_persistence_unit
   if [ -n "$SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl stop obhod.service >/dev/null 2>&1 || true
     systemctl disable obhod.service >/dev/null 2>&1 || true
@@ -1143,12 +1302,14 @@ cmd_uninstall() {
   fi
   say "removed $PREFIX"
   say "kept $ENV_FILE and $STATE_DIR, delete them manually to forget credentials"
+  say "kept Anti-DDoS rules and config, but removed their boot persistence unit; use nuke to wipe protection too"
 }
 
 cmd_nuke() {
   if [ "$DEV" = "0" ]; then
     require_root
   fi
+  validate_install_paths
   ui_init
   if [ "$DEV" = "1" ]; then
     local stopped_dev
@@ -1164,6 +1325,7 @@ cmd_nuke() {
     say "wiped everything in dev mode ($PREFIX, $ENV_FILE, $STATE_DIR, $CLI_BIN)"
     return 0
   fi
+  remove_rkn_schedule_service
   local ft_port=""
   if [ -f /opt/free-turn-proxy/install.conf ]; then
     ft_port="$(awk -F= '$1=="LISTEN_PORT" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
@@ -1182,7 +1344,7 @@ cmd_nuke() {
   if command -v nft >/dev/null 2>&1; then
     nft delete table inet obhod_ddos >/dev/null 2>&1 || true
   fi
-  rm -f /etc/obhod/ddos.nft /etc/obhod/ddos.json /etc/obhod/rkn_seed.zhex /etc/systemd/system/obhod-ddos.service /etc/sysctl.d/99-obhod-ddos.conf 2>/dev/null || true
+  rm -f /etc/obhod/ddos.nft /etc/obhod/ddos.json /etc/obhod/.policy-transaction.json /etc/obhod/rkn_seed.zhex /etc/systemd/system/obhod-ddos.service /etc/sysctl.d/99-obhod-ddos.conf 2>/dev/null || true
   local stopped
   stopped="$(kill_leftovers)"
   if [ -n "$stopped" ]; then
@@ -1338,6 +1500,9 @@ kill_leftovers() {
 }
 
 purge_install() {
+  validate_install_paths
+  remove_rkn_schedule_service
+  remove_ddos_persistence_unit
   if [ -n "$SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl stop obhod.service >/dev/null 2>&1 || true
     systemctl disable obhod.service >/dev/null 2>&1 || true
@@ -1438,6 +1603,7 @@ cmd_update() {
   if [ "$DEV" = "0" ]; then
     require_root
   fi
+  validate_install_paths
   ui_init
   STEP_TOTAL=4
   banner
@@ -1453,6 +1619,7 @@ cmd_update() {
   fi
   step "updating the systemd unit"
   write_service
+  write_rkn_schedule_service
   summary_box
   say "updated"
 }

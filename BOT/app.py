@@ -475,6 +475,8 @@ class Bot:
                     and self.ddos_state.installed
                     and self.ddos_state.enabled
                     and self.ddos_state.rkn_enabled
+                    and not self.ddos_state.timer_active
+                    and (not self.ddos_state.timer_configured or self.ddos_state.timer_mode != "off")
                     and self.quiet("rkn_auto_sync", 43200.0)
                 ):
                     await self.debug.auto_sync_rkn()
@@ -670,20 +672,33 @@ class Bot:
             outcomes["vk_fw"] = str(self.freeturn.guard.get("mode") or "skip")
         try:
             policy = antiddos.Policy.from_dict(self.state.ddos)
-            merged_ports = antiddos.ports_of([*policy.ports, *self.expected_ddos_ports()])
-            ports_changed = set(merged_ports) != set(policy.ports)
-            if ports_changed:
-                policy.ports = merged_ports
-                self.state.ddos = policy.to_dict()
-                self.save()
             status = await ddos_call(self.guard, self.state.ssh, ddos_argv("status"), 60)
-            if policy.enabled and (not status.installed or not status.table or not status.enabled or set(status.policy.ports) != set(policy.ports)):
-                status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
+            suspicious = (
+                status.transaction_state != "none"
+                or status.table_inspection == "unknown"
+                or (status.table and not status.installed)
+                or (status.installed and antiddos.firewall_policy_differs(policy, status.policy))
+                or status.saved_policy_consistency in ("mismatch", "unknown")
+                or status.live_rate_consistency in ("mismatch", "unknown")
+            )
             self.ddos_state = status
             self.debug.ddos = status
-            outcomes["ddos"] = "on" if policy.enabled and status.enabled and status.table else "off"
-            if self.app is not None and policy.enabled and status.enabled and status.table and status.rkn_enabled and self.quiet("rkn_auto_sync", 43200.0):
-                await self.track(self.debug.auto_sync_rkn(), "rkn_boot_sync")
+            if suspicious:
+                outcomes["ddos"] = "review"
+            else:
+                merged_ports = antiddos.ports_of([*policy.ports, *self.expected_ddos_ports()])
+                ports_changed = set(merged_ports) != set(policy.ports)
+                if ports_changed:
+                    policy.ports = merged_ports
+                    self.state.ddos = policy.to_dict()
+                    self.save()
+                if policy.enabled and (not status.installed or not status.table or not status.enabled or set(status.policy.ports) != set(policy.ports)):
+                    status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
+                self.ddos_state = status
+                self.debug.ddos = status
+                outcomes["ddos"] = "on" if policy.enabled and status.enabled and status.table else "off"
+                if self.app is not None and policy.enabled and status.enabled and status.table and status.rkn_enabled and (not status.timer_configured or status.timer_mode != "off") and self.quiet("rkn_auto_sync", 43200.0):
+                    await self.track(self.debug.auto_sync_rkn(), "rkn_boot_sync")
         except Exception as exc:
             log.debug("auto ddos skipped: %s", exc)
             outcomes["ddos"] = "skip"
@@ -1176,6 +1191,9 @@ class Bot:
             "dbg_hops": str(getattr(dbg, "hops", 12) or 12),
             "dbg_ddos_ban": "",
             "dbg_ddos_allow": "",
+            "dbg_rkn_source": "",
+            "dbg_rkn_exception": "",
+            "dbg_rkn_schedule": "",
             "xr_log_level": xr.log_level,
             "xr_scan_targets": ", ".join(xr.scan_targets),
             "xr_scan_manual": "",
@@ -1498,7 +1516,7 @@ class Bot:
             if not outgoing and self.vkcalls.contains_vk_token_url(text):
                 chat_id = int(getattr(evt, "chat_id", 0) or 0)
                 msg_id = int(getattr(evt, "msg_id", 0) or getattr(evt, "id", 0) or 0)
-                await self.vkcalls.schedule_token_delete(chat_id, msg_id)
+                await self.vkcalls.schedule_token_delete(chat_id, msg_id, immediate=True)
             return
         who = int(getattr(evt, "from_id", 0) or 0)
         if await self.vkcalls.handle_message(evt, text):
@@ -1540,6 +1558,9 @@ class Bot:
         if cmd == "start" and await self.vkcalls.deep_auth_command(chat_id, text):
             return
         if cmd == "vkcall":
+            if chat_id != self.admin_id:
+                await self.send(chat_id, vkscreens.home_screen(self.language, error=self.tr()("VKCALLS_PRIVATE_AUTH")))
+                return
             await self.send(chat_id, vkscreens.home_screen(self.language, authorized=bool(self.vkcalls.service.token), user_id=self.vkcalls.service.user_id))
             return
         found = commands.known(cmd)
@@ -1832,6 +1853,7 @@ class Bot:
                 log.warning("the crash screen was not shown: %s", finer)
 
     async def dispatch(self, chat_id: int, msg_id: int, data: str) -> None:
+        self.debug.stop_rkn_live(chat_id, msg_id)
         parts = data.split(":")
         head = parts[0] if parts else ""
         if data.startswith("tools:"):

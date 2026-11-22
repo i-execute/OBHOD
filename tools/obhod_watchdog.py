@@ -11,20 +11,27 @@ ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tools" / "obhod_protection.baseline.json"
 
 PROTECTED = (
+    "BOT/antiddos.py",
     "BOT/app.py",
     "BOT/audit.py",
     "BOT/guard.py",
     "BOT/inline.py",
     "BOT/ratelimit.py",
     "BOT/releases.py",
+    "BOT/rkn_live.py",
+    "BOT/rkn_update.py",
     "BOT/seclog.py",
     "BOT/shell.py",
     "BOT/update.py",
+    "BOT/vkcalls.py",
+    "Storage/remote/ddos_agent.py",
     "Storage/remote/fail2ban_agent.py",
     "Storage/remote/freeturn_agent.py",
+    "Storage/remote/rkn_upstream_agent.py",
     "Storage/remote/ssh_agent.py",
     "Storage/remote/sub_server.py",
     "Storage/remote/xray_agent.py",
+    "Storage/obhod_install.sh",
     "tools/obhod_watchdog.py",
 )
 

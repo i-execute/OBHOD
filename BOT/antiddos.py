@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import ipaddress
+import os
+import tempfile
+import time
 import json
 import re
 import urllib.error
@@ -9,6 +13,7 @@ import urllib.request
 import zlib
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Iterable
 
 from .rkn_seed import RKN_SEED_ZHEX, RKN_SOURCES
@@ -346,16 +351,21 @@ def normalize_source_url(raw: str) -> str:
     text = str(raw or "").strip()
     if not text or len(text) > 512 or CONTROL_RE.search(text) or any(ch.isspace() for ch in text):
         return ""
-    parsed = urllib.parse.urlsplit(text)
+    try:
+        parsed = urllib.parse.urlsplit(text)
+    except ValueError:
+        return ""
     if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
         return ""
     host = parsed.hostname.lower().rstrip(".")
     if host in {"localhost", "localhost.localdomain"} or host.endswith((".local", ".internal", ".lan")):
         return ""
+    ipv6_literal = False
     try:
         addr = ipaddress.ip_address(host)
-        if not addr.is_global:
+        if not addr.is_global or (isinstance(addr, ipaddress.IPv6Address) and addr.scope_id is not None):
             return ""
+        ipv6_literal = isinstance(addr, ipaddress.IPv6Address)
     except ValueError:
         pass
     path = parsed.path or "/"
@@ -372,11 +382,16 @@ def normalize_source_url(raw: str) -> str:
         parts = [seg for seg in path.split("/") if seg]
         if len(parts) >= 5 and parts[2] == "refs" and parts[3] == "heads":
             path = "/" + "/".join([parts[0], parts[1], *parts[4:]])
-    port_suffix = f":{parsed.port}" if parsed.port and parsed.port != 443 else ""
-    return urllib.parse.urlunsplit(("https", host + port_suffix, path, parsed.query, ""))
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    port_suffix = f":{port}" if port and port != 443 else ""
+    authority = f"[{host}]" if ipv6_literal else host
+    return urllib.parse.urlunsplit(("https", authority + port_suffix, path, parsed.query, ""))
 
 
-def parse_source_urls(raw: Any) -> list[str]:
+def parse_source_urls(raw: Any, limit: int = MAX_CUSTOM_SOURCES) -> list[str]:
     if isinstance(raw, str):
         items = [part.strip() for part in raw.replace(";", ",").replace("\n", ",").split(",") if part.strip()]
     elif isinstance(raw, Iterable) and not isinstance(raw, (bytes, bytearray, dict)):
@@ -388,7 +403,7 @@ def parse_source_urls(raw: Any) -> list[str]:
         url = normalize_source_url(item)
         if url and url not in out:
             out.append(url)
-            if len(out) >= MAX_CUSTOM_SOURCES:
+            if len(out) >= limit:
                 break
     return out
 
@@ -421,32 +436,102 @@ def _download_source_lines(url: str, timeout: float) -> list[str]:
     return b"".join(chunks).decode("utf-8", errors="replace").splitlines()
 
 
+def validate_custom_source(lines: Iterable[str]) -> None:
+    count = 0
+    for raw in lines:
+        token = str(raw or "").split("#", 1)[0].strip().lstrip("\ufeff")
+        if not token:
+            continue
+        if "/" not in token or CONTROL_RE.search(token):
+            raise ValueError("invalid_custom_source")
+        try:
+            net = ipaddress.ip_network(token, strict=False)
+        except ValueError:
+            raise ValueError("invalid_custom_source") from None
+        if net.prefixlen == 0 or (isinstance(net, ipaddress.IPv6Network) and net.network_address.ipv4_mapped is not None):
+            raise ValueError("invalid_custom_source")
+        count += 1
+        if count > 65536:
+            raise ValueError("custom_source_too_large")
+    if not count:
+        raise ValueError("empty_custom_source")
+
+
 def fetch_rkn_subnets(
     *,
     custom_sources: Iterable[str] | None = None,
     extra_protected: Iterable[str] | None = None,
     timeout: float = 10.0,
+    cache_path: str | Path | None = None,
+    disabled_sources: Iterable[str] | None = None,
 ) -> tuple[list[str], list[str], int, list[str]]:
     sources: list[tuple[str, str]] = list(RKN_SOURCES)
     for index, raw_url in enumerate(parse_source_urls(custom_sources or ()), start=1):
         if all(existing_url != raw_url for _name, existing_url in sources):
             sources.append((f"custom_{index}", raw_url))
+    disabled = set(disabled_sources or ())
+    sources = [(name, url) for name, url in sources if url not in disabled]
+    if not sources:
+        raise DDoSerror("at least one source must be enabled")
+    cache: dict[str, Any] = {}
+    lock = None
+    cache_file = Path(cache_path) if cache_path else None
+    if cache_file is not None:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd = os.open(str(cache_file) + ".lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            lock = os.fdopen(fd, "a+")
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if cache_file.exists() and not cache_file.is_symlink() and cache_file.stat().st_size <= 32 * MAX_RKN_BYTES:
+                raw = json.loads(cache_file.read_text(encoding="utf-8"))
+                cache = raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            if lock:
+                lock.close()
+            lock = None
+            cache_file = None
+            cache = {}
     collected: list[str] = []
     ok_sources = 0
     errors: list[str] = []
-    for name, url in sources:
-        try:
-            lines = _download_source_lines(url, timeout=timeout)
-        except Exception as exc:
-            errors.append(f"{name}: {type(exc).__name__}")
-            continue
-        valid_v4, valid_v6 = sanitize_rkn_networks(lines)
-        if not valid_v4 and not valid_v6:
-            errors.append(f"{name}: empty_or_invalid")
-            continue
-        collected.extend(valid_v4)
-        collected.extend(valid_v6)
-        ok_sources += 1
+    try:
+        for name, url in sources:
+            try:
+                lines = _download_source_lines(url, timeout=timeout)
+                if name.startswith("custom_"):
+                    validate_custom_source(lines)
+                valid_v4, valid_v6 = sanitize_rkn_networks(lines)
+                if not valid_v4 and not valid_v6:
+                    raise ValueError("empty_or_invalid")
+                entry = {"v4": valid_v4, "v6": valid_v6, "updated_at": int(time.time()), "error": ""}
+                cache[url] = entry
+                ok_sources += 1
+            except Exception as exc:
+                entry = cache.get(url) if isinstance(cache.get(url), dict) else {}
+                cv4, cv6 = sanitize_rkn_networks([*(entry.get("v4") or []), *(entry.get("v6") or [])])
+                has_cache = bool(cv4 or cv6)
+                entry = {"v4": cv4, "v6": cv6, "updated_at": entry.get("updated_at", 0), "error": type(exc).__name__}
+                cache[url] = entry
+                errors.append(f"{name}: {type(exc).__name__}" + (" (cached)" if has_cache else " (no cache)"))
+            collected.extend(entry["v4"])
+            collected.extend(entry["v6"])
+        if cache_file is not None:
+            try:
+                fd, temp = tempfile.mkstemp(prefix=".rkn-cache-", dir=cache_file.parent)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump(cache, stream, ensure_ascii=True, separators=(",", ":"))
+                        stream.flush()
+                        os.chmod(temp, 0o600)
+                    os.replace(temp, cache_file)
+                finally:
+                    if os.path.exists(temp):
+                        os.unlink(temp)
+            except OSError:
+                errors.append("cache: write_failed (no cache)")
+    finally:
+        if lock:
+            lock.close()
     v4, v6 = sanitize_rkn_networks(collected, extra_protected=extra_protected)
     if not v4 and not v6:
         sv4, sv6 = seed_rkn_subnets(extra_protected=extra_protected)
@@ -477,10 +562,13 @@ class Policy:
     set_size: int = SET_SIZE
     ports: list[int] = field(default_factory=lambda: list(DEFAULT_PORTS))
     rkn_enabled: bool = True
+    rkn_logging: bool = True
     rkn_allow: list[str] = field(default_factory=list)
+    rkn_exceptions: list[str] = field(default_factory=list)
     manual_bans: list[str] = field(default_factory=list)
     unbanned: list[str] = field(default_factory=list)
     custom_sources: list[str] = field(default_factory=list)
+    disabled_sources: list[str] = field(default_factory=list)
 
     def normalise(self) -> "Policy":
         self.syn_rate = clamp(self.syn_rate, MIN_RATE, 100000, SYN_RATE)
@@ -495,10 +583,14 @@ class Policy:
         self.set_size = clamp(self.set_size, 1024, MAX_SET_SIZE, SET_SIZE)
         self.ports = ports_of(",".join(str(item) for item in self.ports)) or list(DEFAULT_PORTS)
         self.rkn_enabled = bool(self.rkn_enabled)
+        self.rkn_logging = bool(self.rkn_logging)
         self.rkn_allow = parse_entries(self.rkn_allow, allow_private=True)
+        self.rkn_exceptions = parse_rkn_exceptions(self.rkn_exceptions)
         self.manual_bans = parse_entries(self.manual_bans, allow_private=False)
         self.unbanned = parse_entries(self.unbanned, allow_private=True)[:64]
         self.custom_sources = parse_source_urls(self.custom_sources)
+        known = {url for _, url in RKN_SOURCES} | set(self.custom_sources)
+        self.disabled_sources = [url for url in parse_source_urls(self.disabled_sources, MAX_CUSTOM_SOURCES + len(RKN_SOURCES)) if url in known]
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -516,10 +608,13 @@ class Policy:
             "set_size": int(self.set_size),
             "ports": list(self.ports),
             "rkn_enabled": bool(self.rkn_enabled),
+            "rkn_logging": bool(self.rkn_logging),
             "rkn_allow": list(self.rkn_allow),
+            "rkn_exceptions": list(self.rkn_exceptions),
             "manual_bans": list(self.manual_bans),
             "unbanned": list(self.unbanned),
             "custom_sources": list(self.custom_sources),
+            "disabled_sources": list(self.disabled_sources),
         }
 
     def allow_csv(self) -> str:
@@ -551,12 +646,49 @@ class Policy:
             set_size=clamp(data.get("set_size"), 1024, MAX_SET_SIZE, SET_SIZE),
             ports=ports_of(raw.get("ports") if isinstance(raw, dict) else ""),
             rkn_enabled=_parse_bool(data.get("rkn_enabled"), True),
+            rkn_logging=_parse_bool(data.get("rkn_logging"), True),
             rkn_allow=parse_entries(data.get("rkn_allow"), allow_private=True),
+            rkn_exceptions=parse_rkn_exceptions(data.get("rkn_exceptions")),
             manual_bans=parse_entries(data.get("manual_bans"), allow_private=False),
             unbanned=parse_entries(data.get("unbanned"), allow_private=True)[:64],
             custom_sources=parse_source_urls(data.get("custom_sources")),
+            disabled_sources=parse_source_urls(data.get("disabled_sources"), MAX_CUSTOM_SOURCES + len(RKN_SOURCES)),
         )
         return policy.normalise()
+
+
+def firewall_policy_differs(left: Policy, right: Policy) -> bool:
+    a, b = left.to_dict(), right.to_dict()
+    for key in ("custom_sources", "disabled_sources"):
+        a.pop(key, None)
+        b.pop(key, None)
+    for key in ("ports", "rkn_allow", "rkn_exceptions", "manual_bans", "unbanned"):
+        a[key] = sorted(a[key])
+        b[key] = sorted(b[key])
+    return a != b
+
+
+def parse_rkn_exceptions(raw):
+    items = raw if isinstance(raw, (list, tuple)) else str(raw or "").split(";")
+    out = []
+    for item in items:
+        parts = str(item).strip().split()
+        if len(parts) != 3:
+            continue
+        try:
+            address = ipaddress.ip_address(parts[0])
+            port = int(parts[2])
+        except ValueError:
+            continue
+        proto = parts[1].lower()
+        if address.is_unspecified or address.is_multicast or proto not in ("tcp", "udp") or not 1 <= port <= 65535:
+            continue
+        entry = "%s %s %d" % (address, proto, port)
+        if entry not in out:
+            out.append(entry)
+        if len(out) >= 128:
+            break
+    return out
 
 
 def ports_set(policy: Policy) -> str:
@@ -606,6 +738,20 @@ def nft_table(
     lines.extend(_render_interval_set(SET_BAN_V6, "ipv6_addr", ban_v6))
     lines.extend(_render_interval_set(SET_RKN_V4, "ipv4_addr", active_rkn_v4))
     lines.extend(_render_interval_set(SET_RKN_V6, "ipv6_addr", active_rkn_v6))
+    exceptions = parse_rkn_exceptions(policy.rkn_exceptions)
+    if exceptions and (active_rkn_v4 or active_rkn_v6):
+        lines.append("  chain rkn_check {")
+        for entry in exceptions:
+            address, proto, port = entry.split()
+            family = "ip6" if ":" in address else "ip"
+            lines.append("    %s saddr %s %s dport %s return" % (family, address, proto, port))
+        for family, set_name, enabled in (("ip", SET_RKN_V4, active_rkn_v4), ("ip6", SET_RKN_V6, active_rkn_v6)):
+            if enabled:
+                lines.append("    ct state established,related %s saddr @%s return" % (family, set_name))
+                if policy.rkn_logging:
+                    lines.append('    %s saddr @%s limit rate 10/minute burst 5 packets log prefix "OBHOD-RKN-%s: " level warn' % (family, set_name, "v6" if family == "ip6" else "v4"))
+                lines.append("    %s saddr @%s counter drop" % (family, set_name))
+        lines.append("  }")
     lines.extend(
         [
             "  set %s { type ipv4_addr; flags dynamic, timeout; timeout %ds; size %d; }" % (SET_SYN, policy.ban_timeout, policy.set_size),
@@ -616,6 +762,7 @@ def nft_table(
             "  chain input {",
             "    type filter hook input priority -10; policy accept;",
             '    iifname "lo" accept',
+            "    ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept",
             "    ct state invalid counter drop",
             "    tcp flags & (fin|syn|rst|ack) == 0x0 counter drop",
             "    tcp flags & (fin|syn|psh|rst|ack|urg) == (fin|syn|psh|urg) counter drop",
@@ -629,11 +776,17 @@ def nft_table(
         lines.append("    ip saddr @%s counter drop" % SET_BAN_V4)
     if ban_v6:
         lines.append("    ip6 saddr @%s counter drop" % SET_BAN_V6)
-    if active_rkn_v4:
+    if exceptions and (active_rkn_v4 or active_rkn_v6):
+        lines.append("    jump rkn_check")
+    if active_rkn_v4 and not exceptions:
         lines.append("    ct state established,related ip saddr @%s accept" % SET_RKN_V4)
+        if policy.rkn_logging:
+            lines.append('    ip saddr @%s limit rate 10/minute burst 5 packets log prefix "OBHOD-RKN-v4: " level warn' % SET_RKN_V4)
         lines.append("    ip saddr @%s counter drop" % SET_RKN_V4)
-    if active_rkn_v6:
+    if active_rkn_v6 and not exceptions:
         lines.append("    ct state established,related ip6 saddr @%s accept" % SET_RKN_V6)
+        if policy.rkn_logging:
+            lines.append('    ip6 saddr @%s limit rate 10/minute burst 5 packets log prefix "OBHOD-RKN-v6: " level warn' % SET_RKN_V6)
         lines.append("    ip6 saddr @%s counter drop" % SET_RKN_V6)
     lines.extend(
         [
@@ -740,6 +893,7 @@ class Status:
     installed: bool = False
     enabled: bool = True
     table: bool = False
+    table_inspection: str = "not_checked"
     policy: Policy = field(default_factory=Policy)
     counters: dict[str, int] = field(default_factory=dict)
     syn_flood: list[str] = field(default_factory=list)
@@ -754,20 +908,32 @@ class Status:
     kernel: str = ""
     notice: str = ""
     error: str = ""
+    saved_policy_consistency: str = "not_checked"
+    live_rate_consistency: str = "not_checked"
+    reconcile_fingerprint: str = ""
+    policy_sha256: str = ""
+    transaction_state: str = "none"
+    transaction_digest: str = ""
+    transaction_policy: Policy = field(default_factory=Policy)
     rkn_enabled: bool = True
     rkn_v4_count: int = 0
     rkn_v6_count: int = 0
     rkn_updated: str = ""
+    timer_active: bool = False
+    timer_configured: bool = False
+    timer_mode: str = ""
 
     @staticmethod
     def from_dict(raw: Any) -> "Status":
         data = raw if isinstance(raw, dict) else {}
         pol = Policy.from_dict(data.get("policy"))
         rkn_flag = data.get("rkn_enabled", pol.rkn_enabled)
+        transaction = data.get("policy_transaction") if isinstance(data.get("policy_transaction"), dict) else {}
         status = Status(
             installed=bool(data.get("installed", False)),
             enabled=bool(data.get("enabled", True)),
             table=bool(data.get("table", False)),
+            table_inspection=str(data.get("table_inspection", "not_checked") or "not_checked")[:20],
             policy=pol,
             counters=parse_counters(data.get("counters")),
             syn_flood=parse_set(data.get("syn_flood")),
@@ -782,10 +948,20 @@ class Status:
             kernel=str(data.get("kernel", "") or "")[:32],
             notice=str(data.get("notice", "") or "")[:120],
             error=str(data.get("error", "") or "")[:160],
+            saved_policy_consistency=str(data.get("saved_policy_consistency", "not_checked") or "not_checked")[:20],
+            live_rate_consistency=str(data.get("live_rate_consistency", "not_checked") or "not_checked")[:20],
+            reconcile_fingerprint=str(data.get("reconcile_fingerprint", "") or "")[:64],
+            policy_sha256=str(data.get("policy_sha256", "") or "")[:64],
+            transaction_state=str(transaction.get("state", "none") or "none")[:16],
+            transaction_digest=str(transaction.get("sha256", "") or "")[:64],
+            transaction_policy=Policy.from_dict(transaction.get("policy")),
             rkn_enabled=_parse_bool(rkn_flag, pol.rkn_enabled),
             rkn_v4_count=clamp(data.get("rkn_v4_count"), 0, 1 << 24, 0),
             rkn_v6_count=clamp(data.get("rkn_v6_count"), 0, 1 << 24, 0),
             rkn_updated=str(data.get("rkn_updated", "") or "")[:40],
+            timer_active=bool(data.get("timer_active", False)),
+            timer_configured=bool(data.get("timer_configured", False)),
+            timer_mode=str(data.get("timer_mode", ""))[:16],
         )
         return status
 
@@ -855,11 +1031,23 @@ class Status:
 
     def reasons(self) -> list[str]:
         out: list[str] = []
-        if not self.installed:
-            return out
+        if self.transaction_state != "none":
+            out.append("policy_transaction")
+        if self.table_inspection == "unknown":
+            out.append("table_unknown")
+        if self.table and not self.installed:
+            out.append("table_unmanaged")
+        if self.table and not self.enabled:
+            out.append("table_unexpected")
         if self.error:
             out.append("agent_error")
-        if self.enabled and not self.table:
+        if not self.installed:
+            return out
+        if self.enabled and self.saved_policy_consistency in ("mismatch", "unknown"):
+            out.append("saved_policy_" + self.saved_policy_consistency)
+        if self.enabled and self.table and self.live_rate_consistency in ("mismatch", "unknown"):
+            out.append("live_rate_" + self.live_rate_consistency)
+        if self.enabled and not self.table and self.table_inspection != "unknown":
             out.append("table_missing")
         if len(self.syn_flood) >= SET_WARN:
             out.append("syn_flood")
@@ -878,11 +1066,11 @@ class Status:
         return out
 
     def level(self) -> str:
-        if not self.installed:
-            return "ok"
         reasons = self.reasons()
-        if self.error or not self.enabled:
-            return "warn" if self.enabled and not self.table else "ok"
+        if any(item in reasons for item in ("table_unknown", "table_unexpected", "table_unmanaged", "agent_error", "policy_transaction")):
+            return "warn"
+        if not self.installed or not self.enabled:
+            return "ok"
         if "table_missing" in reasons:
             return "bad"
         if any(item in reasons for item in ("syn_flood", "udp_flood")) and len(self.syn_flood) >= SET_BAD:
@@ -916,6 +1104,7 @@ class Status:
             "installed": self.installed,
             "enabled": self.enabled,
             "table": self.table,
+            "table_inspection": self.table_inspection,
             "policy": self.policy.to_dict(),
             "counters": dict(self.counters),
             "syn_flood": list(self.syn_flood),
@@ -930,6 +1119,11 @@ class Status:
             "kernel": self.kernel,
             "notice": self.notice,
             "error": self.error,
+            "saved_policy_consistency": self.saved_policy_consistency,
+            "live_rate_consistency": self.live_rate_consistency,
+            "reconcile_fingerprint": self.reconcile_fingerprint,
+            "policy_sha256": self.policy_sha256,
+            "policy_transaction": {"state": self.transaction_state, "sha256": self.transaction_digest, "policy": self.transaction_policy.to_dict()},
             "rkn_enabled": bool(self.rkn_enabled),
             "rkn_v4_count": int(self.rkn_v4_count),
             "rkn_v6_count": int(self.rkn_v6_count),
