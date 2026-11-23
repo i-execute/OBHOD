@@ -1,0 +1,632 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from BOT import antiddos, cores, dscreens, i18n, net, scripts, ui
+from tests.fakes import make_bot
+
+
+def panel_for(tmp_path: Path):
+    from tests.fakes import FakeFtControl
+
+    bot = make_bot(tmp_path)
+    control = FakeFtControl()
+    bot.freeturn.control = control
+    return bot, bot.debug, control
+
+
+def run(coro: Any) -> Any:
+    return asyncio.run(coro)
+
+
+def last(bot: Any) -> str:
+    pool = bot.rendered or bot.sent
+    return pool[-1].to_html()
+
+
+def scan_body() -> dict[str, Any]:
+    return {"hosts": 2, "alive": 1, "results": [{"host": "1.1.1.1", "open": [443]}, {"host": "1.1.1.2", "open": []}]}
+
+
+def trace_body() -> dict[str, Any]:
+    return {"hops": [{"index": 1, "address": "10.0.0.1", "rtt": 1.0}, {"index": 2, "address": "", "rtt": 0.0}]}
+
+
+def test_the_tools_hub_opens_without_duplicate_actions(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 0, "dbg:home"))
+    html = last(bot)
+    assert i18n.t("TOOLS_NETWORK") in html
+    assert i18n.t("TOOLS_DIAGNOSTICS") in html
+    assert i18n.t("VKCALLS_BTN") in html
+    assert i18n.t("DBG_SCAN_BTN") not in html
+    assert 'data="nav:home"' in html
+
+
+def test_the_category_hubs_keep_primary_actions_and_back_paths(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 0, "dbg:network"))
+    network = last(bot)
+    assert i18n.t("DBG_SCAN_BTN") in network
+    assert i18n.t("DBG_TRACE_BTN") in network
+    assert 'data="dbg:home"' in network
+    run(debug.route(1, 0, "dbg:diagnostics"))
+    diagnostics = last(bot)
+    assert i18n.t("DPI_BTN_OPEN") in diagnostics
+    assert i18n.t("DBG_SCRIPTS_BTN") in diagnostics
+    assert 'data="dbg:home"' in diagnostics
+    run(debug.route(1, 0, "dbg:protect"))
+    protection = last(bot)
+    assert i18n.t("DDOS_BTN_OPEN") in protection
+    assert i18n.t("FT_FW_TITLE") in protection
+    assert 'data="nav:home"' in protection
+
+
+def test_a_scan_runs_and_reports(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.scan = scan_body()
+    debug.target = "1.1.1.0/30"
+    debug.ports = "443"
+    run(debug.route(1, 0, "dbg:scan:go"))
+    assert ["net-scan", "1.1.1.0/30", "443"] in control.calls
+    html = last(bot)
+    assert "1.1.1.1:443" in html
+    assert i18n.t("DBG_SCAN_DONE") in html
+
+
+def test_a_silly_scan_target_is_refused_before_the_agent(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    for bad in ("", "rm -rf /", "10.0.0.0/8", "1.1.1.1;ls"):
+        control.calls.clear()
+        debug.target = bad
+        run(debug.route(1, 0, "dbg:scan:go"))
+        assert not [call for call in control.calls if call[0] == "net-scan"], bad
+    assert last(bot)
+
+
+def test_a_silly_port_list_is_refused(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    debug.target = "1.1.1.1"
+    debug.ports = "0,70000"
+    control.calls.clear()
+    run(debug.route(1, 0, "dbg:scan:go"))
+    assert not [call for call in control.calls if call[0] == "net-scan"]
+    assert i18n.t("DBG_BAD_TARGET") not in last(bot)
+
+
+def test_a_scan_cooldown_stops_a_click_storm(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.scan = scan_body()
+    debug.target = "1.1.1.1"
+    run(debug.route(1, 0, "dbg:scan:go"))
+    first = len([call for call in control.calls if call[0] == "net-scan"])
+    run(debug.route(1, 0, "dbg:scan:go"))
+    second = len([call for call in control.calls if call[0] == "net-scan"])
+    assert first == 1 and second == 1
+    assert i18n.t("DBG_LIMIT") in last(bot)
+
+
+def test_a_failing_scan_is_shown_not_raised(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.fail = "the agent said no"
+    debug.target = "1.1.1.1"
+    run(debug.route(1, 0, "dbg:scan:go"))
+    html = last(bot)
+    assert i18n.t("FT_CODE_BAD_ARG") in html
+    assert debug.scan.error
+
+
+def test_a_trace_runs_and_shows_hops(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.trace = trace_body()
+    debug.target = "1.1.1.1"
+    debug.hops = 3
+    run(debug.route(1, 0, "dbg:trace:go"))
+    assert ["net-trace", "1.1.1.1", "3"] in control.calls
+    html = last(bot)
+    assert "10.0.0.1" in html
+    assert "1.0 ms" in html
+
+
+def test_a_silly_hop_count_is_refused(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    debug.target = "1.1.1.1"
+    debug.hops = 99
+    control.calls.clear()
+    run(debug.route(1, 0, "dbg:trace:go"))
+    assert not [call for call in control.calls if call[0] == "net-trace"]
+
+
+def test_the_vk_refresh_reads_the_prefixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    monkeypatch.setattr("BOT.fwguard.vk_cidrs", lambda timeout=0, use_cache=True: (["93.186.224.0/20", "95.142.192.0/20"], ""))
+    run(debug.route(1, 0, "dbg:vk:go"))
+    html = last(bot)
+    assert "93.186.224.0/20" in html
+    assert debug.vk["cidrs"]
+
+
+def test_the_vk_refresh_reports_a_dead_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    monkeypatch.setattr("BOT.fwguard.vk_cidrs", lambda timeout=0, use_cache=True: ([], "unreachable"))
+    run(debug.route(1, 0, "dbg:vk:go"))
+    assert debug.vk["reason"] == "unreachable"
+    assert i18n.t("DBG_SCAN_NONE") in last(bot)
+
+
+def test_the_vk_apply_needs_prefixes(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.calls.clear()
+    run(debug.route(1, 0, "dbg:vk:apply"))
+    assert not [call for call in control.calls if call[0].startswith("fw")]
+
+
+def test_the_scripts_screen_warns_about_a_change(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.cache = [{"name": "install.sh", "digest": "a" * 64, "size": 10, "at": 1.0}]
+    control.remote = {"freeturn": {"url": scripts.target("freeturn").url(""), "digest": "b" * 64, "size": 11}}
+    run(debug.route(1, 0, "dbg:scr"))
+    html = last(bot)
+    assert i18n.t("SCR_WARN") in html
+    assert i18n.t("SCR_CHANGED") in html
+    assert "https://github.com/" in html
+
+
+def test_the_scripts_screen_is_quiet_when_nothing_changed(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.cache = [{"name": "install.sh", "digest": "a" * 64, "size": 10, "at": 1.0}]
+    control.remote = {"freeturn": {"url": scripts.target("freeturn").url(""), "digest": "a" * 64, "size": 10}}
+    run(debug.route(1, 0, "dbg:scr"))
+    html = last(bot)
+    assert i18n.t("SCR_WARN") not in html
+    assert i18n.t("SCR_CACHED") in html
+
+
+def test_the_fetch_pulls_only_the_pending_scripts(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.cache = [{"name": "install.sh", "digest": "a" * 64, "size": 10, "at": 1.0}]
+    control.remote = {"freeturn": {"url": scripts.target("freeturn").url(""), "digest": "b" * 64, "size": 11}}
+    run(debug.route(1, 0, "dbg:scr"))
+    control.fetched.clear()
+    run(debug.route(1, 0, "dbg:scr:fetch"))
+    assert len(control.fetched) == 1
+    assert i18n.t("SCR_FETCHED") in last(bot)
+
+
+def test_the_keep_button_changes_nothing(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.cache = [{"name": "install.sh", "digest": "a" * 64, "size": 10, "at": 1.0}]
+    control.remote = {"freeturn": {"url": scripts.target("freeturn").url(""), "digest": "b" * 64, "size": 11}}
+    run(debug.route(1, 0, "dbg:scr"))
+    control.fetched.clear()
+    run(debug.route(1, 0, "dbg:scr:keep"))
+    assert control.fetched == []
+    assert i18n.t("SCR_KEEP") in last(bot)
+
+
+def test_the_emoji_switch_is_live_and_survives_a_restart(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    ui.use_icons(False)
+    bot.state.emoji = False
+    assert bot.toggle_emoji() is True
+    assert ui.icons_on() is True
+    assert bot.state.emoji is True
+    assert bot.toggle_emoji() is False
+    assert ui.icons_on() is False
+    assert bot.state.emoji is False
+
+
+def test_the_emoji_button_is_in_settings_and_not_home(tmp_path: Path) -> None:
+    from BOT import screens
+    from BOT.store import State
+
+    ui.use_icons(False)
+    home_html = screens.home(screens.View(state=State())).to_html()
+    assert 'data="nav:emoji"' not in home_html
+    settings_html = screens.settings(screens.View(state=State())).to_html()
+    assert 'data="nav:emoji"' in settings_html
+    assert i18n.t("NAV_EMOJI_OFF") in settings_html
+
+
+def test_the_info_screen_shows_the_cores(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 0, "dbg:info"))
+    html = last(bot)
+    for item in cores.all_cores():
+        assert i18n.t(item.name_key) in html
+
+
+def test_a_crash_shows_the_traceback_in_a_code_block(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+
+    async def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("the debug action exploded")
+
+    control.net_scan = boom
+    debug.target = "1.1.1.1"
+    run(debug.route(1, 0, "dbg:scan:go"))
+    html = last(bot)
+    assert "RuntimeError" in html
+    assert "the debug action exploded" in html
+    assert "<pre>" in html
+
+
+def test_an_unknown_debug_route_falls_back(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 0, "dbg:nonsense"))
+    assert i18n.t("HOME_NOTICE_UNKNOWN") in last(bot)
+
+
+def test_the_input_of_a_target_updates_the_panel(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.apply_input(1, "dbg_target", "-", "203.0.113.0/24"))
+    assert debug.target == "203.0.113.0/24"
+    run(debug.apply_input(1, "dbg_ports", "-", "80,443"))
+    assert debug.ports == "80,443"
+    run(debug.apply_input(1, "dbg_hops", "-", "7"))
+    assert debug.hops == 7
+
+
+def test_a_silly_input_shows_a_traceback_screen(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.apply_input(1, "dbg_target", "-", "rm -rf /"))
+    html = last(bot)
+    assert i18n.t("DBG_ERR_TITLE") in html
+    assert "NetError" in html
+
+
+def test_the_input_screen_lists_the_fields(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 0, "dbg:scan"))
+    html = last(bot)
+    assert i18n.t("DBG_SCAN_TARGET_LABEL") in html
+    assert 'switch_inline_query_current_chat' in html
+    assert "<tg-button-row align=\"left\"><tg-button-row" not in html
+
+
+def test_the_scan_screen_keeps_the_button_inside_a_row(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 0, "dbg:scan"))
+    html = last(bot)
+    rows = html.count("<tg-button-row")
+    assert rows >= 2
+
+
+def test_every_debug_route_renders_in_every_language() -> None:
+    for language in i18n.LANGUAGES:
+        view = dscreens.DbgView(lang=language, target="1.1.1.1", ports="80")
+        pages = [
+            dscreens.home(view),
+            dscreens.network_screen(view),
+            dscreens.diagnostics_screen(view),
+            dscreens.protection_screen(view),
+            dscreens.scan_screen(view),
+            dscreens.trace_screen_view(view),
+            dscreens.vk_screen(view),
+            dscreens.scripts_screen(view),
+            dscreens.info_screen(view, {"uptime": 10, "address": "1.1.1.1", "cores": []}),
+            dscreens.crash_screen(view, "dbg:scan", "Traceback"),
+        ]
+        for rich in pages:
+            html = rich.build()
+            assert "<h2>" in html
+            assert "{" not in html
+
+
+def test_the_net_module_has_no_shell() -> None:
+    source = Path(net.__file__).read_text(encoding="utf-8")
+    assert "shell=True" not in source
+    assert os_system() not in source
+
+
+def os_system() -> str:
+    return "os" + ".system"
+
+
+def test_the_debug_panel_has_no_shell() -> None:
+    source = Path(dscreens.__file__).read_text(encoding="utf-8")
+    assert "shell=True" not in source
+
+
+def test_the_listeners_screen_marks_the_protected_ports(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    control.ports = {
+        "ports": [
+            {"port": 22, "proto": "tcp", "process": "sshd"},
+            {"port": 443, "proto": "tcp", "process": "xray"},
+            {"port": 56000, "proto": "udp", "process": "freeturn"},
+        ],
+        "count": 3,
+    }
+    run(debug.route(1, 0, "dbg:ports:go"))
+    html = last(bot)
+    assert "22/tcp" in html
+    assert i18n.t("DBG_PORTS_PROTECTED") in html
+    assert i18n.t("DBG_PORTS_NOTE") in html
+    assert [owner.port for owner in debug.owners] == [22, 443, 56000]
+
+
+def test_a_kept_port_is_marked_even_if_the_agent_forgot(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    bot.state.ssh.port = 2222
+    control.ports = {"ports": [{"port": 2222, "proto": "tcp", "process": "sshd"}], "count": 1}
+    run(debug.route(1, 0, "dbg:ports:go"))
+    assert debug.owners[0].protected is True
+    assert ["net-ports", debug_keep(debug)] in control.calls or "2222" in control.calls[-1][1]
+
+
+def debug_keep(debug: Any) -> str:
+    from BOT import portguard
+
+    return portguard.join(debug.keep_ports())
+
+
+def test_the_guard_refuses_a_protected_port(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    bot.state.ssh.port = 22
+    debug.vk = {"cidrs": ["93.186.224.0/20"]}
+    bot.state.freeturn.config.port = 22
+    control.calls.clear()
+    run(debug.route(1, 0, "dbg:vk:apply"))
+    assert not [call for call in control.calls if call and call[0] == "firewall"]
+    assert i18n.t("FT_CODE_PORT_PROTECTED") in last(bot)
+
+
+def test_the_guard_passes_the_keep_list(tmp_path: Path) -> None:
+    bot, debug, control = panel_for(tmp_path)
+    debug.vk = {"cidrs": ["93.186.224.0/20"]}
+    bot.state.freeturn.config.port = 56000
+    bot.state.ssh.port = 22
+    control.calls.clear()
+    run(debug.route(1, 0, "dbg:vk:apply"))
+    guard_calls = [call for call in control.calls if call and call[0] == "firewall"]
+    assert guard_calls
+    assert guard_calls[0][4] == "22,443,2096,56000" or "22" in guard_calls[0][4]
+
+
+def test_the_vk_screen_names_the_announced_networks() -> None:
+    from BOT import dscreens, fwguard
+    from tests.fakes import make_bot
+
+    bot = make_bot(Path("/tmp"))
+    bot.debug.vk = {"cidrs": ["203.0.113.0/24"], "reason": "", "domains": ["x"], "asns": fwguard.holders(), "added": [], "removed": [], "checked_at": 0}
+    html = dscreens.vk_screen(bot.debug.view()).build()
+    assert "AS47541" in html
+    assert "AS47764" in html
+
+
+def test_the_dpi_screen_opens_and_scans(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:dpi"))
+    body = last(bot)
+    assert "dbg:dpi:scan" in body
+    assert debug.dpi is None
+    run(debug.route(1, 2, "dbg:dpi:scan"))
+    body = last(bot)
+    assert debug.dpi is not None
+    assert debug.dpi.kernel.release
+    assert "dbg:dpi:scan" in body
+    assert bot.state.language in {"en", "ru", "zh"}
+
+
+def test_the_dpi_scan_is_rate_limited(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:dpi:scan"))
+    first = debug.dpi
+    run(debug.route(1, 2, "dbg:dpi:scan"))
+    assert debug.dpi is first
+    assert i18n.t("DBG_LIMIT", bot.state.language) in last(bot)
+
+
+def test_the_dpi_inputs_come_from_the_inbounds(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    from BOT.xray import new_inbound
+
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.fingerprint = "chrome"
+    bot.state.xray.add(inbound)
+    bot.state.xray.last_core = {"version": "v26.1.1"}
+    marks, networks, version = debug.dpi_inputs()
+    assert marks == ["chrome"]
+    assert networks == ["raw"]
+    assert version == "v26.1.1"
+
+
+def test_the_notification_screen_toggles_every_kind(tmp_path: Path) -> None:
+    from BOT import notify
+
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:ntf"))
+    body = last(bot)
+    for kind in notify.KINDS:
+        assert "dbg:ntf:" + kind in body
+    before = debug.notify.settings.on(notify.KIND_PORTSCAN)
+    run(debug.route(1, 2, "dbg:ntf:portscan"))
+    assert debug.notify.settings.on(notify.KIND_PORTSCAN) is (not before)
+    assert bot.state.notify["enabled"]["portscan"] is (not before)
+    run(debug.route(1, 2, "dbg:ntf:off"))
+    assert debug.notify.settings.any_on() is False
+    run(debug.route(1, 2, "dbg:ntf:on"))
+    assert debug.notify.settings.any_on() is True
+
+
+def test_the_notification_test_button_needs_an_owner(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    bot.cfg.admin_id = 0
+    bot.state.admin_id = 0
+    sent = []
+
+    async def fake_send(chat_id, rich):
+        sent.append(chat_id)
+
+    bot.send = fake_send
+    run(debug.route(1, 2, "dbg:ntf:test"))
+    assert sent == []
+    bot.cfg.admin_id = 777
+    debug.marks.clear()
+    run(debug.notify_action(1, 2, "test"))
+    assert sent == [777]
+
+
+def test_the_honeypot_screen_survives_a_dead_agent(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:hp"))
+    body = last(bot)
+    assert "dbg:hp:install" in body
+    assert debug.honeypot is None
+
+
+def test_the_honeypot_refresh_reads_the_agent(tmp_path: Path, monkeypatch) -> None:
+    from BOT import guard
+
+    bot, debug, _control = panel_for(tmp_path)
+    state = guard.HoneypotState(installed=True, running=True, ports=[2222], profiles={"2222": "ssh"}, total=3)
+    calls = []
+
+    async def fake_call(client, cfg, argv, timeout=180.0):
+        calls.append(argv)
+        return state
+
+    monkeypatch.setattr(guard, "honey_call", fake_call)
+    run(debug.honeypot_action(1, 2, "refresh"))
+    assert calls and calls[0] == ["status"]
+    assert debug.honeypot is state
+    body = last(bot)
+    assert "2222" in body
+
+
+def ddos_status(**fields) -> Any:
+    from BOT import antiddos
+
+    return antiddos.Status.from_dict(fields)
+
+
+def test_the_ddos_screen_survives_a_dead_agent(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 2, "dbg:dd"))
+    body = last(bot)
+    assert "dbg:dd:install" in body
+    assert debug.ddos is None
+
+
+def test_the_ddos_table_keeps_ip_values_as_plain_text(tmp_path: Path) -> None:
+    state = ddos_status(installed=True, enabled=True, table=True, syn_flood=["203.0.113.7"])
+    html = dscreens.ddos_screen(dscreens.DbgView(lang="ru", ddos=state)).to_html()
+    assert "203.0.113.7" in html
+    assert "<code>" not in html
+    assert 'data="nav:protect"' in html
+
+
+def test_the_ddos_refresh_reads_the_agent(tmp_path: Path, monkeypatch) -> None:
+    from BOT import guard
+
+    bot, debug, _control = panel_for(tmp_path)
+    state = ddos_status(table=True, pps=42, syn_flood=["1.2.3.4"])
+    calls = []
+
+    async def fake_call(client, cfg, argv, timeout=180.0):
+        calls.append(argv)
+        return state
+
+    async def fake_probe(client, cfg, allow=None):
+        return []
+
+    monkeypatch.setattr(guard, "ddos_call", fake_call)
+    monkeypatch.setattr(guard, "ddos_exposure", fake_probe)
+    run(debug.ddos_action(1, 2, "open"))
+    assert calls and calls[0] == ["status"]
+    assert debug.ddos is state
+    body = last(bot)
+    assert "1.2.3.4" in body
+
+
+def test_the_ddos_install_sends_the_policy(tmp_path: Path, monkeypatch) -> None:
+    from BOT import guard
+
+    bot, debug, _control = panel_for(tmp_path)
+    bot.state.ddos = {"syn_rate": 77, "ports": [22, 443]}
+    seen = []
+
+    async def fake_call(client, cfg, argv, timeout=180.0):
+        seen.append(list(argv))
+        return ddos_status(table=True)
+
+    async def fake_probe(client, cfg, allow=None):
+        return []
+
+    monkeypatch.setattr(guard, "ddos_call", fake_call)
+    monkeypatch.setattr(guard, "ddos_exposure", fake_probe)
+    debug.marks.clear()
+    run(debug.ddos_action(1, 2, "install"))
+    assert seen[0][0] == "install"
+    assert "--syn_rate=77" in seen[0]
+    assert "--ports=22,443" in seen[0]
+
+
+def test_the_ddos_install_remembers_a_failure(tmp_path: Path, monkeypatch) -> None:
+    from BOT import guard
+
+    bot, debug, _control = panel_for(tmp_path)
+
+    async def fake_call(client, cfg, argv, timeout=180.0):
+        raise RuntimeError("nft refused")
+
+    async def fake_probe(client, cfg, allow=None):
+        return []
+
+    monkeypatch.setattr(guard, "ddos_call", fake_call)
+    monkeypatch.setattr(guard, "ddos_exposure", fake_probe)
+    debug.marks.clear()
+    run(debug.ddos_action(1, 2, "install"))
+    assert "nft refused" in debug.error
+
+
+def test_ddos_ip_scan_callback_edits_the_same_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot = make_bot(tmp_path)
+    bot.debug.ddos = antiddos.Status(installed=True, enabled=True, table=True, syn_flood=["8.8.8.8"])
+    bot.debug.ddos_in_ips = True
+
+    async def fake_scan(target: str, default_target: str = "") -> dict[str, Any]:
+        return {
+            "target": target,
+            "kind": "ip",
+            "ip": target,
+            "meta": {"query": target, "country": "US"},
+            "cymru": {"asn": "15169", "prefix": "8.8.8.0/24", "country": "US", "registry": "arin", "allocated": "1992-12-01", "name": "EXAMPLE"},
+            "ports": {"open": [], "best_ms": 0},
+        }
+
+    monkeypatch.setattr("BOT.ipscan.full_scan_async", fake_scan)
+    asyncio.run(bot.debug.ddos_action(7, 71, "ipscan:0:8.8.8.8"))
+    assert len(bot.rendered) == 2
+    assert i18n.t("IPSCAN_SCANNING_TITLE", "en") in bot.rendered[0].to_html()
+    html = bot.rendered[1].to_html()
+    assert "8.8.8.8" in html
+    assert "8.8.8.0/24" in html
+    assert 'data="dbg:dd:ipscan:0:8.8.8.8"' in html
+    assert 'data="dbg:dd:ips:0"' in html
+    assert bot.sent == []
+
+
+def test_the_ddos_routes_refuse_the_unknown(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.ddos_action(1, 2, "launch"))
+    assert i18n.t("HOME_NOTICE_UNKNOWN", "en") in last(bot)
+
+
+def test_the_notification_switches_include_the_ddos_kind(tmp_path: Path) -> None:
+    from BOT import notify
+
+    bot, debug, _control = panel_for(tmp_path)
+    debug.marks.clear()
+    before = debug.notify.settings.on(notify.KIND_DDOS)
+    run(debug.notify_action(1, 2, notify.KIND_DDOS))
+    assert debug.notify.settings.on(notify.KIND_DDOS) is (not before)
+    body = last(bot)
+    assert i18n.t("NTF_KIND_DDOS", "en") in body
+    run(debug.notify_action(1, 2, notify.KIND_DDOS))
+    assert debug.notify.settings.on(notify.KIND_DDOS) is before
