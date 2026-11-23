@@ -99,9 +99,9 @@ def test_start_is_registered_once(tmp_path: Path) -> None:
 
 def test_navigation_renders_every_page(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
-    for page in ("home", "server", "ssh", "settings", "ban", "sshd", "help", "xray", "other"):
+    for page in ("home", "server", "ssh", "settings", "ban", "sshd", "help", "tools", "protect", "xray", "other"):
         run(bot.route(1, 0, f"nav:{page}"))
-    assert len(bot.rendered) == 9
+    assert len(bot.rendered) == 11
 
 
 def test_unknown_callback_falls_back(tmp_path: Path) -> None:

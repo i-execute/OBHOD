@@ -290,11 +290,11 @@ def test_an_unknown_mode_never_crashes_the_screen() -> None:
     assert "weird" in html
 
 
-def test_the_freeturn_home_links_the_firewall() -> None:
+def test_the_protection_hub_links_the_firewall() -> None:
     from BOT import dscreens
 
-    tools_html = dscreens.home(dscreens.DbgView()).to_html()
-    assert 'data="ft:fw"' in tools_html
+    protection_html = dscreens.protection_screen(dscreens.DbgView()).to_html()
+    assert 'data="ft:fw"' in protection_html
 
 
 def test_vk_asns_cover_all_six_llc_vk_networks() -> None:

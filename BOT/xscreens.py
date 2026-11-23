@@ -138,11 +138,7 @@ def core_line(view: XrayView, t: i18n.Translator) -> str:
 
 
 def back_row(target: str = "nav:home", lang: str = i18n.DEFAULT_LANGUAGE) -> str:
-    if target == "nav:home":
-        return row(button(i18n.t("UI_HOME", lang), "nav:home", icon="home"))
-    if target == "xr:home":
-        return row(button(i18n.t("NAV_XRAY", lang), "xr:home", icon="xray"), button(i18n.t("UI_HOME", lang), "nav:home", icon="home"))
-    return row(button(i18n.t("UI_BACK", lang), target, icon="back"), button(i18n.t("NAV_XRAY", lang), "xr:home", icon="xray"))
+    return row(button(i18n.t("UI_BACK", lang), target, icon="back"))
 
 
 def home(view: XrayView) -> Any:
@@ -162,7 +158,8 @@ def home(view: XrayView) -> Any:
     buttons = [
         row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("XR_BTN_INBOUNDS_LIST"), "xr:list", icon="folder")),
         row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
-        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("NAV_CORE"), "xr:core", icon="xray")),
+        back_row("nav:home", view.lang),
     ]
     return screen(t("XR_TITLE"), t("XR_SUBTITLE"), blocks, buttons, icon="xray")
 
@@ -562,8 +559,8 @@ def links_screen(view: XrayView, inbound: XrayInbound, address: str, links: list
         blocks.append(long_block(name, link))
     buttons = [
         *copyable,
-        row(button(t("UI_REFRESH"), f"xr:link:{inbound.id}", icon="refresh"), button(t("XR_BTN_INBOUND"), f"xr:in:{inbound.id}", icon="xray")),
-        back_row("xr:home", view.lang),
+        row(button(t("UI_REFRESH"), f"xr:link:{inbound.id}", icon="refresh")),
+        back_row(f"xr:in:{inbound.id}", view.lang),
     ]
     return screen(t("XR_LINKS_TITLE"), inbound.remark, blocks, buttons, icon="link")
 
@@ -630,7 +627,8 @@ def tailscale_expiry_alert(view: XrayView, stage: str, days: int) -> Any:
     buttons = [
         row(link_button(t("TS_MACHINES_BTN"), TAILSCALE_MACHINES_URL, icon="shield")),
         row(link_button(t("TS_ROTATE_KEY_BTN"), TAILSCALE_NEW_LINUX_URL, icon="key")),
-        row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("UI_HOME"), "nav:home", icon="home")),
+        row(button(t("NAV_SUBS"), "xr:subs", icon="link")),
+        back_row("nav:home", view.lang),
     ]
     return screen(title, "", blocks, buttons, icon="clock")
 
@@ -955,7 +953,7 @@ def scan_mismatch_screen(view: XrayView, result: ScanResult, inbound: XrayInboun
             )
     else:
         blocks.append(quote(muted(t("XR_SCAN_SEC_NOTHING"))))
-    buttons.append(row(button(t("XR_SCAN_KEEP"), "xr:scan", icon="back"), button(t("UI_HOME"), "nav:home", icon="home")))
+    buttons.append(back_row("xr:scan", view.lang))
     return screen(t("XR_SCAN_MISMATCH_TITLE"), t("XR_SCAN_MISMATCH_SUBTITLE"), blocks, buttons, icon="warn")
 
 
@@ -1099,7 +1097,7 @@ def input_screen(view: XrayView, ident: str, ctx: str = "", back: str = "xr:home
     blocks.append(quote(muted(t("XR_INPUT_NOTE"))))
     buttons = [
         input_row(t("PROMPT_INPUT"), ident, ctx or "-", view.lang),
-        row(button(t("UI_BACK"), back, icon="back"), button(t("NAV_XRAY"), "xr:home", icon="xray")),
+        back_row(back, view.lang),
     ]
     return screen(t("PROMPT_TITLE"), item.label(view.lang), blocks, buttons, icon="file")
 
@@ -1108,7 +1106,7 @@ def confirm_screen(view: XrayView, title: str, body: str, action: str, back: str
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(bold(body)))
-    buttons = [row(button(t("UI_CONFIRM"), action, icon="ok"), button(t("UI_CANCEL"), back, icon="back"))]
+    buttons = [row(button(t("UI_CONFIRM"), action, icon="ok"), button(t("UI_BACK"), back, icon="back"))]
     return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, icon="warn")
 
 

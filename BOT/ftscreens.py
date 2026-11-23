@@ -87,8 +87,8 @@ def banner(view: FtView, t: i18n.Translator) -> list[str]:
     return out
 
 
-def back_row(lang: str = i18n.DEFAULT_LANGUAGE) -> str:
-    return row(button(i18n.t("UI_HOME", lang), "nav:home", icon="home"), button(i18n.t("NAV_FREETURN", lang), "ft:home", icon="tunnel"))
+def back_row(target: str = "ft:home", lang: str = i18n.DEFAULT_LANGUAGE) -> str:
+    return row(button(i18n.t("UI_BACK", lang), target, icon="back"))
 
 
 def home(view: FtView) -> Any:
@@ -123,15 +123,14 @@ def home(view: FtView) -> Any:
         buttons = [
             row(button(t("FT_BTN_SHARE"), "ft:share", icon="gift"), button(t("FT_BTN_CLIENTS"), "ft:clients", icon="users")),
             row(button(t("FT_BTN_PLAN"), "ft:plan", icon="settings"), button(t("FT_BTN_RESTART"), "ft:restart", icon="restart"), button(t("FT_BTN_STOP"), "ft:stop", icon="stop")),
-            row(button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"), button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"), button(t("UI_HOME"), "nav:home", icon="home")),
+            row(button(t("FT_BTN_LOGS"), "ft:logs", icon="logs"), button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete")),
         ]
     else:
         buttons = [
             row(button(t("FT_BTN_INSTALL"), "ft:apply", icon="ok"), button(t("FT_BTN_PLAN"), "ft:plan", icon="settings")),
-            row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh"), button(t("UI_HOME"), "nav:home", icon="home")),
+            row(button(t("FT_BTN_CHECK"), "ft:check", icon="refresh")),
         ]
-    buttons.append(row(button(t("VKCALLS_BTN_CREATE"), "vk:create", icon="calls"), button(t("VKCALLS_BTN_ACTIVE"), "vk:active", icon="users")))
-    buttons.append(row(button(t("VKCALLS_BTN_CHECK_TOKEN"), "vk:auth:check", icon="shield"), button(t("VKCALLS_BTN_AUTH"), "vk:auth", icon="key")))
+    buttons.append(back_row("nav:home", view.lang))
     return screen(t("FT_TITLE"), t("FT_SUBTITLE"), blocks, buttons, icon="tunnel")
 
 
@@ -162,7 +161,7 @@ def fw_screen(view: FtView) -> Any:
     buttons = [
         row(button(t("FT_FW_BTN_VK"), "ft:fw:vk", icon="shield"), button(t("FT_FW_BTN_OPEN"), "ft:fw:open", icon="unlock")),
         row(button(t("FT_FW_BTN_CLOSE"), "ft:fw:closed", icon="lock"), button(t("UI_REFRESH"), "ft:fw", icon="shield")),
-        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("FT_BTN_HOME"), "ft:home", icon="tunnel"), button(t("UI_HOME"), "nav:home", icon="home")),
+        back_row("nav:protect", view.lang),
     ]
     return screen(t("FT_FW_TITLE"), t("FT_FW_SUBTITLE"), blocks, buttons, icon="shield")
 
@@ -223,7 +222,7 @@ def plan_screen(view: FtView) -> Any:
         buttons.append(input_row(t("FT_CONNECT_INPUT"), "ft_connect", "-", view.lang))
     if plan.obf_profile != "none":
         buttons.append(input_row(t("FT_KEY_INPUT"), "ft_key", "-", view.lang))
-    buttons.append(back_row(view.lang))
+    buttons.append(back_row("ft:home", view.lang))
     return screen(t("FT_CONFIG_TITLE"), t("FT_CONFIG_SUBTITLE"), blocks, buttons, icon="settings")
 
 
@@ -289,7 +288,7 @@ def clients_screen(view: FtView) -> Any:
         label = "%s %s" % (item.name, traffic.human(usage.total) if usage is not None else "-")
         buttons.append(row(button(label, "ft:cl:%s" % item.name, icon="user")))
     buttons.extend(pager(view, t, "ft:clients"))
-    buttons.append(back_row(view.lang))
+    buttons.append(back_row("ft:home", view.lang))
     return screen(t("FT_CLIENTS_TITLE"), t("FT_CLIENTS_SUBTITLE"), blocks, buttons, icon="users")
 
 
@@ -335,7 +334,7 @@ def client_screen(view: FtView, name: str) -> Any:
         buttons.append(row(button(t("FT_BTN_REVOKE_OWNER"), "ft:rm:owner", icon="delete")))
     else:
         buttons.append(row(button(t("FT_BTN_REMOVE"), "ft:rm:%s" % name, icon="delete")))
-    buttons.append(row(button(t("FT_BTN_CLIENTS"), "ft:clients:%d" % (view.page + 1), icon="users"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home", icon="tunnel")))
+    buttons.append(back_row("ft:clients:%d" % (view.page + 1), view.lang))
     return screen(t("FT_CLIENT_TITLE", name=name), client.ip if client and client.ip else "", blocks, buttons, icon="user")
 
 
@@ -369,7 +368,7 @@ def traffic_screen(view: FtView) -> Any:
     for item in view.page_rows()[:4]:
         buttons.append(row(button(item.name, "ft:cl:%s:t" % item.name, icon="user")))
     buttons.extend(pager(view, t, "ft:tr"))
-    buttons.append(row(button(t("FT_BTN_CLIENTS"), "ft:clients:%d" % (view.page + 1), icon="users"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home", icon="tunnel")))
+    buttons.append(back_row("ft:clients:%d" % (view.page + 1), view.lang))
     return screen(t("FT_TRAFFIC_TITLE"), t("FT_TRAFFIC_SUBTITLE"), blocks, buttons, icon="chart")
 
 
@@ -379,7 +378,7 @@ def share_screen(view: FtView) -> Any:
     peer_label = view.share.peer() if view.share is not None else ""
     if not view.state.installed and not peer_label:
         blocks.append(quote(muted(t("FT_ERR_NOT_INSTALLED"))))
-        btns = [row(button(t("FT_BTN_INSTALL"), "ft:apply", icon="ok")), back_row(view.lang)]
+        btns = [row(button(t("FT_BTN_INSTALL"), "ft:apply", icon="ok")), back_row("ft:home", view.lang)]
         return screen(t("FT_SHARE_TITLE"), "", blocks, btns, icon="gift")
     if view.share is not None and peer_label:
         pairs = [
@@ -417,7 +416,7 @@ def share_screen(view: FtView) -> Any:
                 button(t("FT_BTN_UNINSTALL"), "ft:un", icon="delete"),
             )
         )
-    buttons.append(back_row(view.lang))
+    buttons.append(back_row("ft:home", view.lang))
     return screen(t("FT_SHARE_TITLE"), peer_label, blocks, buttons, icon="gift")
 
 
@@ -428,7 +427,10 @@ def logs_screen(view: FtView) -> Any:
         blocks.append(pre("\n".join(view.logs[-40:])))
     else:
         blocks.append(quote(muted(t("FT_LOGS_EMPTY"))))
-    buttons = [row(button(t("FT_BTN_REFRESH"), "ft:logs", icon="logs"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home", icon="tunnel"))]
+    buttons = [
+        row(button(t("FT_BTN_REFRESH"), "ft:logs", icon="logs")),
+        back_row("ft:home", view.lang),
+    ]
     return screen(t("FT_LOGS_TITLE"), view.state.method or "", blocks, buttons, icon="logs")
 
 
@@ -452,7 +454,7 @@ def core_screen(view: FtView) -> Any:
         row(button(t("CORE_BTN_XRAY"), "core:set:xray", icon="xray"), button(t("CORE_BTN_FREETURN"), "core:set:freeturn", icon="tunnel")),
         row(button(i18n.t("NAV_XRAY", view.lang), "xr:home", icon="xray"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home", icon="tunnel")),
         row(xr_action, ft_action),
-        row(button(t("UI_HOME"), "nav:home", icon="home")),
+        back_row("nav:home", view.lang),
     ]
     return screen(t("CORE_TITLE"), t("CORE_SUBTITLE"), blocks, buttons, icon="module")
 
@@ -461,7 +463,7 @@ def confirm_screen(view: FtView, title: str, body: str, action: str, back: str =
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(bold(body)))
-    buttons = [row(button(t("UI_CONFIRM"), action, icon="ok"), button(t("UI_CANCEL"), back, icon="back"))]
+    buttons = [row(button(t("UI_CONFIRM"), action, icon="ok"), button(t("UI_BACK"), back, icon="back"))]
     return screen(title, t("UI_ACTION_IRREVERSIBLE"), blocks, buttons, icon="warn")
 
 
@@ -475,5 +477,5 @@ def busy_screen(title: str, lang: str = i18n.DEFAULT_LANGUAGE, steps: list[str] 
 
 def error_screen(view: FtView, title: str, message: str) -> Any:
     blocks = [quote(bold(message))]
-    buttons = [row(button(i18n.t("UI_HOME", view.lang), "nav:home", icon="home"), button(i18n.t("NAV_FREETURN", view.lang), "ft:home", icon="tunnel"))]
+    buttons = [back_row("ft:home", view.lang)]
     return screen(title, i18n.t("UI_ACTION_FAILED", view.lang), blocks, buttons, icon="fail")

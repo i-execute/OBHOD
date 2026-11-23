@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from BOT import cores, dscreens, i18n, net, scripts, ui
+from BOT import antiddos, cores, dscreens, i18n, net, scripts, ui
 from tests.fakes import make_bot
 
 
@@ -36,13 +36,34 @@ def trace_body() -> dict[str, Any]:
     return {"hops": [{"index": 1, "address": "10.0.0.1", "rtt": 1.0}, {"index": 2, "address": "", "rtt": 0.0}]}
 
 
-def test_the_home_screen_opens(tmp_path: Path) -> None:
+def test_the_tools_hub_opens_without_duplicate_actions(tmp_path: Path) -> None:
     bot, debug, _control = panel_for(tmp_path)
     run(debug.route(1, 0, "dbg:home"))
     html = last(bot)
-    assert i18n.t("DBG_SCAN_BTN") in html
-    assert i18n.t("DBG_VK_BTN") in html
-    assert i18n.t("DBG_SCRIPTS_BTN") in html
+    assert i18n.t("TOOLS_NETWORK") in html
+    assert i18n.t("TOOLS_DIAGNOSTICS") in html
+    assert i18n.t("VKCALLS_BTN") in html
+    assert i18n.t("DBG_SCAN_BTN") not in html
+    assert 'data="nav:home"' in html
+
+
+def test_the_category_hubs_keep_primary_actions_and_back_paths(tmp_path: Path) -> None:
+    bot, debug, _control = panel_for(tmp_path)
+    run(debug.route(1, 0, "dbg:network"))
+    network = last(bot)
+    assert i18n.t("DBG_SCAN_BTN") in network
+    assert i18n.t("DBG_TRACE_BTN") in network
+    assert 'data="dbg:home"' in network
+    run(debug.route(1, 0, "dbg:diagnostics"))
+    diagnostics = last(bot)
+    assert i18n.t("DPI_BTN_OPEN") in diagnostics
+    assert i18n.t("DBG_SCRIPTS_BTN") in diagnostics
+    assert 'data="dbg:home"' in diagnostics
+    run(debug.route(1, 0, "dbg:protect"))
+    protection = last(bot)
+    assert i18n.t("DDOS_BTN_OPEN") in protection
+    assert i18n.t("FT_FW_TITLE") in protection
+    assert 'data="nav:home"' in protection
 
 
 def test_a_scan_runs_and_reports(tmp_path: Path) -> None:
@@ -280,6 +301,9 @@ def test_every_debug_route_renders_in_every_language() -> None:
         view = dscreens.DbgView(lang=language, target="1.1.1.1", ports="80")
         pages = [
             dscreens.home(view),
+            dscreens.network_screen(view),
+            dscreens.diagnostics_screen(view),
+            dscreens.protection_screen(view),
             dscreens.scan_screen(view),
             dscreens.trace_screen_view(view),
             dscreens.vk_screen(view),
@@ -489,6 +513,14 @@ def test_the_ddos_screen_survives_a_dead_agent(tmp_path: Path) -> None:
     assert debug.ddos is None
 
 
+def test_the_ddos_table_keeps_ip_values_as_plain_text(tmp_path: Path) -> None:
+    state = ddos_status(installed=True, enabled=True, table=True, syn_flood=["203.0.113.7"])
+    html = dscreens.ddos_screen(dscreens.DbgView(lang="ru", ddos=state)).to_html()
+    assert "203.0.113.7" in html
+    assert "<code>" not in html
+    assert 'data="nav:protect"' in html
+
+
 def test_the_ddos_refresh_reads_the_agent(tmp_path: Path, monkeypatch) -> None:
     from BOT import guard
 
@@ -551,6 +583,33 @@ def test_the_ddos_install_remembers_a_failure(tmp_path: Path, monkeypatch) -> No
     debug.marks.clear()
     run(debug.ddos_action(1, 2, "install"))
     assert "nft refused" in debug.error
+
+
+def test_ddos_ip_scan_callback_edits_the_same_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot = make_bot(tmp_path)
+    bot.debug.ddos = antiddos.Status(installed=True, enabled=True, table=True, syn_flood=["8.8.8.8"])
+    bot.debug.ddos_in_ips = True
+
+    async def fake_scan(target: str, default_target: str = "") -> dict[str, Any]:
+        return {
+            "target": target,
+            "kind": "ip",
+            "ip": target,
+            "meta": {"query": target, "country": "US"},
+            "cymru": {"asn": "15169", "prefix": "8.8.8.0/24", "country": "US", "registry": "arin", "allocated": "1992-12-01", "name": "EXAMPLE"},
+            "ports": {"open": [], "best_ms": 0},
+        }
+
+    monkeypatch.setattr("BOT.ipscan.full_scan_async", fake_scan)
+    asyncio.run(bot.debug.ddos_action(7, 71, "ipscan:0:8.8.8.8"))
+    assert len(bot.rendered) == 2
+    assert i18n.t("IPSCAN_SCANNING_TITLE", "en") in bot.rendered[0].to_html()
+    html = bot.rendered[1].to_html()
+    assert "8.8.8.8" in html
+    assert "8.8.8.0/24" in html
+    assert 'data="dbg:dd:ipscan:0:8.8.8.8"' in html
+    assert 'data="dbg:dd:ips:0"' in html
+    assert bot.sent == []
 
 
 def test_the_ddos_routes_refuse_the_unknown(tmp_path: Path) -> None:

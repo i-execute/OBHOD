@@ -20,7 +20,7 @@ class Wire:
 
     async def edit_rich(self, chat_id: int, msg_id: int, rich: Any, via: str | None = None, **kw: Any) -> None:
         if self.fail_edit:
-            raise RuntimeError("message is not modified")
+            raise RuntimeError("the callback message is unavailable")
         self.edits += 1
 
     async def send_rich(self, chat_id: int, rich: Any, via: str | None = None, **kw: Any) -> None:
@@ -110,12 +110,37 @@ def test_a_repeated_callback_edits_the_screen_once(tmp_path: Path) -> None:
     assert wire.sent == []
 
 
-def test_a_failing_edit_does_not_flood_new_messages(tmp_path: Path) -> None:
+def test_a_failing_callback_edit_never_sends_an_orphan_screen(tmp_path: Path) -> None:
     bot, wire = make_wire_bot(tmp_path)
     wire.fail_edit = True
     for _ in range(20):
         press(bot, "nav:settings")
-    assert len(wire.sent) == 1
+    assert wire.sent == []
+
+
+def test_a_callback_busy_and_final_screen_reuse_the_origin_message(tmp_path: Path) -> None:
+    bot, wire = make_wire_bot(tmp_path)
+
+    async def scenario() -> None:
+        await bot.on_callback(FakeEvent(data="sshd:auth:no", msg_id=5, from_id=7))
+        await bot.idle(2)
+
+    asyncio.run(scenario())
+    assert wire.sent == []
+    assert wire.edits >= 2
+
+
+def test_a_failed_busy_edit_cannot_create_a_second_final_screen(tmp_path: Path) -> None:
+    bot, wire = make_wire_bot(tmp_path)
+    wire.fail_edit = True
+
+    async def scenario() -> None:
+        await bot.on_callback(FakeEvent(data="sshd:auth:no", msg_id=5, from_id=7))
+        await bot.idle(2)
+
+    asyncio.run(scenario())
+    assert wire.sent == []
+    assert wire.edits == 0
 
 
 def test_a_callback_without_a_message_id_is_not_repeated(tmp_path: Path) -> None:

@@ -59,15 +59,6 @@ MAX_QUEUE = 64
 ADDRESS_LIMIT = 64
 
 
-def mask(address: object) -> str:
-    text = str(address or "").strip()
-    if not text:
-        return "-"
-    head = text.split(".")[0] if "." in text else text[:8]
-    tail = text.rsplit(".", 1)[-1] if "." in text else ""
-    return "%s.x.x.%s" % (head, tail) if tail else head
-
-
 @dataclass
 class Settings:
     enabled: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_ON))

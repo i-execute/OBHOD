@@ -5,8 +5,9 @@ from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Any
 
-from . import antiddos, dpi, i18n, net, notify, scripts
+from . import antiddos, dpi, i18n, ipscan, net, notify, scripts
 from .ui import (
+    MAX_CALLBACK,
     bold,
     button,
     code,
@@ -63,18 +64,53 @@ def banner(view: DbgView, t: i18n.Translator) -> list[str]:
     return out
 
 
+def back_row(t: i18n.Translator, target: str) -> str:
+    return row(button(t("UI_BACK"), target, icon="back"))
+
+
 def home(view: DbgView) -> Any:
     t = view.tr()
     blocks = banner(view, t)
     buttons = [
-        row(button(t("FT_FW_TITLE"), "ft:fw", icon="shield"), button(t("DDOS_BTN_OPEN"), "dbg:dd", icon="shield"), button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield")),
-        row(button(t("NAV_SSHD"), "nav:sshd", icon="key"), button(t("HP_BTN_OPEN"), "dbg:hp", icon="target"), button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell")),
-        row(button(t("DPI_BTN_OPEN"), "dbg:dpi", icon="warn"), button(t("DBG_VK_BTN"), "dbg:vk", icon="world")),
-        row(button(t("DBG_SCAN_BTN"), "dbg:scan", icon="radar"), button(t("DBG_TRACE_BTN"), "dbg:trace", icon="route"), button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug")),
+        row(button(t("TOOLS_NETWORK"), "dbg:network", icon="radar"), button(t("TOOLS_DIAGNOSTICS"), "dbg:diagnostics", icon="scan")),
         row(button(t("VKCALLS_BTN"), "vk:home", icon="calls")),
-        row(button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server"), button(t("UI_HOME"), "nav:home", icon="home")),
+        back_row(t, "nav:home"),
     ]
     return screen(t("TOOLS_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="tools")
+
+
+def network_screen(view: DbgView) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    buttons = [
+        row(button(t("DBG_SCAN_BTN"), "dbg:scan", icon="radar"), button(t("DBG_TRACE_BTN"), "dbg:trace", icon="route")),
+        row(button(t("DBG_PORTS_BTN"), "dbg:ports", icon="plug")),
+        back_row(t, "dbg:home"),
+    ]
+    return screen(t("TOOLS_NETWORK"), t("TOOLS_SCAN_SUB"), blocks, buttons, icon="radar")
+
+
+def diagnostics_screen(view: DbgView) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    buttons = [
+        row(button(t("DPI_BTN_OPEN"), "dbg:dpi", icon="warn"), button(t("DBG_VK_BTN"), "dbg:vk", icon="world")),
+        row(button(t("DBG_SCRIPTS_BTN"), "dbg:scr", icon="file"), button(t("DBG_INFO_BTN"), "dbg:info", icon="server")),
+        back_row(t, "dbg:home"),
+    ]
+    return screen(t("TOOLS_DIAGNOSTICS"), t("DBG_SUBTITLE"), blocks, buttons, icon="scan")
+
+
+def protection_screen(view: DbgView) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    buttons = [
+        row(button(t("DDOS_BTN_OPEN"), "dbg:dd", icon="shield"), button(t("FT_FW_TITLE"), "ft:fw", icon="shield")),
+        row(button(t("NAV_FAIL2BAN"), "nav:ban", icon="shield"), button(t("NAV_SSHD"), "nav:sshd", icon="key")),
+        row(button(t("HP_BTN_OPEN"), "dbg:hp", icon="target"), button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell")),
+        back_row(t, "nav:home"),
+    ]
+    return screen(t("NAV_PROTECTION"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
 
 
 def scan_screen(view: DbgView) -> Any:
@@ -112,7 +148,7 @@ def scan_screen(view: DbgView) -> Any:
         row(button(t("DBG_SCAN_BTN"), "dbg:scan:go", icon="scan"), button(t("DBG_TRACE_BTN"), "dbg:trace", icon="route")),
         input_row(t("DBG_SCAN_TARGET_LABEL"), "dbg_target", "-", view.lang),
         input_row(t("DBG_SCAN_PORTS_LABEL"), "dbg_ports", "-", view.lang),
-        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
+        back_row(t, "dbg:network"),
     ]
     return screen(t("DBG_SCAN_TITLE"), t("DBG_SCAN_SUBTITLE"), blocks, buttons, icon="radar")
 
@@ -151,7 +187,7 @@ def trace_screen_view(view: DbgView) -> Any:
         row(button(t("DBG_TRACE_BTN"), "dbg:trace:go", icon="route"), button(t("DBG_SCAN_BTN"), "dbg:scan", icon="radar")),
         input_row(t("DBG_SCAN_TARGET_LABEL"), "dbg_target", "-", view.lang),
         input_row(t("DBG_TRACE_HOPS_LABEL"), "dbg_hops", "-", view.lang),
-        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
+        back_row(t, "dbg:network"),
     ]
     return screen(t("DBG_TRACE_TITLE"), t("DBG_TRACE_SUBTITLE"), blocks, buttons, icon="route")
 
@@ -181,7 +217,7 @@ def vk_screen(view: DbgView) -> Any:
     blocks.append(quote(muted(t("DBG_PORTS_NOTE"))))
     buttons = [
         row(button(t("DBG_VK_BTN"), "dbg:vk:go", icon="refresh"), button(t("DBG_VK_APPLY"), "dbg:vk:apply", icon="shield")),
-        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
+        back_row(t, "dbg:diagnostics"),
     ]
     return screen(t("DBG_VK_TITLE"), t("DBG_VK_SUBTITLE"), blocks, buttons, icon="world")
 
@@ -201,7 +237,8 @@ def ports_screen(view: DbgView) -> Any:
         blocks.append(quote(muted(t("DBG_PORTS_NONE"))))
     blocks.append(f"<p>{muted(t('DBG_PORTS_NOTE'))}</p>")
     buttons = [
-        row(button(t("DBG_PORTS_BTN"), "dbg:ports:go", icon="refresh"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools")),
+        row(button(t("DBG_PORTS_BTN"), "dbg:ports:go", icon="refresh")),
+        back_row(t, "dbg:network"),
     ]
     return screen(t("DBG_PORTS_TITLE"), t("DBG_PORTS_SUBTITLE"), blocks, buttons, icon="plug")
 
@@ -225,7 +262,8 @@ def scripts_screen(view: DbgView) -> Any:
     blocks.append(f"<p>{muted(t('SCR_NOTE'))}</p>")
     buttons = [
         row(button(t("SCR_REFRESH"), "dbg:scr", icon="refresh"), button(t("SCR_FETCH"), "dbg:scr:fetch", icon="save")),
-        row(button(t("SCR_KEEP"), "dbg:scr:keep", icon="back"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools")),
+        row(button(t("SCR_KEEP"), "dbg:scr:keep", icon="back")),
+        back_row(t, "dbg:diagnostics"),
     ]
     return screen(t("SCR_TITLE"), t("SCR_SUBTITLE"), blocks, buttons, icon="file")
 
@@ -247,9 +285,7 @@ def info_screen(view: DbgView, info: dict[str, Any]) -> Any:
     cards = info.get("cores") or []
     if cards:
         blocks.append(table([(item.icon, t(item.name), "%s %s" % (item.state_text(t), item.ports_text())) for item in cards], (t("HOME_SUMMARY_TITLE"), t("UI_VALUE"))))
-    buttons = [
-        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
-    ]
+    buttons = [back_row(t, "dbg:diagnostics")]
     return screen(t("DBG_INFO_TITLE"), t("DBG_INFO_SUBTITLE"), blocks, buttons, icon="server")
 
 
@@ -270,10 +306,8 @@ def stub_screen(view: DbgView, name: str, reason: str, host: str, retry: str = "
         blocks.append(quote(muted_html(t("DBG_STUB_HINT", host=bold(host[:64])))))
     buttons = []
     if retry:
-        buttons.append(row(button(t("DBG_STUB_RETRY"), retry, icon="refresh"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools")))
-        buttons.append(row(button(t("UI_HOME"), "nav:home", icon="home")))
-    else:
-        buttons.append(row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")))
+        buttons.append(row(button(t("DBG_STUB_RETRY"), retry, icon="refresh")))
+    buttons.append(back_row(t, "dbg:home"))
     return screen(t("DBG_STUB_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="warn")
 
 
@@ -284,19 +318,9 @@ def crash_screen(view: DbgView, route: str, trace: str) -> Any:
     blocks.append(quote(bold(view.error or t("DBG_ERR_TITLE"))))
     blocks.append(f"<p>{muted(t('DBG_ERR_TRACE'))}</p>")
     blocks.append(table([("bug", t("DBG_TITLE"), code(route[:48]))], (t("UI_PARAM"), t("UI_VALUE"))))
-    blocks.append(pre((trace or t("UI_NONE"))[-600:]))
-    blocks.append(quote(muted(t("DBG_CRASH_HINT"))))
-    buttons = [
-        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
-    ]
+    blocks.append(pre((trace or t("UI_NONE"))[-3400:]))
+    buttons = [back_row(t, "dbg:home")]
     return screen(t("DBG_ERR_TITLE"), t("DBG_SUBTITLE"), blocks, buttons, icon="fail")
-
-
-def trace_screen(view: DbgView, route: str, trace: str) -> Any:
-    t = view.tr()
-    blocks = [quote(bold(view.error or t("DBG_ERR_TITLE"))), f"<p>{code(route[:48])}</p>", pre((trace or t("UI_NONE"))[-3400:])]
-    buttons = [row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home"))]
-    return screen(t("DBG_ERR_TITLE"), t("DBG_ERR_TRACE"), blocks, buttons, icon="fail")
 
 
 def dpi_value(t: Any, item: Any) -> str:
@@ -405,7 +429,7 @@ def dpi_screen(view: "DbgView") -> Any:
     blocks.append(quote(muted(t("DPI_NOTE"))))
     buttons = [
         row(button(t("DPI_BTN_RUN"), "dbg:dpi:scan", icon="scan")),
-        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
+        back_row(t, "dbg:diagnostics"),
     ]
     return screen(t("DPI_TITLE"), t("DPI_SUBTITLE"), blocks, buttons, icon="shield")
 
@@ -458,11 +482,10 @@ def _ddos_cb_token(address: str, index: int) -> str:
     return str(address or "").strip()
 
 
-def _ddos_short_ip(address: str) -> str:
-    clean = str(address or "").strip()
-    if len(clean) <= 18:
-        return clean
-    return clean[:15] + ".."
+def _ddos_ipscan_callback(address: str, page: int) -> str:
+    target = ipscan.ip_target(address)
+    callback = f"dbg:dd:ipscan:{max(int(page), 0)}:{target}"
+    return callback if target and len(callback.encode("utf-8")) <= MAX_CALLBACK else ""
 
 
 def ddos_screen(view: DbgView) -> Any:
@@ -475,8 +498,9 @@ def ddos_screen(view: DbgView) -> Any:
             blocks.append(table([("scan", t("DDOS_EXPOSURE"), ddos_exposure_text(t, view.ddos_exposure))], (t("DDOS_EXPOSURE"), t("UI_VALUE"))))
         buttons = [
             row(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"), button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan")),
-            row(button(t("DDOS_BTN_RKN_SYNC"), "dbg:dd:rkn_sync", icon="refresh"), button(t("DDOS_BTN_REFRESH"), "dbg:dd:refresh", icon="refresh"), button(t("DDOS_SOURCES"), "dbg:dd:src", icon="world"), button(t("DDOS_LOGS"), "dbg:dd:logs", icon="file")),
-            row(button(t("DDOS_FW_DIAG"), "dbg:dd:fwdiag", icon="scan"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")),
+            row(button(t("DDOS_BTN_RKN_SYNC"), "dbg:dd:rkn_sync", icon="refresh"), button(t("DDOS_BTN_REFRESH"), "dbg:dd:refresh", icon="refresh")),
+            row(button(t("DDOS_SOURCES"), "dbg:dd:src", icon="world"), button(t("DDOS_LOGS"), "dbg:dd:logs", icon="file"), button(t("DDOS_FW_DIAG"), "dbg:dd:fwdiag", icon="scan")),
+            back_row(t, "nav:protect"),
         ]
         return screen(t("DDOS_TITLE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
     level = "ok"
@@ -558,19 +582,24 @@ def ddos_screen(view: DbgView) -> Any:
     rkn_btn_label = t("DDOS_BTN_RKN_ON") if rkn_on else t("DDOS_BTN_RKN_OFF")
     ntf_btn_label = t("DDOS_BTN_NTF_ON") if view.ddos_alerts else t("DDOS_BTN_NTF_OFF")
     buttons = [
-        row(button(t("DDOS_BTN_IPS", count=blocked_total), "dbg:dd:ips", icon="target"), button(t("DDOS_BTN_REFRESH"), "dbg:dd:refresh", icon="refresh")),
+        row(button(t("DDOS_BTN_IPS", count=blocked_total), "dbg:dd:ips", icon="target"), button(t("DDOS_BTN_REFRESH"), "dbg:dd:refresh", icon="refresh"), button(t("UI_BACK"), "nav:protect", icon="back")),
         row(button(rkn_btn_label, "dbg:dd:rkn", icon="shield"), button(ntf_btn_label, "dbg:dd:ntf", icon="bell")),
-        input_row(t("DDOS_BTN_BAN"), "dbg_ddos_ban", "-", view.lang),
-        row(button(t("DDOS_BTN_RKN_SYNC"), "dbg:dd:rkn_sync", icon="refresh"), button(t("DDOS_SOURCES"), "dbg:dd:src", icon="world"), button(t("DDOS_LOGS"), "dbg:dd:logs", icon="file"), button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan")),
-        row(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"), button(t("DDOS_BTN_REMOVE"), "dbg:dd:remove", icon="delete")),
-        row(button(t("TOOLS_TITLE"), "dbg:home", icon="tools")),
+        row(button(t("DDOS_BTN_RKN_SYNC"), "dbg:dd:rkn_sync", icon="refresh"), button(t("DDOS_SOURCES"), "dbg:dd:src", icon="world"), button(t("DDOS_LOGS"), "dbg:dd:logs", icon="file")),
+        row(button(t("DDOS_BTN_PROBE"), "dbg:dd:probe", icon="scan"), button(t("DDOS_FW_DIAG"), "dbg:dd:fwdiag", icon="scan")),
     ]
+    maintenance: list[Any] = []
     if view.ddos_bot_mismatch and transaction == "none" and len(getattr(status, "policy_sha256", "")) == 64:
-        buttons.insert(-1, row(button(t("DDOS_ADOPT"), "dbg:dd:adopt_policy", icon="save")))
+        maintenance.append(button(t("DDOS_ADOPT"), "dbg:dd:adopt_policy", icon="save"))
     if transaction in ("automatic", "manual") and len(getattr(status, "transaction_digest", "")) == 64:
-        buttons.insert(-1, row(button(t("DDOS_WAL_RECOVER"), "dbg:dd:wal_recover", icon="refresh")))
+        maintenance.append(button(t("DDOS_WAL_RECOVER"), "dbg:dd:wal_recover", icon="refresh"))
     if status.enabled and status.installed and getattr(status, "reconcile_fingerprint", ""):
-        buttons.insert(-1, row(button(t("DDOS_RECONCILE"), "dbg:dd:reconcile", icon="refresh")))
+        maintenance.append(button(t("DDOS_RECONCILE"), "dbg:dd:reconcile", icon="refresh"))
+    if not maintenance:
+        if status.installed and status.enabled:
+            maintenance.append(button(t("DDOS_BTN_REMOVE"), "dbg:dd:remove", icon="delete"))
+        else:
+            maintenance.append(button(t("DDOS_BTN_INSTALL"), "dbg:dd:install", icon="shield"))
+    buttons.append(row(*maintenance))
     return screen(t("DDOS_TITLE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
 
 
@@ -585,7 +614,7 @@ def ddos_reconcile_screen(view: DbgView, status: antiddos.Status, token: str) ->
         ("speed", "SYN / UDP", code("%d/%d · %d/%d" % (p.syn_rate, p.syn_burst, p.udp_rate, p.udp_burst))),
         ("file", "SHA-256", code(status.reconcile_fingerprint[:16])),
     ], (t("UI_PARAM"), t("UI_VALUE"))))
-    buttons = [row(button(t("DDOS_RECONCILE_CONFIRM"), "dbg:dd:reconcile_do:" + token, icon="save"), button(t("UI_CANCEL"), "dbg:dd", icon="back"))]
+    buttons = [row(button(t("DDOS_RECONCILE_CONFIRM"), "dbg:dd:reconcile_do:" + token, icon="save"), button(t("UI_BACK"), "dbg:dd", icon="back"))]
     return screen(t("DDOS_RECONCILE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="warn")
 
 
@@ -600,7 +629,7 @@ def ddos_adopt_screen(view: DbgView, status: antiddos.Status, token: str) -> Any
         ("speed", "SYN / UDP", code("%d/%d · %d/%d" % (p.syn_rate, p.syn_burst, p.udp_rate, p.udp_burst))),
         ("file", "SHA-256", code(status.policy_sha256[:16])),
     ], (t("UI_PARAM"), t("UI_VALUE"))))
-    buttons = [row(button(t("DDOS_ADOPT_CONFIRM"), "dbg:dd:adopt_do:" + token, icon="save"), button(t("UI_CANCEL"), "dbg:dd", icon="back"))]
+    buttons = [row(button(t("DDOS_ADOPT_CONFIRM"), "dbg:dd:adopt_do:" + token, icon="save"), button(t("UI_BACK"), "dbg:dd", icon="back"))]
     return screen(t("DDOS_ADOPT"), t("DDOS_SUBTITLE"), blocks, buttons, icon="warn")
 
 
@@ -615,7 +644,7 @@ def ddos_wal_screen(view: DbgView, status: antiddos.Status, token: str) -> Any:
         ("speed", "SYN / UDP", code("%d/%d · %d/%d" % (p.syn_rate, p.syn_burst, p.udp_rate, p.udp_burst))),
         ("file", "SHA-256", code(status.transaction_digest[:16])),
     ], (t("UI_PARAM"), t("UI_VALUE"))))
-    buttons = [row(button(t("DDOS_WAL_CONFIRM"), "dbg:dd:wal_do:" + token, icon="save"), button(t("UI_CANCEL"), "dbg:dd", icon="back"))]
+    buttons = [row(button(t("DDOS_WAL_CONFIRM"), "dbg:dd:wal_do:" + token, icon="save"), button(t("UI_BACK"), "dbg:dd", icon="back"))]
     return screen(t("DDOS_WAL_RECOVER"), t("DDOS_SUBTITLE"), blocks, buttons, icon="warn")
 
 
@@ -652,7 +681,7 @@ def ddos_sources_screen(view: DbgView, policy: antiddos.Policy, page: int = 0, c
         buttons.append(row(*controls))
     buttons.append(row(button("<", "dbg:dd:src:p:%d" % max(0, page - 1), icon="back"), button("%d / %d" % (page + 1, pages), "dbg:dd:src:p:%d" % page, icon="file"), button(">", "dbg:dd:src:p:%d" % min(pages - 1, page + 1), icon="route")))
     buttons.append(input_row(t("DDOS_SOURCE_ADD"), "dbg_rkn_source", "-", view.lang))
-    buttons.append(row(button(t("DDOS_TITLE"), "dbg:dd", icon="shield")))
+    buttons.append(back_row(t, "dbg:dd"))
     return screen(t("DDOS_SOURCES"), t("DDOS_SUBTITLE"), blocks, buttons, icon="world")
 
 
@@ -665,7 +694,7 @@ def ddos_schedule_screen(view: DbgView, schedule: dict[str, Any]) -> Any:
     active = t("UI_ON") if schedule.get("active") else t("UI_OFF")
     blocks.append(table([("clock", t("DDOS_SCHEDULE"), code(mode + (" " + value if value else ""))), ("shield", t("DDOS_TIMER_STATE"), code(active))], (t("DDOS_TITLE"), t("UI_VALUE"))))
     blocks.append(quote(muted(t("DDOS_SCHEDULE_NOTE"))))
-    buttons = [input_row(t("DDOS_SCHEDULE_CHANGE"), "dbg_rkn_schedule", "-", view.lang), row(button(t("DDOS_SCHEDULE_12"), "dbg:dd:sched12", icon="clock"), button("06:00 MSK", "dbg:dd:sched6", icon="clock"), button(t("DDOS_SCHEDULE_OFF"), "dbg:dd:schedoff", icon="stop")), row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:schedule", icon="refresh"), button(t("DDOS_TITLE"), "dbg:dd", icon="shield"))]
+    buttons = [input_row(t("DDOS_SCHEDULE_CHANGE"), "dbg_rkn_schedule", "-", view.lang), row(button(t("DDOS_SCHEDULE_12"), "dbg:dd:sched12", icon="clock"), button("06:00 MSK", "dbg:dd:sched6", icon="clock"), button(t("DDOS_SCHEDULE_OFF"), "dbg:dd:schedoff", icon="stop")), row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:schedule", icon="refresh")), back_row(t, "dbg:dd")]
     return screen(t("DDOS_SCHEDULE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="clock")
 
 
@@ -674,7 +703,7 @@ def ddos_exceptions_screen(view: DbgView, policy: antiddos.Policy) -> Any:
     blocks = banner(view, t)
     blocks.append(quote(muted(t("DDOS_EXCEPTION_NOTE"))))
     blocks.append(pre("\n".join(policy.rkn_exceptions)[:3000] or "-"))
-    buttons = [input_row(t("DDOS_EXCEPTION_EDIT"), "dbg_rkn_exception", "-", view.lang), row(button(t("DDOS_TITLE"), "dbg:dd", icon="shield"))]
+    buttons = [input_row(t("DDOS_EXCEPTION_EDIT"), "dbg_rkn_exception", "-", view.lang), back_row(t, "dbg:dd")]
     return screen(t("DDOS_EXCEPTIONS"), t("DDOS_SUBTITLE"), blocks, buttons, icon="key")
 
 
@@ -690,7 +719,8 @@ def ddos_logs_screen(view: DbgView, text: str, kind: str = "v4", logging_enabled
         row(button("IPv4", "dbg:dd:logs:v4", icon="file"), button("IPv6", "dbg:dd:logs:v6", icon="file"), button(t("DDOS_TOP"), "dbg:dd:logs:top", icon="target")),
         row(button(t("DDOS_SERVICE_LOGS"), "dbg:dd:logs:service", icon="file"), button(t("DDOS_UPDATE_LOGS"), "dbg:dd:logs:update", icon="file"), button(t("DDOS_FW_DIAG"), "dbg:dd:fwdiag", icon="scan")),
         row(button(t("DDOS_LOG_SWITCH", state=state), "dbg:dd:log_toggle", icon="shield"), button(t("DDOS_EXCEPTIONS"), "dbg:dd:exceptions", icon="key"), button(t("DDOS_SCHEDULE"), "dbg:dd:schedule", icon="clock")),
-        row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:logs:" + kind, icon="refresh"), button(t("DDOS_LIVE_STOP" if live else "DDOS_LIVE_START"), "dbg:dd:" + ("live_stop:" if live else "live:") + kind, icon="clock"), button(t("DDOS_TITLE"), "dbg:dd", icon="shield")),
+        row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:logs:" + kind, icon="refresh"), button(t("DDOS_LIVE_STOP" if live else "DDOS_LIVE_START"), "dbg:dd:" + ("live_stop:" if live else "live:") + kind, icon="clock")),
+        back_row(t, "dbg:dd"),
     ]
     if kind == "top":
         buttons.insert(-1, row(button(t("DDOS_STATS_RESET"), "dbg:dd:stats_reset", icon="delete")))
@@ -718,7 +748,12 @@ def ddos_firewall_diag_screen(view: DbgView, data: dict[str, Any]) -> Any:
         blocks.append(quote(t("DDOS_FW_UPSTREAM_PRESENT")))
     if data.get("conflict"):
         blocks.append(quote(muted(t("DDOS_FW_CONFLICT"))))
-    return screen(t("DDOS_FW_DIAG"), t("DDOS_SUBTITLE"), blocks, [row(button(t("DDOS_UPSTREAM_TITLE"), "dbg:dd:upstream", icon="file")), row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:fwdiag", icon="refresh"), button(t("DDOS_TITLE"), "dbg:dd", icon="shield"))], icon="scan")
+    buttons = [
+        row(button(t("DDOS_UPSTREAM_TITLE"), "dbg:dd:upstream", icon="file")),
+        row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:fwdiag", icon="refresh")),
+        back_row(t, "dbg:dd"),
+    ]
+    return screen(t("DDOS_FW_DIAG"), t("DDOS_SUBTITLE"), blocks, buttons, icon="scan")
 
 
 def ddos_upstream_screen(view: DbgView, data: dict[str, Any], confirm: bool = False) -> Any:
@@ -727,7 +762,7 @@ def ddos_upstream_screen(view: DbgView, data: dict[str, Any], confirm: bool = Fa
     blocks.append(quote(muted(t("DDOS_UPSTREAM_NOTE"))))
     if confirm:
         blocks.append(quote(muted(t("DDOS_UPSTREAM_CONFIRM_NOTE"))))
-        buttons = [row(button(t("DDOS_UPSTREAM_CONFIRM"), "dbg:dd:upstream_install", icon="save"), button(t("DDOS_UPSTREAM_TITLE"), "dbg:dd:upstream", icon="back"))]
+        buttons = [row(button(t("DDOS_UPSTREAM_CONFIRM"), "dbg:dd:upstream_install", icon="save")), back_row(t, "dbg:dd:upstream")]
     else:
         if "installed" not in data:
             state = t("DDOS_FW_UNKNOWN")
@@ -740,7 +775,11 @@ def ddos_upstream_screen(view: DbgView, data: dict[str, Any], confirm: bool = Fa
         version = str(data.get("version", "") or data.get("expected_version", "v3.0.0"))[:40]
         arch = str(data.get("architecture", "-"))[:24]
         blocks.append(table([("shield", t("DDOS_STATE"), code(state)), ("file", t("DDOS_UPSTREAM_VERSION"), code(version)), ("info", t("DDOS_UPSTREAM_ARCH"), code(arch))], (t("DDOS_UPSTREAM_TITLE"), t("UI_VALUE"))))
-        buttons = [row(button(t("DDOS_UPSTREAM_INSTALL"), "dbg:dd:upstream_confirm", icon="save")), row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:upstream", icon="refresh"), button(t("DDOS_FW_DIAG"), "dbg:dd:fwdiag", icon="back"))]
+        buttons = [
+            row(button(t("DDOS_UPSTREAM_INSTALL"), "dbg:dd:upstream_confirm", icon="save")),
+            row(button(t("DDOS_BTN_REFRESH"), "dbg:dd:upstream", icon="refresh"), button(t("DDOS_FW_DIAG"), "dbg:dd:fwdiag", icon="scan")),
+            back_row(t, "dbg:dd"),
+        ]
     return screen(t("DDOS_UPSTREAM_TITLE"), t("DDOS_SUBTITLE"), blocks, buttons, icon="file")
 
 
@@ -748,7 +787,10 @@ def ddos_stats_reset_screen(view: DbgView) -> Any:
     t = view.tr()
     blocks = banner(view, t)
     blocks.append(quote(muted(t("DDOS_STATS_RESET_NOTE"))))
-    buttons = [row(button(t("DDOS_STATS_RESET_CONFIRM"), "dbg:dd:stats_reset_confirm", icon="delete"), button(t("DDOS_LOGS"), "dbg:dd:logs:top", icon="file"))]
+    buttons = [
+        row(button(t("DDOS_STATS_RESET_CONFIRM"), "dbg:dd:stats_reset_confirm", icon="delete")),
+        back_row(t, "dbg:dd:logs:top"),
+    ]
     return screen(t("DDOS_STATS_RESET"), t("DDOS_SUBTITLE"), blocks, buttons, icon="shield")
 
 
@@ -772,20 +814,21 @@ def ddos_ips_screen(view: DbgView) -> Any:
         rows = [("ok", muted(t("DDOS_IPS_EMPTY")), code("-"))]
     blocks.append(table(rows, (t("DDOS_IPS_TITLE"), t("DDOS_COL_STATUS"))))
     buttons: list[Any] = []
-    action_btns: list[Any] = []
     for idx, rec in slice_records:
+        controls: list[Any] = []
         token = _ddos_cb_token(rec.address, idx)
-        short = _ddos_short_ip(rec.address)
         action = "ub" if rec.blocked else "rb"
         callback = f"dbg:dd:{action}:{page}:{token}"
-        if not token or len(callback.encode("utf-8")) > 64:
-            continue
-        if rec.blocked:
-            action_btns.append(button(t("DDOS_BTN_UNBAN_IP", ip=short), callback, icon="unlock"))
-        else:
-            action_btns.append(button(t("DDOS_BTN_REBAN_IP", ip=short), callback, icon="stop"))
-    for pos in range(0, len(action_btns), 2):
-        buttons.append(row(*action_btns[pos : pos + 2]))
+        if token and len(callback.encode("utf-8")) <= MAX_CALLBACK:
+            if rec.blocked:
+                controls.append(button(t("DDOS_BTN_UNBAN_IP", ip=rec.address), callback, icon="unlock"))
+            else:
+                controls.append(button(t("DDOS_BTN_REBAN_IP", ip=rec.address), callback, icon="stop"))
+        scan_callback = _ddos_ipscan_callback(rec.address, page)
+        if scan_callback:
+            controls.append(button(t("IPSCAN_BTN_SCAN_IP", ip=rec.address), scan_callback, icon="radar"))
+        if controls:
+            buttons.append(row(*controls))
     if max_page > 0:
         nav_btns: list[Any] = []
         if page > 0:
@@ -796,7 +839,8 @@ def ddos_ips_screen(view: DbgView) -> Any:
             buttons.append(row(*nav_btns))
     buttons.append(input_row(t("DDOS_BTN_BAN"), "dbg_ddos_ban", "-", view.lang))
     buttons.append(input_row(t("DDOS_BTN_ALLOW"), "dbg_ddos_allow", "-", view.lang))
-    buttons.append(row(button(t("DDOS_BTN_BACK_DDOS"), "dbg:dd", icon="shield"), button(t("DDOS_BTN_REFRESH"), f"dbg:dd:ips:{page}", icon="refresh")))
+    buttons.append(row(button(t("DDOS_BTN_REFRESH"), f"dbg:dd:ips:{page}", icon="refresh")))
+    buttons.append(back_row(t, "dbg:dd"))
     subtitle = t("DDOS_IPS_SUB", blocked=blocked_total, unbanned=unbanned_total)
     return screen(t("DDOS_IPS_TITLE"), subtitle, blocks, buttons, icon="shield")
 
@@ -828,10 +872,10 @@ def notify_hint(t: Any, kind: str) -> str:
     return t("NTF_HINT_CORE")
 
 
-def notify_message(event: Any, t: Any) -> Any:
+def notify_message(event: Any, t: Any, scan_data: dict[str, Any] | None = None) -> Any:
     days = 7
     shown = ", ".join(str(item) for item in (getattr(event, "evidence", None) or [])[:8]) or "-"
-    address = notify.mask(getattr(event, "address", ""))
+    address = str(getattr(event, "address", "") or "").strip() or "-"
     count = int(getattr(event, "count", 1) or 1)
     kind = getattr(event, "kind", notify.KIND_CORE)
     if kind == notify.KIND_PORTSCAN:
@@ -852,7 +896,18 @@ def notify_message(event: Any, t: Any) -> Any:
     blocks = [
         table([(mark, notify_kind_label(t, kind), code(body))], (t("NTF_MSG_TITLE"), notify_kind_label(t, kind))),
     ]
-    btns = [row(button(t("DDOS_BTN_IPS_OPEN"), "dbg:dd:ips", icon="shield"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools"))]
+    if scan_data is not None:
+        blocks.extend(ipscan.notification_blocks(scan_data, t.language))
+    btns = []
+    target = ipscan.scan_ip(address)
+    if target:
+        btns.append(row(button(t("IPSCAN_BTN_RESCAN"), "ipscan:run:" + target, icon="radar")))
+    btns.extend(
+        [
+            row(button(t("DDOS_BTN_IPS_OPEN"), "dbg:dd:ips", icon="shield")),
+            back_row(t, "nav:protect"),
+        ]
+    )
     return screen(t("NTF_MSG_TITLE"), t("NTF_TITLE"), blocks, btns, icon="bell")
 
 
@@ -889,7 +944,8 @@ def notify_screen(view: "DbgView") -> Any:
     for idx in range(0, len(kind_btns), 2):
         buttons.append(row(*kind_btns[idx:idx + 2]))
     buttons.append(row(button(t("NTF_BTN_TEST"), "dbg:ntf:test", icon="bell"), button(t("NTF_BTN_ALL_ON"), "dbg:ntf:on", icon="bell"), button(t("NTF_BTN_ALL_OFF"), "dbg:ntf:off", icon="mute")))
-    buttons.append(row(button(t("HP_BTN_OPEN"), "dbg:hp", icon="target"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools"), button(t("UI_HOME"), "nav:home", icon="home")))
+    buttons.append(row(button(t("HP_BTN_OPEN"), "dbg:hp", icon="target")))
+    buttons.append(back_row(t, "nav:protect"))
     return screen(t("NTF_TITLE"), t("NTF_SUBTITLE"), blocks, buttons, icon="bell")
 
 
@@ -906,6 +962,7 @@ def honey_quote(t: Any, state: Any, error: str = "", busy: bool = False) -> str:
 def honeypot_screen(view: "DbgView") -> Any:
     t = view.tr()
     state = view.honeypot
+    scan_ips: list[str] = []
     blocks = banner(view, t)
     blocks.append(quote(bold(honey_quote(t, state, view.error, view.honey_busy))))
     if state is not None:
@@ -927,7 +984,9 @@ def honeypot_screen(view: "DbgView") -> Any:
         if counts:
             blocks.append(table([("chart", key, code(value)) for key, value in counts[:8]], (t("HP_EVENTS"), t("UI_VALUE"))))
         if state.top:
-            blocks.append(table([("target", notify.mask(item[0]), code(item[1])) for item in state.top[:8]], (t("HP_TOP"), t("UI_VALUE"))))
+            top_rows = list(state.top[:8])
+            blocks.append(table([("target", str(item[0] or "-"), code(item[1])) for item in top_rows], (t("HP_TOP"), t("UI_VALUE"))))
+            scan_ips = [target for item in top_rows if (target := ipscan.scan_ip(item[0]))]
         if state.log:
             blocks.append(quote(muted(t("HP_LOG") + " " + state.log)))
     blocks.append(quote(muted(t("HP_NOTE"))))
@@ -936,9 +995,9 @@ def honeypot_screen(view: "DbgView") -> Any:
         row(button(t("HP_BTN_INSTALL"), "dbg:hp:install", icon="add"), button(t("HP_BTN_REFRESH"), "dbg:hp:refresh", icon="refresh")),
         row(button(t("HP_BTN_START"), "dbg:hp:start", icon="restart"), button(t("HP_BTN_STOP"), "dbg:hp:stop", icon="stop")),
         row(button(t("HP_BTN_SELFCHECK"), "dbg:hp:check", icon="ok"), button(t("HP_BTN_REMOVE"), "dbg:hp:remove", icon="delete")),
-        row(
-            button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell"),
-            button(t("TOOLS_TITLE"), "dbg:home", icon="tools"),
-        ),
+        row(button(t("NTF_BTN_OPEN"), "dbg:ntf", icon="bell")),
     ]
+    for start in range(0, len(scan_ips), 2):
+        buttons.append(row(*[button(t("IPSCAN_BTN_SCAN_IP", ip=target), "ipscan:run:" + target, icon="radar") for target in scan_ips[start:start + 2]]))
+    buttons.append(back_row(t, "nav:protect"))
     return screen(t("HP_TITLE"), t("HP_SUBTITLE"), blocks, buttons, icon="target")

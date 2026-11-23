@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from BOT import dscreens, i18n, notify
+from BOT import dscreens, i18n, ipscan, notify
 from tests.fakes import make_bot
 
 
@@ -191,10 +191,13 @@ def test_parse_banning_keeps_valid_rows() -> None:
     assert notify.parse_banning({}) == []
 
 
-def test_the_address_is_masked_in_messages() -> None:
-    assert notify.mask("203.0.113.99") == "203.x.x.99"
-    assert notify.mask("") == "-"
-    assert "113" not in notify.mask("203.0.113.99").split(".")[1]
+def test_the_full_address_is_visible_and_the_mask_helper_is_gone() -> None:
+    address = "203.0.113.99"
+    event = notify.Event(notify.KIND_PORTSCAN, address, detail="probe", count=12, evidence=["22", "80"])
+    html = dscreens.notify_message(event, i18n.translator("en")).to_html()
+    assert address in html
+    assert ".x.x." not in html
+    assert not hasattr(notify, "mask")
 
 
 @pytest.mark.parametrize("lang", ["en", "ru", "zh"])
@@ -205,7 +208,9 @@ def test_every_message_renders_in_every_language(lang: str) -> None:
         html = str(dscreens.notify_message(event, t))
         assert html
         assert "{" not in html
-        assert "203.0.113.9" not in html
+        if kind != notify.KIND_CORE:
+            assert "203.0.113.9" in html
+        assert ".x.x." not in html
         assert "dbg:ntf" not in html
 
 
@@ -229,12 +234,44 @@ def test_the_poller_delivers_only_to_the_owner(tmp_path: Path) -> None:
         sent.append((chat_id, rich))
 
     bot.send = fake_send
-    event = notify.Event(notify.KIND_BAN, "203.0.113.4", detail="jail")
+    event = notify.Event(notify.KIND_BAN, "0.0.0.0", detail="jail")
     assert asyncio.run(bot.notify_send(event)) is False
     assert sent == []
     bot.cfg.admin_id = 4242
     assert asyncio.run(bot.notify_send(event)) is True
     assert [item[0] for item in sent] == [4242]
+
+
+def test_an_external_notification_is_scanned_automatically_with_asn_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot = make_bot(tmp_path)
+    sent: list[tuple[int, Any]] = []
+    scans: list[str] = []
+
+    async def fake_send(chat_id: int, rich: Any) -> None:
+        sent.append((chat_id, rich))
+
+    async def fake_scan(target: str, default_target: str = "") -> dict[str, Any]:
+        scans.append(target)
+        return {
+            "target": target,
+            "kind": "ip",
+            "ip": target,
+            "meta": {"query": target, "country": "Germany", "as": "AS15169 Example"},
+            "cymru": {"asn": "15169", "prefix": "203.0.113.0/24", "country": "US", "registry": "arin", "allocated": "1992-12-01", "name": "EXAMPLE-NET"},
+            "ports": {"open": [(443, "TLS", 12)], "best_ms": 12},
+        }
+
+    monkeypatch.setattr(ipscan, "full_scan_async", fake_scan)
+    bot.send = fake_send
+    event = notify.Event(notify.KIND_DDOS, "203.0.113.9", detail="SYN:1")
+    assert asyncio.run(bot.notify_send(event)) is True
+    assert scans == ["203.0.113.9"]
+    assert len(sent) == 1
+    html = sent[0][1].to_html()
+    assert "203.0.113.9" in html
+    assert "15169" in html
+    assert "203.0.113.0/24" in html
+    assert 'data="ipscan:run:203.0.113.9"' in html
 
 
 def test_the_poller_turns_agent_rows_into_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,12 +294,20 @@ def test_the_poller_turns_agent_rows_into_events(tmp_path: Path, monkeypatch: py
     async def fake_status(*args: Any, **kwargs: Any) -> FakeBan:
         return FakeBan()
 
+    scanned: list[str] = []
+
+    async def fake_scan(target: str, default_target: str = "") -> dict[str, Any]:
+        scanned.append(target)
+        return {"target": target, "kind": "ip", "ip": target, "meta": {}, "cymru": {}, "ports": {"open": [], "best_ms": 0}}
+
     monkeypatch.setattr("BOT.app.honey_events", fake_events)
     monkeypatch.setattr(bot.guard, "status", fake_status)
+    monkeypatch.setattr(ipscan, "full_scan_async", fake_scan)
     bot.send = fake_send
     raised = asyncio.run(bot.notify_poll())
     kinds = sorted(item.kind for item in raised)
     assert kinds == ["fail2ban", "honeypot", "ssh_brute"]
+    assert sorted(scanned) == ["198.51.100.60", "203.0.113.50", "203.0.113.9"]
     assert len(sent) == len(raised)
     assert {item[0] for item in sent} == {4242}
     again = asyncio.run(bot.notify_poll())

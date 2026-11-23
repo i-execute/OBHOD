@@ -336,15 +336,19 @@ def test_auth_check_route_validates_the_stored_token(tmp_path: Path) -> None:
     assert i18n.t("VKCALLS_TOKEN_VALID", user_id=42) in bot.rendered[-1].to_html()
 
 
-def test_freeturn_home_contains_vk_create_and_token_check_controls(tmp_path: Path) -> None:
-    from BOT import ftscreens, i18n
+def test_freeturn_home_uses_tools_hub_for_vk_calls_without_duplicate_controls(tmp_path: Path) -> None:
+    from BOT import ftscreens, i18n, vkscreens
 
     bot = make_bot(tmp_path)
-    html = ftscreens.home(bot.freeturn.view()).to_html()
-    assert i18n.t("VKCALLS_BTN_CREATE") in html
-    assert i18n.t("VKCALLS_BTN_CHECK_TOKEN") in html
-    assert i18n.t("VKCALLS_BTN_ACTIVE") in html
-    assert i18n.t("VKCALLS_BTN_AUTH") in html
+    freeturn_html = ftscreens.home(bot.freeturn.view()).to_html()
+    assert i18n.t("VKCALLS_BTN_CREATE") not in freeturn_html
+    assert i18n.t("VKCALLS_BTN_AUTH") not in freeturn_html
+    assert 'data="nav:home"' in freeturn_html
+    vk_html = vkscreens.home_screen(bot.state.language).to_html()
+    assert i18n.t("VKCALLS_BTN_CREATE") in vk_html
+    assert i18n.t("VKCALLS_BTN_ACTIVE") in vk_html
+    assert i18n.t("VKCALLS_BTN_AUTH") in vk_html
+    assert 'data="dbg:home"' in vk_html
 
 
 def test_call_creation_cooldown_blocks_repeated_actions(tmp_path: Path) -> None:

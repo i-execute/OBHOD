@@ -17,6 +17,46 @@ def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+def test_cymru_lookup_parses_the_same_asn_data_as_the_manual_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[bytes] = []
+
+    class Connection:
+        def __init__(self) -> None:
+            self.chunks = [
+                b"AS | IP | BGP Prefix | CC | Registry | Allocated | AS Name\n",
+                b"47890 | 2.57.122.234 | 2.57.122.0/24 | RO | ripencc | 2019-03-19 | UNMANAGED-DEDICATED-SERVERS\n",
+                b"",
+            ]
+
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def settimeout(self, _value: float) -> None:
+            return None
+
+        def sendall(self, value: bytes) -> None:
+            sent.append(value)
+
+        def recv(self, _size: int) -> bytes:
+            return self.chunks.pop(0)
+
+    monkeypatch.setattr(ipscan.socket, "create_connection", lambda *_args, **_kwargs: Connection())
+    data = ipscan.fetch_cymru("2.57.122.234")
+    assert sent == [b"-v 2.57.122.234\n"]
+    assert data == {
+        "asn": "47890",
+        "ip": "2.57.122.234",
+        "prefix": "2.57.122.0/24",
+        "country": "RO",
+        "registry": "ripencc",
+        "allocated": "2019-03-19",
+        "name": "UNMANAGED-DEDICATED-SERVERS",
+    }
+
+
 def test_round22_real_goygram_instance_never_triggers_dynamic_method_crash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

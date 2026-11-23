@@ -37,13 +37,14 @@ def _make_bot(tmp_path: Path) -> Bot:
 
 
 @pytest.mark.parametrize("lang", list(i18n.LANGUAGES))
-def test_home_screen_has_direct_ddos_button_within_budget(tmp_path: Path, lang: str) -> None:
+def test_home_screen_has_a_protection_category_within_budget(tmp_path: Path, lang: str) -> None:
     bot = _make_bot(tmp_path)
     bot.state.language = lang
     rendered = screens.home(bot.view())
     html = rendered.to_html()
-    assert 'data="dbg:dd"' in html
-    assert i18n.t("DDOS_BTN_OPEN", lang) in html
+    assert 'data="nav:protect"' in html
+    assert 'data="dbg:dd"' not in html
+    assert i18n.t("NAV_PROTECTION", lang) in html
     assert ui.count_buttons(html) <= ui.MAX_BUTTONS
 
 
@@ -90,6 +91,8 @@ def test_clean_ddos_and_ip_table_screens_render_all_languages(lang: str) -> None
     ips_html_p0 = ips_doc_p0.to_html()
     assert "{" not in ips_html_p0
     assert 'data="dbg:dd:ub:0:203.0.113.1"' in ips_html_p0
+    assert 'data="dbg:dd:ipscan:0:203.0.113.1"' in ips_html_p0
+    assert i18n.t("IPSCAN_BTN_SCAN_IP", lang, ip="203.0.113.1") in ips_html_p0
     assert 'data="dbg:dd:ips:1"' in ips_html_p0
     assert ui.count_buttons(ips_html_p0) <= ui.MAX_BUTTONS
 
@@ -248,20 +251,24 @@ def test_attack_and_portscan_notifications_fire_out_of_the_box(tmp_path: Path, m
             scan=["198.51.100.88"],
         )
 
+    async def fake_ip_scan(target: str, default_target: str = "") -> dict[str, Any]:
+        return {"target": target, "kind": "ip", "ip": target, "meta": {}, "cymru": {}, "ports": {"open": [], "best_ms": 0}}
+
     import BOT.app as app_mod
 
     monkeypatch.setattr(bot, "send", fake_send)
     monkeypatch.setattr(app_mod, "honey_events", fake_honey)
     monkeypatch.setattr(bot.guard, "status", fake_ban_status)
     monkeypatch.setattr(app_mod, "ddos_call", fake_ddos_status)
+    monkeypatch.setattr("BOT.ipscan.full_scan_async", fake_ip_scan)
 
     events = asyncio.run(bot.notify_poll())
     kinds = [evt.kind for evt in events]
     assert notify.KIND_DDOS in kinds
     assert notify.KIND_PORTSCAN in kinds
     assert len(delivered) == 2
-    assert 'data="dbg:dd:ips"' in delivered[0]
-    assert "SYN:2" in delivered[0]
+    ddos_delivery = next(item for item in delivered if "SYN:2" in item)
+    assert 'data="dbg:dd:ips"' in ddos_delivery
 
 
 def test_auto_protect_syncs_all_live_ports_and_enables_out_of_the_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

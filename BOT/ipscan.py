@@ -17,6 +17,10 @@ from . import i18n, inline, ui
 
 IP_API_URL = "http://ip-api.com/json/{query}?fields=status,message,country,countryCode,regionName,city,timezone,isp,org,as,asname,reverse,mobile,proxy,hosting,query"
 IP_API_TIMEOUT = 3.5
+CYMRU_HOST = "whois.cymru.com"
+CYMRU_PORT = 43
+CYMRU_TIMEOUT = 3.5
+CYMRU_RESPONSE_LIMIT = 8192
 PORT_PROBE_TIMEOUT = 1.1
 DOMAIN_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 COMMON_PORTS: tuple[tuple[int, str], ...] = (
@@ -73,6 +77,36 @@ def clean_target(raw: object) -> tuple[str, str]:
     return domain, "domain"
 
 
+def ip_target(raw: object) -> str:
+    try:
+        return ipaddress.ip_address(str(raw or "").strip()).compressed
+    except ValueError:
+        return ""
+
+
+def scan_ip(raw: object) -> str:
+    target = ip_target(raw)
+    if not target:
+        return ""
+    try:
+        address = ipaddress.ip_address(target)
+    except ValueError:
+        return ""
+    if address.is_unspecified or address.is_loopback or address.is_multicast or address.is_link_local:
+        return ""
+    return target
+
+
+def routable_ip(raw: object) -> str:
+    target = scan_ip(raw)
+    if not target:
+        return ""
+    try:
+        return target if ipaddress.ip_address(target).is_global else ""
+    except ValueError:
+        return ""
+
+
 def resolve_ip(target: str) -> str:
     try:
         address = ipaddress.ip_address(target)
@@ -112,6 +146,45 @@ def fetch_ip_api(ip_or_host: str = "") -> dict[str, Any]:
     if not isinstance(parsed, dict) or parsed.get("status") != "success":
         return {}
     return parsed
+
+
+def fetch_cymru(ip_addr: str = "") -> dict[str, str]:
+    target = routable_ip(ip_addr)
+    if not target:
+        return {}
+    try:
+        with socket.create_connection((CYMRU_HOST, CYMRU_PORT), timeout=CYMRU_TIMEOUT) as conn:
+            conn.settimeout(CYMRU_TIMEOUT)
+            conn.sendall(("-v " + target + "\n").encode("ascii"))
+            raw = bytearray()
+            while len(raw) < CYMRU_RESPONSE_LIMIT:
+                chunk = conn.recv(min(2048, CYMRU_RESPONSE_LIMIT - len(raw)))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+    except (OSError, TimeoutError):
+        return {}
+    try:
+        lines = bytes(raw).decode("utf-8", errors="replace").splitlines()
+    except ValueError:
+        return {}
+    for line in lines:
+        parts = [piece.strip() for piece in line.split("|")]
+        if len(parts) < 7 or parts[0].lower() in {"as", ""}:
+            continue
+        row_ip = ip_target(parts[1])
+        if row_ip != target:
+            continue
+        return {
+            "asn": parts[0][:32],
+            "ip": row_ip,
+            "prefix": parts[2][:64],
+            "country": parts[3][:16],
+            "registry": parts[4][:32],
+            "allocated": parts[5][:32],
+            "name": parts[6][:160],
+        }
+    return {}
 
 
 def _probe_single_port(ip_addr: str, port: int) -> tuple[int, bool, int]:
@@ -168,13 +241,24 @@ def resolve_self_ip(default_target: str = "") -> tuple[str, str, dict[str, Any]]
 
 def scan_sync(host: str, kind: str, deep: bool = True) -> dict[str, Any]:
     address = resolve_ip(host) if kind == "domain" else host
-    metadata = fetch_ip_api(address) if address else {}
-    ports = probe_ports(address) if deep and address else {"open": [], "best_ms": 0}
+    if address:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            metadata_job = pool.submit(fetch_ip_api, address)
+            cymru_job = pool.submit(fetch_cymru, address)
+            ports_job = pool.submit(probe_ports, address) if deep else None
+            metadata = metadata_job.result()
+            cymru = cymru_job.result()
+            ports = ports_job.result() if ports_job is not None else {"open": [], "best_ms": 0}
+    else:
+        metadata = {}
+        cymru = {}
+        ports = {"open": [], "best_ms": 0}
     return {
         "target": host,
         "kind": kind,
         "ip": str(metadata.get("query") or address or ""),
         "meta": metadata,
+        "cymru": cymru,
         "ports": ports,
     }
 
@@ -184,7 +268,7 @@ def full_scan_sync(raw_target: str, default_target: str = "") -> dict[str, Any]:
     if candidate == "self":
         host, kind, seed_metadata = resolve_self_ip(default_target)
         if not host:
-            return {"target": "self", "kind": "ip", "ip": "", "meta": {}, "ports": {"open": [], "best_ms": 0}, "error": "network"}
+            return {"target": "self", "kind": "ip", "ip": "", "meta": {}, "cymru": {}, "ports": {"open": [], "best_ms": 0}, "error": "network"}
         data = scan_sync(host, kind)
         if seed_metadata and not data.get("meta"):
             data["meta"] = seed_metadata
@@ -193,7 +277,7 @@ def full_scan_sync(raw_target: str, default_target: str = "") -> dict[str, Any]:
     try:
         host, kind = clean_target(candidate)
     except ValueError:
-        return {"target": candidate[:64], "kind": "bad", "ip": "", "meta": {}, "ports": {"open": [], "best_ms": 0}, "error": "bad_target"}
+        return {"target": candidate[:64], "kind": "bad", "ip": "", "meta": {}, "cymru": {}, "ports": {"open": [], "best_ms": 0}, "error": "bad_target"}
     return scan_sync(host, kind)
 
 
@@ -244,20 +328,11 @@ def scanning_screen(raw_target: str, lang: str = i18n.DEFAULT_LANGUAGE) -> ui.Ri
     return ui.screen(t("IPSCAN_SCANNING_TITLE"), ui.muted(subtitle), [ui.quote(ui.muted(t("IPSCAN_SCANNING_BODY")))], [], icon="loading")
 
 
-def rich_report(data: dict[str, Any], lang: str = i18n.DEFAULT_LANGUAGE) -> tuple[ui.Rich, list[list[dict[str, Any]]]]:
-    t = i18n.translator(lang)
+def _report_rows(data: dict[str, Any], t: i18n.Translator) -> list[tuple[str, str, str]]:
     target = str(data.get("target") or "")
-    kind = str(data.get("kind") or "")
     shown_ip = str(data.get("ip") or "")
     metadata = data.get("meta") if isinstance(data.get("meta"), dict) else {}
     ports = data.get("ports") if isinstance(data.get("ports"), dict) else {}
-    keyboard = after_scan_keyboard_rows(lang)
-    if kind == "bad" or data.get("error") == "bad_target":
-        card = ui.screen(t("IPSCAN_REPORT_TITLE"), ui.muted(target), [ui.quote(ui.bold(t("IPSCAN_ERR_BAD")))], [], icon="warn")
-        return card, keyboard
-    if data.get("error") or (not shown_ip and not metadata):
-        card = ui.screen(t("IPSCAN_REPORT_TITLE"), ui.muted(target), [ui.quote(ui.muted(t("IPSCAN_ERR_NET")))], [], icon="warn")
-        return card, keyboard
     rows: list[tuple[str, str, str]] = [("target", t("IPSCAN_TARGET"), ui.code(target or "-"))]
     if shown_ip:
         rows.append(("globe", t("IPSCAN_RESOLVED_IP"), ui.code(shown_ip)))
@@ -295,16 +370,77 @@ def rich_report(data: dict[str, Any], lang: str = i18n.DEFAULT_LANGUAGE) -> tupl
     best_ms = int(ports.get("best_ms") or 0)
     if best_ms > 0:
         rows.append(("gauge", t("IPSCAN_PING"), ui.code(t("IPSCAN_LATENCY_MS", ms=best_ms))))
-    summary = t("IPSCAN_SUMMARY")
+    return rows
+
+
+def _cymru_rows(data: dict[str, Any], t: i18n.Translator) -> list[tuple[str, str, str]]:
+    cymru = data.get("cymru") if isinstance(data.get("cymru"), dict) else {}
+    rows: list[tuple[str, str, str]] = []
+    for field, key, icon in (
+        ("asn", "IPSCAN_CYMRU_ASN", "tag"),
+        ("prefix", "IPSCAN_CYMRU_PREFIX", "route"),
+        ("country", "IPSCAN_CYMRU_COUNTRY", "world"),
+        ("registry", "IPSCAN_CYMRU_REGISTRY", "file"),
+        ("allocated", "IPSCAN_CYMRU_ALLOCATED", "calendar"),
+        ("name", "IPSCAN_CYMRU_OWNER", "server"),
+    ):
+        value = str(cymru.get(field) or "").strip()
+        if value:
+            rows.append((icon, t(key), ui.code(value)))
+    return rows
+
+
+def report_blocks(data: dict[str, Any], lang: str = i18n.DEFAULT_LANGUAGE) -> list[str]:
+    t = i18n.translator(lang)
+    kind = str(data.get("kind") or "")
+    shown_ip = str(data.get("ip") or "")
+    metadata = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    cymru = data.get("cymru") if isinstance(data.get("cymru"), dict) else {}
+    if kind == "bad" or data.get("error") == "bad_target":
+        return [ui.quote(ui.bold(t("IPSCAN_ERR_BAD")))]
+    if data.get("error") or (not shown_ip and not metadata and not cymru):
+        return [ui.quote(ui.muted(t("IPSCAN_ERR_NET")))]
+    blocks = [ui.quote(ui.bold(t("IPSCAN_SUMMARY"))), ui.table(_report_rows(data, t))]
+    cymru_rows = _cymru_rows(data, t)
+    if cymru_rows:
+        blocks.append(ui.table(cymru_rows, (t("IPSCAN_CYMRU_TITLE"), t("UI_VALUE"))))
+    return blocks
+
+
+def report_buttons(lang: str = i18n.DEFAULT_LANGUAGE, retry: str = "", back: str = "") -> list[str]:
+    t = i18n.translator(lang)
+    buttons: list[str] = []
+    if retry:
+        buttons.append(ui.row(ui.button(t("IPSCAN_BTN_RESCAN"), retry, icon="refresh")))
+    if back:
+        buttons.append(ui.row(ui.button(t("UI_BACK"), back, icon="back")))
+    return buttons
+
+
+def report_screen(data: dict[str, Any], lang: str = i18n.DEFAULT_LANGUAGE, buttons: list[str] | None = None) -> ui.Rich:
+    target = str(data.get("target") or "")
+    shown_ip = str(data.get("ip") or "")
     subtitle = f"{target} ({shown_ip})" if shown_ip and shown_ip != target else (shown_ip or target)
-    card = ui.screen(
-        t("IPSCAN_REPORT_TITLE"),
+    return ui.screen(
+        i18n.t("IPSCAN_REPORT_TITLE", lang),
         ui.muted(subtitle),
-        [ui.quote(ui.bold(summary)), ui.table(rows)],
-        [],
-        icon="radar",
+        report_blocks(data, lang),
+        list(buttons or []),
+        icon="radar" if not data.get("error") else "warn",
     )
-    return card, keyboard
+
+
+def notification_blocks(data: dict[str, Any], lang: str = i18n.DEFAULT_LANGUAGE) -> list[str]:
+    t = i18n.translator(lang)
+    blocks = [ui.heading(t("IPSCAN_AUTO_TITLE"), 3, icon="radar")]
+    blocks.extend(report_blocks(data, lang))
+    return blocks
+
+
+def rich_report(
+    data: dict[str, Any], lang: str = i18n.DEFAULT_LANGUAGE, buttons: list[str] | None = None
+) -> tuple[ui.Rich, list[list[dict[str, Any]]]]:
+    return report_screen(data, lang, buttons), after_scan_keyboard_rows(lang)
 
 
 async def inline_results(query: str, src: str = "mt", lang: str = i18n.DEFAULT_LANGUAGE, default_target: str = "") -> list[dict]:

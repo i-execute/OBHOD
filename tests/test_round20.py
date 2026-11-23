@@ -46,6 +46,7 @@ def install_scan_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | None 
         return {"open": [(80, "HTTP", 12), (443, "TLS", 9)], "best_ms": 9}
 
     monkeypatch.setattr(ipscan, "fetch_ip_api", fake_ip_api)
+    monkeypatch.setattr(ipscan, "fetch_cymru", lambda ip_addr: {"asn": "13238", "prefix": "77.88.55.0/24", "country": "RU", "registry": "ripencc", "allocated": "1997-01-01", "name": "YANDEX"})
     monkeypatch.setattr(ipscan, "resolve_ip", lambda host: "77.88.55.242")
     monkeypatch.setattr(ipscan, "probe_ports", fake_ports)
     monkeypatch.setattr(ipscan, "resolve_ip", lambda host: "77.88.55.242")

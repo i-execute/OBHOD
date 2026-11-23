@@ -53,6 +53,9 @@ LOADING_SKIP = (
     "lang:",
     "set:",
     "dbg:home",
+    "dbg:network",
+    "dbg:diagnostics",
+    "dbg:protect",
     "vk:home",
     "vk:active",
     "vk:auth",
@@ -78,6 +81,7 @@ HOME_QUIET = 3.0
 RATE_QUIET = 10.0
 UPDATE_QUIET = 10.0
 UPDATE_STEP_DELAY = 0.5
+NOTIFY_IPSCAN_TIMEOUT = 8.0
 TOAST_TIMEOUT = 6.0
 ACTION_TIMEOUT = 240.0
 JOB_CACHE = 64
@@ -85,7 +89,7 @@ CLICK_QUIET = 2.0
 ACTION_LOCK_QUIET = 5.0
 
 NAV_PREFIXES = ("nav:", "lang:", "set:", "dbg:dd:ips")
-NAV_ROUTES = ("dbg:home", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:dd:ntf", "dbg:dd:refresh", "dbg:info", "vk:home", "vk:active", "vk:auth", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
+NAV_ROUTES = ("dbg:home", "dbg:network", "dbg:diagnostics", "dbg:protect", "dbg:scan", "dbg:trace", "dbg:vk", "dbg:scr", "dbg:ports", "dbg:dpi", "dbg:ntf", "dbg:hp", "dbg:dd", "dbg:dd:ntf", "dbg:dd:refresh", "dbg:info", "vk:home", "vk:active", "vk:auth", "core:show", "ft:home", "xr:home", "xr:new", "xr:custom:open", "xr:subscan:new", "xr:subscan:custom", "xr:scan", "xr:subs", "xr:core")
 
 def is_navigation(data: str) -> bool:
     if data.startswith(NAV_PREFIXES):
@@ -494,7 +498,33 @@ class Bot:
             t = self.tr()
             payload = dscreens.notify_message(notify.Event(notify.KIND_CORE, address="0.0.0.0", detail=t("NTF_TEST_TITLE")), t)
         else:
-            payload = dscreens.notify_message(event, self.tr())
+            scan_data: dict[str, Any] | None = None
+            scan_target = ipscan.scan_ip(getattr(event, "address", ""))
+            if scan_target:
+                try:
+                    scan_data = await asyncio.wait_for(ipscan.full_scan_async(scan_target), NOTIFY_IPSCAN_TIMEOUT)
+                except (asyncio.TimeoutError, OSError, ValueError):
+                    scan_data = {
+                        "target": scan_target,
+                        "kind": "ip",
+                        "ip": scan_target,
+                        "meta": {},
+                        "cymru": {},
+                        "ports": {"open": [], "best_ms": 0},
+                        "error": "network",
+                    }
+                except Exception as exc:
+                    log.debug("automatic IP scan skipped: %s", type(exc).__name__)
+                    scan_data = {
+                        "target": scan_target,
+                        "kind": "ip",
+                        "ip": scan_target,
+                        "meta": {},
+                        "cymru": {},
+                        "ports": {"open": [], "best_ms": 0},
+                        "error": "network",
+                    }
+            payload = dscreens.notify_message(event, self.tr(), scan_data)
         try:
             await self.send(target, payload)
         except Exception as exc:
@@ -569,8 +599,11 @@ class Bot:
                 )
                 raised.extend(self.notify.deliver(scan_evt, now_ts))
         self.notify_poll_at = time.time()
-        for event in raised:
-            await self.notify_send(event)
+        if raised:
+            outcomes = await asyncio.gather(*(self.notify_send(event) for event in raised), return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, Exception):
+                    log.debug("notification delivery skipped: %s", type(outcome).__name__)
         self.notify.drain()
         await self.check_tailscale_expiry_notify()
         return raised
@@ -1037,6 +1070,12 @@ class Bot:
             return int(res.get("id") or res.get("msg_id") or 0)
         return int(getattr(res, "id", 0) or getattr(res, "msg_id", 0) or 0)
 
+    async def reply(self, chat_id: int, msg_id: int, rich: object) -> int:
+        if msg_id:
+            await self.render(chat_id, msg_id, rich)
+            return 0
+        return await self.send(chat_id, rich)
+
     async def send_progress(self, chat_id: int, rich: object) -> int:
         if "send" in self.__dict__:
             return 0
@@ -1064,10 +1103,13 @@ class Bot:
             try:
                 await self.app.edit_rich(chat_id, msg_id, rich, via="mt")
                 self.remember_render(key, digest, now)
-                return
             except Exception as exc:
-                log.warning("edit failed: %s", exc)
-        if not msg_id or self.quiet("send:%d" % key[0], RENDER_QUIET):
+                if "message is not modified" in str(exc).lower():
+                    self.remember_render(key, digest, now)
+                else:
+                    log.warning("edit failed for callback message %s/%s: %s", chat_id, msg_id, exc)
+            return
+        if self.quiet("send:%d" % key[0], RENDER_QUIET):
             try:
                 await self.send(chat_id, rich)
                 self.remember_render(key, digest, now)
@@ -1399,14 +1441,23 @@ class Bot:
                 log.warning("mt inline fallback edit failed: %s", exc2)
         return False
 
-    async def run_callback_ipscan(self, inline_id: Any, chat_id: int, msg_id: int, raw_target: str) -> None:
+    async def run_callback_ipscan(
+        self,
+        inline_id: Any,
+        chat_id: int,
+        msg_id: int,
+        raw_target: str,
+        back: str = "",
+        retry: str = "",
+    ) -> None:
         loading = ipscan.scanning_screen(raw_target, self.language)
         if inline_id is not None:
             await self.edit_inline_rich(inline_id, loading)
         elif chat_id and msg_id:
             await self.render(chat_id, msg_id, loading)
         report = await ipscan.full_scan_async(raw_target, default_target=self.default_scan_target())
-        card, kbd = ipscan.rich_report(report, self.language)
+        buttons = ipscan.report_buttons(self.language, retry=retry, back=back) if (retry or back) else None
+        card, kbd = ipscan.rich_report(report, self.language, buttons)
         if inline_id is not None:
             await self.edit_inline_rich(inline_id, card, reply_markup=kbd)
         elif chat_id and msg_id:
@@ -1714,7 +1765,8 @@ class Bot:
             inline_id = self.extract_inline_id(evt)
             target = data.split(":", 2)[2] if data.count(":") >= 2 else "self"
             await self.toast(evt, self.tr()("IPSCAN_TOAST_START"))
-            await self.run_callback_ipscan(inline_id, chat_id, msg_id, target)
+            back = "nav:protect" if inline_id is None and chat_id and msg_id else ""
+            await self.run_callback_ipscan(inline_id, chat_id, msg_id, target, back=back, retry=data if back else "")
             return
         if self.is_busy() and not is_navigation(data) and not CONFIRM_STEPS.match(data):
             if self.quiet("busy", BUSY_QUIET):
@@ -1745,7 +1797,7 @@ class Bot:
                 if self.quiet("busy", BUSY_QUIET):
                     await self.toast(evt, self.tr()("TOAST_BUSY"), alert=True)
                 return
-        if self.slow_action(data):
+        if msg_id and self.slow_action(data):
             try:
                 await self.render(chat_id, msg_id, screens.busy_screen("", self.language))
             except Exception as exc:
@@ -1967,6 +2019,9 @@ class Bot:
             return
         if page == "tools":
             await self.debug.route(chat_id, msg_id, "dbg:home")
+            return
+        if page == "protect":
+            await self.debug.route(chat_id, msg_id, "dbg:protect")
             return
         if page == "update":
             await self.update_action(chat_id, msg_id, "show", "")
@@ -2322,10 +2377,10 @@ class Bot:
             await self.render(chat_id, msg_id, screens.sshd_screen(self.view(notice=t("SSHD_NOTICE_REMOVE"))))
             return
         if action == "auth":
-            await self.harden(chat_id, password=value)
+            await self.harden(chat_id, msg_id=msg_id, password=value)
             return
         if action == "root":
-            await self.harden(chat_id, root=value)
+            await self.harden(chat_id, msg_id=msg_id, root=value)
             return
         await self.render(chat_id, msg_id, screens.sshd_screen(self.view()))
 
@@ -2333,6 +2388,15 @@ class Bot:
         parts = data.split(":")
         action = parts[1] if len(parts) > 1 else "home"
         sub = parts[2] if len(parts) > 2 else ""
+        if action == "network":
+            await self.debug.route(chat_id, msg_id, "dbg:network")
+            return
+        if action == "diagnostics":
+            await self.debug.route(chat_id, msg_id, "dbg:diagnostics")
+            return
+        if action == "protect":
+            await self.debug.route(chat_id, msg_id, "dbg:protect")
+            return
         if action == "scan":
             await self.debug.route(chat_id, msg_id, "dbg:scan:go" if sub == "go" else "dbg:scan")
             return
@@ -2347,7 +2411,7 @@ class Bot:
             return
         await self.debug.route(chat_id, msg_id, "dbg:home")
 
-    async def harden(self, chat_id: int, port: int = 0, password: str = "", root: str = "") -> None:
+    async def harden(self, chat_id: int, msg_id: int = 0, port: int = 0, password: str = "", root: str = "") -> None:
         actor = self.admin_id
         detail = "port=%d password=%s root=%s" % (int(port or 0), "set" if password else "-", "set" if root else "-")
         if password == "no":
@@ -2355,13 +2419,14 @@ class Bot:
                 self.sshd = await self.guard.ssh_status(self.state.ssh)
             except RpcError as exc:
                 self.audit.note(actor, "sshd:harden", "failed", detail)
-                await self.send(chat_id, screens.sshd_screen(self.view(error=exc.message)))
+                await self.reply(chat_id, msg_id, screens.sshd_screen(self.view(error=exc.message)))
                 return
             keys = self.sshd.key_list
             if not keys and not self.sshd.keys:
                 self.audit.note(actor, "sshd:harden", "blocked", "no public key in %s" % (self.sshd.key_path or "authorized_keys"))
-                await self.send(
+                await self.reply(
                     chat_id,
+                    msg_id,
                     screens.sshd_screen(
                         self.view(
                             error=self.tr()("SSHD_PW_BLOCKED", user=self.sshd.key_user or "root", path=self.sshd.key_path or "~/.ssh/authorized_keys"),
@@ -2374,20 +2439,20 @@ class Bot:
             self.sshd = await self.guard.ssh_apply(self.state.ssh, port=port, password=password, root=root)
         except RpcError as exc:
             self.audit.note(actor, "sshd:harden", "failed", detail)
-            await self.send(chat_id, screens.sshd_screen(self.view(error=exc.message)))
+            await self.reply(chat_id, msg_id, screens.sshd_screen(self.view(error=exc.message)))
             return
         self.audit.note(actor, "sshd:harden", "ok", detail)
         if port:
             self.save()
-        await self.send(chat_id, screens.sshd_screen(self.view(notice=self.tr()("SSHD_NOTICE_APPLIED"))))
+        await self.reply(chat_id, msg_id, screens.sshd_screen(self.view(notice=self.tr()("SSHD_NOTICE_APPLIED"))))
 
-    async def add_key(self, chat_id: int, public_key: str) -> None:
+    async def add_key(self, chat_id: int, public_key: str, msg_id: int = 0) -> None:
         actor = self.admin_id
         try:
             self.sshd = await self.guard.ssh_add_key(self.state.ssh, public_key)
         except RpcError as exc:
             self.audit.note(actor, "sshd:add-key", "failed")
-            await self.send(chat_id, screens.sshd_screen(self.view(error=exc.message)))
+            await self.reply(chat_id, msg_id, screens.sshd_screen(self.view(error=exc.message)))
             return
         self.audit.note(actor, "sshd:add-key", "ok")
-        await self.send(chat_id, screens.sshd_screen(self.view(notice=self.tr()("SSHD_NOTICE_KEY"))))
+        await self.reply(chat_id, msg_id, screens.sshd_screen(self.view(notice=self.tr()("SSHD_NOTICE_KEY"))))

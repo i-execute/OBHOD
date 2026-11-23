@@ -229,6 +229,15 @@ class DebugPanel:
             if head in {"", "home"}:
                 await self.render(chat_id, msg_id, dscreens.home(self.view()))
                 return
+            if head == "network":
+                await self.render(chat_id, msg_id, dscreens.network_screen(self.view()))
+                return
+            if head == "diagnostics":
+                await self.render(chat_id, msg_id, dscreens.diagnostics_screen(self.view()))
+                return
+            if head == "protect":
+                await self.render(chat_id, msg_id, dscreens.protection_screen(self.view()))
+                return
             if head == "scan":
                 await self.scan_action(chat_id, msg_id, arg1)
                 return
@@ -270,10 +279,6 @@ class DebugPanel:
         self.trace_text = net.trace_text(exc)
         payload = dscreens.crash_screen(self.view(), route, self.trace_text)
         await self.render(chat_id, msg_id, payload)
-        try:
-            await self.bot.send(chat_id, dscreens.trace_screen(self.view(), route, self.trace_text))
-        except Exception:
-            pass
 
     def clock(self) -> dict[str, Any]:
         return {
@@ -752,6 +757,28 @@ class DebugPanel:
         self.note("dd", cmd_name, cleaned)
         await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(notice=toast)))
 
+    async def _scan_ddos_ip(self, chat_id: int, msg_id: int, page_str: str, raw_target: str) -> None:
+        t = self.tr()
+        try:
+            self.ddos_page = max(0, int(page_str or "0"))
+        except ValueError:
+            self.ddos_page = 0
+        self.ddos_in_ips = True
+        target = ipscan.scan_ip(raw_target)
+        records = self.ddos.ip_records() if self.ddos is not None else []
+        if not target or target not in {ipscan.ip_target(item.address) for item in records}:
+            await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(error=t("IPSCAN_ERR_BAD"))))
+            return
+        repeat = f"dbg:dd:ipscan:{self.ddos_page}:{target}"
+        await self.bot.run_callback_ipscan(
+            None,
+            chat_id,
+            msg_id,
+            target,
+            back=f"dbg:dd:ips:{self.ddos_page}",
+            retry=repeat,
+        )
+
     async def ddos_action(self, chat_id: int, msg_id: int, action: str) -> None:
         t = self.tr()
         self.ddos_busy = False
@@ -1073,6 +1100,15 @@ class DebugPanel:
                         self.stop_rkn_live(live_chat, live_message)
                 worker = self.rkn_live_stream(chat_id, msg_id, kind, text, cursor, started_at) if streaming else self.rkn_live(chat_id, msg_id, kind, text)
                 self.rkn_live_tasks[(chat_id, msg_id)] = asyncio.create_task(worker)
+            return
+        if action.startswith("ipscan:"):
+            parts = action.split(":", 2)
+            await self._scan_ddos_ip(
+                chat_id,
+                msg_id,
+                parts[1] if len(parts) > 1 else "0",
+                parts[2] if len(parts) > 2 else "",
+            )
             return
         if action == "ips" or action.startswith("ips:"):
             self.ddos_in_ips = True

@@ -6,6 +6,10 @@ from . import i18n
 from .ui import bold, button, code, copy_row, link_button, long_block, muted, quote, row, screen, table
 
 
+def back_row(t: i18n.Translator, target: str = "dbg:home") -> str:
+    return row(button(t("UI_BACK"), target, icon="back"))
+
+
 def home_screen(lang: str, authorized: bool = False, user_id: int = 0, notice: str = "", error: str = "") -> Any:
     t = i18n.translator(lang)
     blocks = []
@@ -18,7 +22,8 @@ def home_screen(lang: str, authorized: bool = False, user_id: int = 0, notice: s
     blocks.append(table([("user", t("VKCALLS_AUTH_STATUS"), code(value))], (t("UI_FIELD"), t("UI_VALUE"))))
     buttons = [
         row(button(t("VKCALLS_BTN_CREATE"), "vk:create", icon="calls"), button(t("VKCALLS_BTN_ACTIVE"), "vk:active", icon="users")),
-        row(button(t("VKCALLS_BTN_AUTH"), "vk:auth", icon="key"), button(t("TOOLS_TITLE"), "dbg:home", icon="tools")),
+        row(button(t("VKCALLS_BTN_AUTH"), "vk:auth", icon="key")),
+        back_row(t),
     ]
     return screen(t("VKCALLS_TITLE"), t("VKCALLS_SUBTITLE"), blocks, buttons, icon="calls")
 
@@ -111,7 +116,7 @@ def detail_screen(lang: str, record: dict[str, Any] | None, error: str = "") -> 
     t = i18n.translator(lang)
     if not record:
         blocks = [quote(bold(error or t("VKCALLS_NOT_FOUND")))]
-        return screen(t("VKCALLS_DETAIL_TITLE"), t("VKCALLS_SUBTITLE"), blocks, [row(button(t("VKCALLS_BTN_ACTIVE"), "vk:active", icon="users"))], icon="calls")
+        return screen(t("VKCALLS_DETAIL_TITLE"), t("VKCALLS_SUBTITLE"), blocks, [back_row(t, "vk:active")], icon="calls")
     call_id = str(record.get("call_id", ""))
     credentials = record.get("short_credentials") if isinstance(record.get("short_credentials"), dict) else {}
     short_id = str(credentials.get("id", "") or "-")

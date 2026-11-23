@@ -27,6 +27,13 @@ def test_home_renders_without_server_state(tmp_path: Path) -> None:
     assert count_buttons(html) <= MAX_BUTTONS
 
 
+def test_home_uses_tools_and_protection_category_hubs(tmp_path: Path) -> None:
+    html = screens.home(make_view(tmp_path)).to_html()
+    assert 'data="nav:tools"' in html
+    assert 'data="nav:protect"' in html
+    assert 'data="dbg:dd"' not in html
+
+
 def test_home_reports_core_and_ban_state(tmp_path: Path) -> None:
     view = make_view(tmp_path, core={"installed": True, "service": "active", "version": "26.10.31", "listening": [443]})
     html = screens.home(view).to_html()

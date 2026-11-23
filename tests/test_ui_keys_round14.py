@@ -179,10 +179,12 @@ def test_string_catalog_keys_and_placeholders_match_across_languages_and_ast(lan
                         assert literal in i18n.RESERVED or i18n.has_key(literal, lang), f"{py_file.name}:{literal}"
 
 
-def test_simplified_navigation_eliminates_duplicate_hub_and_unknown_routes(tmp_path: Path) -> None:
+def test_category_navigation_eliminates_duplicate_hubs_and_unknown_routes(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     home_html = screens.home(bot.view()).to_html()
-    assert 'data="dbg:home"' in home_html
+    assert 'data="nav:tools"' in home_html
+    assert 'data="nav:protect"' in home_html
+    assert 'data="dbg:home"' not in home_html
     assert 'data="tools:home"' not in home_html
 
     settings_html = screens.settings(bot.view()).to_html()
@@ -192,22 +194,22 @@ def test_simplified_navigation_eliminates_duplicate_hub_and_unknown_routes(tmp_p
     assert 'data="nav:ban"' not in settings_html
 
     tools_html = dscreens.home(bot.debug.view()).to_html()
-    for tool_cb in (
-        "ft:fw",
-        "dbg:dd",
-        "nav:ban",
-        "nav:sshd",
-        "dbg:hp",
-        "dbg:ntf",
-        "dbg:dpi",
-        "dbg:vk",
-        "dbg:scan",
-        "dbg:trace",
-        "dbg:ports",
-        "dbg:scr",
-        "dbg:info",
-    ):
+    for tool_cb in ("dbg:network", "dbg:diagnostics", "vk:home", "nav:home"):
         assert f'data="{tool_cb}"' in tools_html, tool_cb
+    for hidden_cb in ("dbg:dd", "ft:fw", "dbg:scan", "dbg:dpi", "dbg:hp"):
+        assert f'data="{hidden_cb}"' not in tools_html, hidden_cb
+
+    network_html = dscreens.network_screen(bot.debug.view()).to_html()
+    for tool_cb in ("dbg:scan", "dbg:trace", "dbg:ports", "dbg:home"):
+        assert f'data="{tool_cb}"' in network_html, tool_cb
+
+    diagnostics_html = dscreens.diagnostics_screen(bot.debug.view()).to_html()
+    for tool_cb in ("dbg:dpi", "dbg:vk", "dbg:scr", "dbg:info", "dbg:home"):
+        assert f'data="{tool_cb}"' in diagnostics_html, tool_cb
+
+    protection_html = dscreens.protection_screen(bot.debug.view()).to_html()
+    for tool_cb in ("dbg:dd", "ft:fw", "nav:ban", "nav:sshd", "dbg:hp", "dbg:ntf", "nav:home"):
+        assert f'data="{tool_cb}"' in protection_html, tool_cb
 
     fw_html = ftscreens.fw_screen(bot.freeturn.view()).to_html()
     assert 'data="ft:fw"' in fw_html
@@ -222,6 +224,9 @@ def test_simplified_navigation_eliminates_duplicate_hub_and_unknown_routes(tmp_p
         ftscreens.home(bot.freeturn.view()),
         ftscreens.plan_screen(bot.freeturn.view()),
         dscreens.home(bot.debug.view()),
+        dscreens.network_screen(bot.debug.view()),
+        dscreens.diagnostics_screen(bot.debug.view()),
+        dscreens.protection_screen(bot.debug.view()),
         xscreens.home(bot.xray.view()),
     ]
     unknown_notice = i18n.t("HOME_NOTICE_UNKNOWN", bot.language)
@@ -339,7 +344,8 @@ def test_xscreens_back_rows_and_scan_buttons_stay_in_footer_and_localized() -> N
     )
     view_ru = xscreens.XrayView(state=state, lang="ru")
     home_ru = xscreens.home(view_ru).to_html()
-    assert i18n.t("UI_HOME", "ru") in home_ru
+    assert i18n.t("UI_BACK", "ru") in home_ru
+    assert 'data="nav:home"' in home_ru
     assert 'data="xr:home"' not in home_ru
 
     scan_ru = xscreens.scan_screen(view_ru, [short]).to_html()

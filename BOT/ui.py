@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from html import escape
+from html import escape, unescape
 from typing import Iterable
 
 from goygram.rich import Rich
@@ -19,6 +19,7 @@ REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 PRE_BLOCK = re.compile(r"(<pre(?:\s[^>]*)?>.*?</pre>)", re.S)
 INTER_BLOCK_NL = re.compile(r"(</(?:p|blockquote|details|table|ul|ol|h[1-6])>|<hr\s*/?>)\s*\n+\s*(?=<)")
+TABLE_MARKUP = re.compile(r"</?(?:a|b|code|del|em|i|pre|s|span|strong|u)(?:\s[^>]*)?>", re.I)
 SEP = " · "
 _ICONS = False
 PALETTE = {
@@ -217,6 +218,11 @@ def row_parts(item: object) -> tuple[str, str, object]:
     return "", str(item), ""
 
 
+def table_value(value: object) -> str:
+    text = TABLE_MARKUP.sub("", "" if value is None else str(value))
+    return esc(unescape(text))
+
+
 def table(pairs: Iterable[object], headers: tuple[str, str] | None = None) -> str:
     head = ""
     if headers:
@@ -226,8 +232,8 @@ def table(pairs: Iterable[object], headers: tuple[str, str] | None = None) -> st
     cells = []
     for item in pairs:
         icon, key, value = row_parts(item)
-        label = ico(icon, "") + esc(key)
-        cells.append(f'<tr><td align="center">{label}</td><td align="center">{value}</td></tr>')
+        label = ico(icon, "") + table_value(key)
+        cells.append(f'<tr><td align="center">{label}</td><td align="center">{table_value(value)}</td></tr>')
     body = "".join(cells)
     return f'<table bordered="false" striped="false">{head}{body}</table>'
 

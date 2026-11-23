@@ -83,10 +83,13 @@ def test_big_is_single_button_row() -> None:
     assert html.count("<tg-button-row") == 1
 
 
-def test_table_escapes_keys_not_values() -> None:
-    html = table([("<k>", code("v"))])
+def test_table_renders_values_as_plain_safe_text() -> None:
+    html = table([("<k>", code("203.0.113.7")), (muted("safe"), code("<tag>"))])
     assert '<td align="center">&lt;k&gt;</td>' in html
-    assert '<td align="center"><code>v</code></td>' in html
+    assert '<td align="center">203.0.113.7</td>' in html
+    assert "<code>" not in html
+    assert "<span" not in html
+    assert "&lt;tag&gt;" in html
 
 
 def test_lists_details_quote_pre() -> None:

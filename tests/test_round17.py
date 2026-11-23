@@ -127,6 +127,7 @@ def test_round17_inline_ip_scanner_keeps_independent_metadata_and_ports(tmp_path
         "as": "AS13238 YANDEX LLC", "hosting": True, "proxy": False, "mobile": False,
     })
     monkeypatch.setattr(ipscan, "probe_ports", lambda address: {"open": [(443, "TLS", 9)], "best_ms": 9})
+    monkeypatch.setattr(ipscan, "fetch_cymru", lambda address: {"asn": "13238", "prefix": "77.88.55.0/24", "country": "RU", "registry": "ripencc", "allocated": "1997-01-01", "name": "YANDEX"})
 
     report = ipscan.full_scan_sync("ya.ru")
     rich_card, after_kbd = ipscan.rich_report(report, "ru")
@@ -134,6 +135,7 @@ def test_round17_inline_ip_scanner_keeps_independent_metadata_and_ports(tmp_path
     assert "ya.ru" in rep_html
     assert "77.88.55.242" in rep_html
     assert "AS13238" in rep_html
+    assert "77.88.55.0/24" in rep_html
     assert "Yandex" in rep_html
     assert "443/TLS" in rep_html
     assert "verdict" not in rep_html.lower()
