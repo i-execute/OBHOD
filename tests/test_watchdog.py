@@ -185,6 +185,16 @@ def test_a_digestless_install_is_reported(tmp_path: Path) -> None:
     assert "without a published digest" in result.stdout
 
 
+def test_a_missing_cloudflared_digest_is_reported(tmp_path: Path) -> None:
+    target = clone(tmp_path)
+    agent = target / "Storage" / "remote" / "cloudflared_agent.py"
+    body = agent.read_text(encoding="utf-8").replace('"amd64": "', '"amd64": "broken-', 1)
+    agent.write_text(body, encoding="utf-8")
+    result = run_tool(target, "policy")
+    assert result.returncode == 1
+    assert "cloudflared_agent.py has no pinned digest for amd64" in result.stdout
+
+
 def test_a_pinned_default_xray_is_reported(tmp_path: Path) -> None:
     target = clone(tmp_path)
     core = target / "BOT" / "xray.py"

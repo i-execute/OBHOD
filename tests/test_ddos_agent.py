@@ -201,6 +201,28 @@ def test_install_is_idempotent(bench) -> None:
     assert (bench.root / "ddos.nft").read_text(encoding="utf-8") == first
 
 
+def test_full_ruleset_backups_cover_first_install_mutation_and_remove(bench) -> None:
+    assert bench.run("install", "--syn_rate=60")["ok"]
+    backups = sorted((bench.root / "backups").glob("nft-before-*.nft"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == ""
+    assert bench.run("install", "--syn_rate=120")["ok"]
+    backups = sorted((bench.root / "backups").glob("nft-before-*.nft"))
+    assert len(backups) == 2
+    assert any("limit rate over 60/second" in item.read_text(encoding="utf-8") for item in backups)
+    assert bench.run("remove")["ok"]
+    assert len(list((bench.root / "backups").glob("nft-before-*.nft"))) == 3
+
+
+def test_backup_refuses_a_truncated_full_ruleset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load("obhod_ddos_backup_%d" % id(tmp_path))
+    monkeypatch.setattr(module, "run", lambda argv, timeout=60: (0, "x" * module.MAX_OUTPUT, ""))
+    with pytest.raises(module.DDosError) as error:
+        module.persist_firewall_backup({"dir": str(tmp_path)}, "/bin/nft")
+    assert error.value.code == "backup_failed"
+    assert not list((tmp_path / "backups").glob("*.nft"))
+
+
 def test_the_ports_cannot_inject_a_rule(bench) -> None:
     payload = bench.run("install", "--ports=22;include /etc/passwd,443")
     body = (bench.root / "ddos.nft").read_text(encoding="utf-8")
@@ -257,6 +279,22 @@ def test_probe_drops_garbage_rows(bench) -> None:
     data = bench.run("probe")["data"]
     assert all(isinstance(row["port"], int) for row in data["rows"])
     assert all(row["address"] in {"", "0.0.0.0", "127.0.0.1", "9.9.9.9"} for row in data["rows"])
+
+
+def test_successful_ss_output_never_falls_back_to_host_proc(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load("obhod_ddos_ss_%d" % id(monkeypatch))
+    monkeypatch.setattr(module, "binary", lambda flags, name, fallback: "/bin/ss" if name == "ss" else "")
+    monkeypatch.setattr(module, "run", lambda argv, timeout=60: (0, "not a listener row\n", ""))
+    monkeypatch.setattr(module, "listening_from_proc", lambda: pytest.fail("proc fallback is not allowed"))
+    data = module.probe({})
+    assert data == {"rows": [], "count": 0, "source": "ss"}
+
+
+def test_ss_rows_keep_udp_listener_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load("obhod_ddos_udp_%d" % id(monkeypatch))
+    monkeypatch.setattr(module, "binary", lambda flags, name, fallback: "/bin/ss" if name == "ss" else "")
+    monkeypatch.setattr(module, "run", lambda argv, timeout=60: (0, "udp UNCONN 0 0 0.0.0.0:56583 0.0.0.0:*\n", ""))
+    assert module.ss_rows({}) == [{"port": 56583, "proto": "udp", "process": "", "address": "0.0.0.0"}]
 
 
 def test_the_config_path_cannot_escape(bench) -> None:
@@ -327,7 +365,7 @@ def test_the_agent_has_no_writable_state_outside_its_directory(bench) -> None:
     assert "TMPDIR" not in body
 
 
-def test_ddos_rules_exempt_installed_freeturn_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ddos_rules_do_not_open_installed_freeturn_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     module = load("obhod_ddos_ft_%d" % id(tmp_path))
     ft_conf = tmp_path / "install.conf"
     ft_conf.write_text('LISTEN_PORT="56696"\nPROXY_MODE="udp"\n', encoding="utf-8")
@@ -347,8 +385,8 @@ def test_ddos_rules_exempt_installed_freeturn_port(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(module.os.path, "isfile", fake_isfile)
     monkeypatch.setattr("builtins.open", fake_open, raising=False)
     rules = module.rules_text(module.policy_from({}, {}), {})
-    assert "udp dport 56696 accept" in rules
-    assert rules.index("udp dport 56696 accept") > rules.index("ip saddr @rkn_v4 counter drop")
+    assert "udp dport 56696 accept" not in rules
+    assert "udp dport != 56583 ip saddr @udp_flood counter drop" in rules
 
 
 def test_protocol_matches_bot_transport(bench) -> None:

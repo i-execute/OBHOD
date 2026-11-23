@@ -1672,44 +1672,8 @@ def port_listening(port, proto="udp"):
     return code == 0 and bool(text.strip())
 
 
-DDOS_NFT_PATH = "/etc/obhod/ddos.nft"
 WG_IFACE_PATH = "/sys/class/net/ft-wg0"
 WG_CONF_PATH = "/etc/wireguard/ft-wg0.conf"
-
-
-def ddos_nft_file_sync(port, protos, nft_path=DDOS_NFT_PATH):
-    if not nft_path or not os.path.isfile(nft_path) or os.path.islink(nft_path):
-        return
-    try:
-        with open(nft_path, "r", encoding="utf-8", errors="replace") as handle:
-            text = handle.read(262144)
-    except OSError:
-        return
-    missing = [proto for proto in protos if ("%s dport %d accept" % (proto, port)) not in text]
-    if not missing:
-        return
-    lines = text.splitlines()
-    inserted = False
-    out = []
-    for line in lines:
-        out.append(line)
-        if not inserted and 'iifname "lo" accept' in line:
-            for proto in missing:
-                out.append("    %s dport %d accept" % (proto, port))
-            inserted = True
-    if not inserted:
-        return
-    folder = os.path.dirname(nft_path)
-    try:
-        fd, temp = tempfile.mkstemp(dir=folder, prefix=".ddos-", suffix=".nft")
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(out) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temp, 0o600)
-        os.replace(temp, nft_path)
-    except OSError:
-        return
 
 
 def _nft_chain_blocks_port(joined, proto, port):
@@ -1842,17 +1806,17 @@ def ensure_apply_port_open(flags, body):
         or "udp"
     ).strip().lower()
     protos = ["udp", "tcp"] if mode == "tcp" else ["udp"]
-    if shutil.which("sysctl"):
-        run_tool(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"], timeout=10)
-        _relax_rp_filter()
-    ensure_wg_forward()
-    nft_open_port(port, protos)
     backend = guard_backend()
     if not backend:
         return
     found_mode, found_rules = guard_status(backend, port, ["udp"])
     if found_mode == "vk" and found_rules > 0:
         return
+    if shutil.which("sysctl"):
+        run_tool(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"], timeout=10)
+        _relax_rp_filter()
+    ensure_wg_forward()
+    nft_open_port(port, protos)
     if backend in {"ufw", "firewalld"} and shutil.which("iptables") and iptables_chain_present():
         for proto in protos:
             while run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])[0] == 0:

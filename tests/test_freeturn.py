@@ -368,6 +368,17 @@ def test_agent_ensure_apply_port_open_handles_normalized_flags_and_nft(monkeypat
     assert ["ufw", "allow", "56000/udp"] in executed
 
 
+def test_agent_keeps_the_trusted_peer_firewall_authoritative(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = load_agent()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(agent, "guard_backend", lambda: "ufw")
+    monkeypatch.setattr(agent, "guard_status", lambda backend, port, protos: ("vk", 3))
+    monkeypatch.setattr(agent, "run_tool", lambda argv, timeout=30: (calls.append(list(argv)) or (0, "")))
+    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/sbin/" + name)
+    agent.ensure_apply_port_open({"listen_port": "56583", "mode": "udp"}, {"data": {}})
+    assert calls == []
+
+
 def test_ft_state_migrates_legacy_udp_links_to_tcp() -> None:
     from BOT.freeturn import FtState
 
@@ -1111,14 +1122,7 @@ def test_sbin_path_and_systemd_run_fallback_recover_firewall_and_ddos_nft(monkey
     assert "-E" in seen_cmds[0]
     assert seen_cmds[1][0] == str(ufw_bin)
 
-    nft_file = tmp_path / "ddos.nft"
-    nft_file.write_text(
-        'table inet obhod_ddos {\n  chain input {\n    iifname "lo" accept\n    udp dport 1-65535 drop\n  }\n}\n',
-        encoding="utf-8",
-    )
-    module.ddos_nft_file_sync(56000, ["udp"], str(nft_file))
-    updated = nft_file.read_text(encoding="utf-8")
-    assert "udp dport 56000 accept" in updated
+    assert not hasattr(module, "ddos_nft_file_sync")
 
 
 def test_tcp_mode_kcp_flags_external_backend_validation_and_owner_link_refresh() -> None:

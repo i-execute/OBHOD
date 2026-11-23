@@ -144,6 +144,7 @@ class TunnelState:
     have_node_key: bool = False
     tags: list[str] = field(default_factory=list)
     public_ip: str = ""
+    tailscale_ip: str = ""
     approval_url: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -159,6 +160,7 @@ class TunnelState:
             "have_node_key": bool(self.have_node_key),
             "tags": [str(item)[:56] for item in self.tags[:8]],
             "public_ip": self.public_ip[:64],
+            "tailscale_ip": self.tailscale_ip[:64],
             "approval_url": self.approval_url[:200],
         }
 
@@ -178,6 +180,7 @@ class TunnelState:
             have_node_key=bool(data.get("have_node_key", False)),
             tags=[str(item)[:56] for item in raw_tags[:8]] if isinstance(raw_tags, list) else [],
             public_ip=str(data.get("public_ip", "") or "")[:64],
+            tailscale_ip=str(data.get("tailscale_ip", "") or "")[:64],
             approval_url=str(data.get("approval_url", "") or "")[:200],
         )
 

@@ -225,6 +225,14 @@ def test_an_allowed_port_cannot_hide_a_panel() -> None:
     assert antiddos.exposure(rows, allow=[54321])[0].code == "panel"
 
 
+def test_fixed_vk_exception_is_rendered_but_not_persisted_as_policy() -> None:
+    policy = antiddos.Policy(rkn_allow=["5.143.224.2", "85.217.140.0/24"]).normalise()
+    assert policy.rkn_allow == ["5.143.224.2"]
+    assert antiddos.VK_CALLS_ALLOW not in policy.to_dict()["rkn_allow"]
+    table = antiddos.nft_table(policy, rkn_v4=[], rkn_v6=[])
+    assert antiddos.VK_CALLS_ALLOW in table
+
+
 def test_exposure_hint_names_the_worst_thing_first() -> None:
     rows = [
         {"port": 8080, "proto": "tcp", "process": "", "address": "0.0.0.0"},
@@ -263,6 +271,27 @@ def test_proc_listening_parsing() -> None:
 def test_proc_listening_survives_garbage() -> None:
     assert antiddos.listening_from_proc("nonsense\n\x00\x01", "") == []
     assert antiddos.listening_from_proc("", "") == []
+
+
+def test_proc_tcp6_decodes_loopback_and_wildcard_addresses() -> None:
+    body = (
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+        "   0: 00000000000000000000000001000000:01BB 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 123 1\n"
+        "   1: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 124 1\n"
+    )
+    rows = antiddos.listening_from_proc("", body)
+    assert [(row["address"], row["port"]) for row in rows] == [("::1", 443), ("::", 8080)]
+
+
+def test_socket_rows_deduplicate_without_reordering_exposure() -> None:
+    rows = antiddos.socket_rows(
+        [
+            {"port": 443, "proto": "tcp", "process": "xray", "address": "0.0.0.0"},
+            {"port": 22, "proto": "tcp", "process": "sshd", "address": "0.0.0.0"},
+            {"port": 443, "proto": "tcp", "process": "xray", "address": "0.0.0.0"},
+        ]
+    )
+    assert [(row["port"], row["process"]) for row in rows] == [(443, "xray"), (22, "sshd")]
 
 
 def test_the_ddos_kind_is_switchable_and_delivered() -> None:

@@ -20,6 +20,7 @@ from typing import Any
 from goygram import GoyGram
 
 from . import antiddos, commands, cores, dscreens, ftscreens, i18n, inline, ipscan, notify, screens, serverless, subs, ui, vkscreens, xscreens
+from .cloudflared import CloudflaredError
 from .version import VERSION
 from .config import Config, ConfigError
 from .dbg import DebugPanel
@@ -31,6 +32,7 @@ from .panel import PanelError, XrayPanel, state_report
 from .audit import Audit
 from .seclog import SecurityLog
 from .ratelimit import CALLBACK_LIMIT, CLAIM_LIMIT, EXPENSIVE_LIMIT, INLINE_LIMIT, MESSAGE_LIMIT, Limiter
+from .runtime import literal_hostname
 from .shell import LocalShell, ShellError
 from .store import State, Store
 from .update import UpdateError, Updater
@@ -367,6 +369,67 @@ class Bot:
 
     def address(self) -> str:
         return self.state.xray.sub_address or public_address() or ""
+
+    def subscription_endpoint_signature(self) -> tuple[str, str, str, str]:
+        xr = self.state.xray
+        return (
+            str(xr.sub_address or ""),
+            str(xr.tunnel_host or ""),
+            str(getattr(xr, "tunnel_address", "") or ""),
+            str(self.xray.subscription_tag or ""),
+        )
+
+    async def refresh_runtime_identity(self, reason: str = "startup") -> dict[str, str]:
+        before = self.subscription_endpoint_signature()
+        old_hostname = str(getattr(self.state, "hostname", "") or "")
+        fresh_hostname = await asyncio.to_thread(literal_hostname)
+        hostname_changed = bool(fresh_hostname and fresh_hostname != old_hostname)
+        tag_changed = False
+        if fresh_hostname:
+            self.state.hostname = fresh_hostname
+            tag_changed = self.xray.refresh_hostname_tag(fresh_hostname)
+        detected_ip = public_address()
+        address_changed = self.xray.adopt_public_ip(detected_ip) if detected_ip else False
+        try:
+            tunnel_changed = await self.xray.refresh_tunnel_meta()
+        except Exception as exc:
+            log.debug("runtime tunnel identity refresh skipped: %s", type(exc).__name__)
+            tunnel_changed = False
+        cloudflared_changed = False
+        try:
+            cloudflared_state = await self.xray.cloudflared.status(self.state.ssh)
+            if cloudflared_state.to_dict() != self.state.cloudflared.to_dict():
+                self.state.cloudflared = cloudflared_state
+                cloudflared_changed = True
+        except CloudflaredError as exc:
+            log.debug("Cloudflared status refresh skipped: %s", exc.code)
+        except Exception as exc:
+            log.debug("Cloudflared status refresh skipped: %s", type(exc).__name__)
+        after = self.subscription_endpoint_signature()
+        endpoint_changed = before[:3] != after[:3]
+        publication_changed = before != after
+        if hostname_changed or tag_changed or address_changed or tunnel_changed or cloudflared_changed:
+            self.save()
+        if publication_changed:
+            try:
+                await self.subs_sync(force=True)
+            except Exception as exc:
+                log.debug("subscription endpoint refresh skipped: %s", type(exc).__name__)
+        should_alert = endpoint_changed and any(before[:3])
+        if should_alert:
+            target = notify.delivery_target(self) or int(self.admin_id or 0)
+            if target:
+                try:
+                    await self.send(target, xscreens.subscription_endpoint_alert(self.xray.view(), before, after, reason=reason))
+                except Exception as exc:
+                    log.debug("subscription endpoint alert skipped: %s", type(exc).__name__)
+        return {
+            "hostname": fresh_hostname,
+            "hostname_changed": "yes" if hostname_changed else "no",
+            "endpoint_changed": "yes" if endpoint_changed else "no",
+            "tailscale_address": after[2],
+            "address": after[0],
+        }
 
     def save(self) -> None:
         self.store.save(self.state)
@@ -835,6 +898,10 @@ class Bot:
 
     async def run(self) -> None:
         app = await self.boot()
+        try:
+            await self.refresh_runtime_identity("startup")
+        except Exception as exc:
+            log.debug("startup runtime identity refresh skipped: %s", type(exc).__name__)
         await self.check_inline_mode()
         if self.xray.tgcloud_token and not self.serverless_digest:
             try:

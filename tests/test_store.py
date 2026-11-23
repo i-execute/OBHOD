@@ -15,7 +15,11 @@ def test_state_roundtrip() -> None:
     state.ssh.port = 2200
     state.admin_id = 999
     state.log_tail = 500
+    state.hostname = "node-a"
     state.sub_port = 2097
+    state.cloudflared.installed = True
+    state.cloudflared.service = "active"
+    state.cloudflared.url = "https://short.trycloudflare.com"
     state.xray.sub_address = "vpn.example.org"
     state.xray.log_level = "debug"
     inbound = new_inbound("vless", 443, "xhttp", "tls")
@@ -25,7 +29,9 @@ def test_state_roundtrip() -> None:
     assert clone.ssh.port == 2200
     assert clone.admin_id == 999
     assert clone.log_tail == 500
+    assert clone.hostname == "node-a"
     assert clone.sub_port == 2097
+    assert clone.cloudflared.active and clone.cloudflared.url == "https://short.trycloudflare.com"
     assert clone.xray.sub_address == "vpn.example.org"
     assert clone.xray.log_level == "debug"
     assert clone.xray.inbounds[0].network == "xhttp"

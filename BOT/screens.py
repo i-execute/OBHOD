@@ -119,6 +119,7 @@ def home(view: View) -> Any:
     blocks = banner(view, t)
     blocks.append(table(core_rows(view, t), (t("HOME_SUMMARY_TITLE"), t("HOME_CORE_TABLE2"))))
     facts = [
+        ("info", t("HOME_HOSTNAME"), code(str(getattr(state, "hostname", "") or t("UI_NOT_SET")))),
         ("info", t("HOME_LABEL_INBOUNDS"), code(len(xray.inbounds))),
         ("link", t("HOME_LABEL_SUBS"), code(t("UI_ON") if xray.sub_enabled else t("UI_OFF"))),
         ("shield", t("HOME_LABEL_FAIL2BAN"), code(t("UI_ON") if xray.fail2ban_enabled else t("UI_OFF"))),

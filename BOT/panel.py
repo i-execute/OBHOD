@@ -6,13 +6,14 @@ import ipaddress
 import logging
 import os
 import re
-import socket
 from pathlib import Path
 from typing import Any
 
 from . import antiddos, i18n, inline, portguard, screens, serverless, subs, xscreens
+from .cloudflared import CloudflaredControl, CloudflaredError
 from .inline import InlineError
 from .models import ModelError
+from .runtime import literal_hostname, subscription_tag_for
 from .scan import CONCURRENCY, FAST_SCAN_TARGETS, ScanError, ScanResult, canonical_kind, kind_has_mldsa, normalize_target, normalize_targets, parse_candidates, probe, scan_targets, security_fit, top_fastest_targets, vps_subnet_cidr
 from .xray import (
     DEFAULT_IGNOREIP,
@@ -102,6 +103,7 @@ class XrayPanel:
     def __init__(self, bot: Any, control: XrayControl | None = None) -> None:
         self.bot = bot
         self.control = control or XrayControl()
+        self.cloudflared = CloudflaredControl()
         self.core: dict[str, Any] = dict(bot.state.xray.last_core)
         self.draft: dict[str, str] = {}
         self.results: list[ScanResult] = [ScanResult.from_dict(item) for item in bot.state.xray.scan_results]
@@ -120,20 +122,47 @@ class XrayPanel:
         self.pending_subnet_targets: list[str] = []
         self.tunnel_key = self.load_tunnel_key()
         self.tgcloud_token = self.load_tgcloud_token()
+        current_hostname = literal_hostname() or str(getattr(bot.state, "hostname", "") or "") or "server"
+        self.default_subscription_tag = subscription_tag_for(current_hostname)
         configured_tag = str(getattr(bot.cfg, "extra", {}).get("OBHOD_TAG", "") or "").strip()
-        hostname_tag = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname().split(".", 1)[0]).strip(".-_")[:32] or "server"
-        self.default_subscription_tag = hostname_tag
         if configured_tag and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", configured_tag):
             configured_tag = ""
-        self.subscription_tag = configured_tag or hostname_tag
-        if not configured_tag:
-            try:
-                from .config import write_env_value
-                if getattr(bot.cfg, "env_path", None):
-                    write_env_value(bot.cfg.env_path, "OBHOD_TAG", self.subscription_tag)
-                    bot.cfg.extra["OBHOD_TAG"] = self.subscription_tag
-            except Exception as exc:
-                log.warning("the default Xray subscription tag could not be saved: %s", type(exc).__name__)
+        marker = str(getattr(bot.cfg, "extra", {}).get("OBHOD_TAG_AUTO", "") or "").strip().lower()
+        generated_legacy = {"", subscription_tag_for(str(getattr(bot.state, "hostname", "") or "server")), self.default_subscription_tag}
+        if marker in {"0", "no", "false", "off", "manual"}:
+            self.subscription_tag_auto = False
+        elif marker in {"1", "yes", "true", "on", "auto"}:
+            self.subscription_tag_auto = True
+        else:
+            self.subscription_tag_auto = configured_tag in generated_legacy
+        self.subscription_tag = self.default_subscription_tag if self.subscription_tag_auto else (configured_tag or self.default_subscription_tag)
+        if not configured_tag or (self.subscription_tag_auto and configured_tag != self.subscription_tag):
+            self._store_subscription_tag(self.subscription_tag, automatic=True)
+
+    def _store_subscription_tag(self, tag: str, *, automatic: bool) -> None:
+        try:
+            from .config import write_env_value
+
+            path = getattr(self.bot.cfg, "env_path", None)
+            if path is None:
+                return
+            write_env_value(path, "OBHOD_TAG", tag)
+            write_env_value(path, "OBHOD_TAG_AUTO", "1" if automatic else "0")
+            self.bot.cfg.extra["OBHOD_TAG"] = tag
+            self.bot.cfg.extra["OBHOD_TAG_AUTO"] = "1" if automatic else "0"
+        except Exception as exc:
+            log.warning("the Xray subscription tag could not be saved: %s", type(exc).__name__)
+
+    def refresh_hostname_tag(self, hostname: object) -> bool:
+        raw = str(hostname or "").strip()
+        if not raw:
+            return False
+        self.default_subscription_tag = subscription_tag_for(raw)
+        if not self.subscription_tag_auto or self.subscription_tag == self.default_subscription_tag:
+            return False
+        self.subscription_tag = self.default_subscription_tag
+        self._store_subscription_tag(self.subscription_tag, automatic=True)
+        return True
 
     def subscription_title(self) -> str:
         return subs.title_for_tag(self.subscription_tag)
@@ -142,12 +171,11 @@ class XrayPanel:
         tag = str(value or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", tag):
             raise PanelError("tag must be 1-32 letters, numbers, dots, underscores or hyphens")
-        from .config import write_env_value
         path = getattr(self.bot.cfg, "env_path", None)
         if path is None:
             raise PanelError("the environment file path is unavailable")
-        write_env_value(path, "OBHOD_TAG", tag)
-        self.bot.cfg.extra["OBHOD_TAG"] = tag
+        self._store_subscription_tag(tag, automatic=False)
+        self.subscription_tag_auto = False
         self.subscription_tag = tag
         return tag
 
@@ -392,6 +420,9 @@ class XrayPanel:
             return
         if head == "dom":
             await self.tunnel_action(chat_id, msg_id, arg1)
+            return
+        if head == "cf":
+            await self.cloudflared_action(chat_id, msg_id, arg1)
             return
         if head == "enc":
             await self.encryption_action(chat_id, msg_id, arg1, arg2)
@@ -876,42 +907,48 @@ class XrayPanel:
         self.bot.state.sub_port = current
         return current
 
-    def adopt_public_ip(self, candidate: object) -> None:
+    def adopt_public_ip(self, candidate: object) -> bool:
         raw = str(candidate or "").strip()
-        if not raw or self.state.sub_address:
-            return
+        if not raw:
+            return False
         try:
             parsed = ipaddress.ip_address(raw)
         except ValueError:
-            return
-        if parsed.is_private or parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified or parsed.is_multicast:
-            return
-        cur = self.address()
-        if cur:
-            try:
-                cur_ip = ipaddress.ip_address(cur)
-                if not (cur_ip.is_private or cur_ip.is_loopback or cur_ip.is_link_local):
-                    return
-            except ValueError:
-                return
-        self.state.sub_address = str(parsed)
+            return False
+        if parsed.version != 4 or not parsed.is_global:
+            return False
+        value = str(parsed)
+        if self.state.sub_address == value:
+            return False
+        self.state.sub_address = value
+        return True
 
-    def sync_tunnel_meta(self, tunnel: Any) -> None:
+    def sync_tunnel_meta(self, tunnel: Any) -> bool:
         if tunnel is None:
-            return
+            return False
+        changed = False
         backend = str(getattr(tunnel, "backend", "") or "").strip()
-        if backend:
+        if backend and backend[:24] != self.state.tunnel_backend:
             self.state.tunnel_backend = backend[:24]
+            changed = True
         expiry = str(getattr(tunnel, "key_expiry", "") or "").strip()
         if expiry:
             if expiry != self.state.tunnel_key_expiry:
                 self.state.tunnel_expiry_notified = ""
+                changed = True
             self.state.tunnel_key_expiry = expiry[:32]
         expired = bool(getattr(tunnel, "expired", False))
+        if expired != self.state.tunnel_expired:
+            changed = True
         self.state.tunnel_expired = expired
-        if expired:
+        if expired and self.state.tunnel_enabled:
             self.state.tunnel_enabled = False
-        self.adopt_public_ip(getattr(tunnel, "public_ip", ""))
+            changed = True
+        tailscale_address = str(getattr(tunnel, "tailscale_ip", "") or "").strip()
+        if tailscale_address and tailscale_address != str(getattr(self.state, "tunnel_address", "") or ""):
+            self.state.tunnel_address = tailscale_address[:64]
+            changed = True
+        return self.adopt_public_ip(getattr(tunnel, "public_ip", "")) or changed
 
     async def call_tunnel_up(self, key: str, host_hint: str, port: int, https_port: int) -> Any:
         kwargs: dict[str, Any] = {
@@ -1039,27 +1076,29 @@ class XrayPanel:
         self.save()
         return t("DOM_READY"), ""
 
-    async def refresh_tunnel_meta(self) -> None:
+    async def refresh_tunnel_meta(self) -> bool:
         if not (
             self.state.tunnel_enabled
             or self.state.tunnel_host
             or self.state.tunnel_key_expiry
             or self.state.tunnel_approval_url
         ):
-            return
+            return False
         try:
             tunnel = await self.control.tunnel_status(self.bot.state.ssh)
         except (RpcError, OSError):
-            return
-        self.sync_tunnel_meta(tunnel)
+            return False
+        changed = self.sync_tunnel_meta(tunnel)
+        old_host = self.state.tunnel_host
         if not self.state.tunnel_enabled and getattr(tunnel, "url", ""):
             port = int(self.state.sub_port or 0)
             if port in {0, 80, 443}:
                 port = self.ensure_random_sub_port()
             self.bot.state.sub_port = port
             await self.finalize_tunnel_subs(tunnel, port)
-            return
+            return changed or self.state.tunnel_host != old_host
         self.save()
+        return changed
 
     async def setup_domain_subs(self) -> tuple[str, str]:
         t = self.tr()
@@ -1165,6 +1204,31 @@ class XrayPanel:
             self.save()
         notice = t("DOM_READY") if tunnel is not None and tunnel.healthy() else ""
         await self.render(chat_id, msg_id, self.dom_screen(self.view(notice=notice), tunnel))
+
+    async def cloudflared_action(self, chat_id: int, msg_id: int, action: str) -> None:
+        t = self.tr()
+        try:
+            if action in {"", "status"}:
+                state = await self.cloudflared.status(self.bot.state.ssh)
+            elif action == "install":
+                await self.render(chat_id, msg_id, xscreens.busy_screen(t("CLOUDFLARED_BUSY_INSTALL"), self.bot.state.language))
+                state = await self.cloudflared.install(self.bot.state.ssh, "latest")
+            elif action == "up":
+                await self.render(chat_id, msg_id, xscreens.busy_screen(t("CLOUDFLARED_BUSY_UP"), self.bot.state.language))
+                state = await self.cloudflared.up(self.bot.state.ssh, "http://127.0.0.1:%d" % int(self.state.sub_port or SUB_PORT))
+            elif action == "down":
+                state = await self.cloudflared.down(self.bot.state.ssh)
+            elif action == "logs":
+                state = await self.cloudflared.logs(self.bot.state.ssh)
+            elif action == "remove":
+                state = await self.cloudflared.remove(self.bot.state.ssh)
+            else:
+                state = await self.cloudflared.status(self.bot.state.ssh)
+            self.bot.state.cloudflared = state
+            self.bot.save()
+            await self.render(chat_id, msg_id, xscreens.cloudflared_screen(self.view(), state))
+        except CloudflaredError as exc:
+            await self.render(chat_id, msg_id, xscreens.cloudflared_screen(self.view(error=exc.message), self.bot.state.cloudflared))
 
     async def encryption_action(self, chat_id: int, msg_id: int, ident: str, combo: str) -> None:
         t = self.tr()
@@ -1604,6 +1668,7 @@ class XrayPanel:
         self.core = state_report(state)
         self.bot.state.last_probe = dict(self.core)
         self.save()
+        await self.refresh_identity_after_restart("xray-apply")
         subs_sync_fn = getattr(self.bot, "subs_sync", None)
         if callable(subs_sync_fn):
             try:
@@ -1639,6 +1704,17 @@ class XrayPanel:
             parts.append(t(key, old=old, new=new))
         return " ".join(parts)
 
+    async def refresh_identity_after_restart(self, reason: str) -> None:
+        refresh = getattr(self.bot, "refresh_runtime_identity", None)
+        if not callable(refresh):
+            return
+        try:
+            result = refresh(reason)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            log.debug("runtime identity refresh after %s skipped: %s", reason, type(exc).__name__)
+
     async def run_core(self, chat_id: int, msg_id: int, title: str, action: Any) -> None:
         await self.render(chat_id, msg_id, xscreens.busy_screen(title, self.bot.state.language))
         try:
@@ -1648,6 +1724,7 @@ class XrayPanel:
             return
         self.core = state_report(state)
         self.save()
+        await self.refresh_identity_after_restart("xray-restart")
         await self.render(chat_id, msg_id, xscreens.core_screen(self.view(notice=self.tr()("NOTICE_CORE_DONE", action=title))))
 
     async def purge(self, chat_id: int, msg_id: int) -> None:

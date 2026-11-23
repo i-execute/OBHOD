@@ -933,39 +933,9 @@ heal_system() {
       fi
     fi
     if [ -f /opt/free-turn-proxy/install.conf ]; then
-      local ft_port ft_proto ft_method
-      ft_port="$(awk -F= '$1=="LISTEN_PORT" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
+      local ft_method
       ft_method="$(awk -F= '$1=="INSTALL_METHOD" { gsub(/["\047[:space:]]/, "", $2); print $2; exit }' /opt/free-turn-proxy/install.conf 2>/dev/null || true)"
-      ft_proto="udp"
-      case "$ft_port" in
-        ''|*[!0-9]*) ft_port="" ;;
-      esac
-      if [ -n "$ft_port" ] && [ "$ft_port" -ge 1 ] && [ "$ft_port" -le 65535 ]; then
-        if command -v nft >/dev/null 2>&1 && nft list table inet obhod_ddos >/dev/null 2>&1; then
-          nft flush set inet obhod_ddos conn_flood >/dev/null 2>&1 || true
-          nft flush set inet obhod_ddos udp_flood >/dev/null 2>&1 || true
-          nft flush set inet obhod_ddos port_scan >/dev/null 2>&1 || true
-          if ! nft list table inet obhod_ddos 2>/dev/null | grep -qF "${ft_proto} dport ${ft_port} accept"; then
-            nft insert rule inet obhod_ddos input "${ft_proto}" dport "${ft_port}" accept >/dev/null 2>&1 && ok_line "exempted FreeTurn ${ft_port}/${ft_proto} in obhod_ddos" || true
-          fi
-        fi
-        if ! (command -v iptables >/dev/null 2>&1 && iptables -C INPUT -p "${ft_proto}" --dport "${ft_port}" -j OBHOD-FT >/dev/null 2>&1); then
-          if command -v ufw >/dev/null 2>&1 && LC_ALL=C LANG=C ufw status 2>/dev/null | grep -q "Status: active"; then
-            if ! LC_ALL=C LANG=C ufw status 2>/dev/null | grep -qE "^${ft_port}(/${ft_proto})?[[:space:]]+ALLOW"; then
-              LC_ALL=C LANG=C ufw allow "${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in ufw" || true
-            fi
-          elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null || true)" = "running" ]; then
-            if ! firewall-cmd --query-port="${ft_port}/${ft_proto}" >/dev/null 2>&1; then
-              firewall-cmd --add-port="${ft_port}/${ft_proto}" >/dev/null 2>&1 || true
-              firewall-cmd --permanent --add-port="${ft_port}/${ft_proto}" >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in firewalld" || true
-            fi
-          elif command -v iptables >/dev/null 2>&1; then
-            if ! iptables -C INPUT -p "${ft_proto}" --dport "${ft_port}" -j ACCEPT >/dev/null 2>&1; then
-              iptables -I INPUT 1 -p "${ft_proto}" --dport "${ft_port}" -j ACCEPT >/dev/null 2>&1 && ok_line "opened FreeTurn ${ft_port}/${ft_proto} in iptables" || true
-            fi
-          fi
-        fi
-      fi
+      note_line "FreeTurn trusted-peer firewall remains authoritative; no direct port accept was added"
       if [ "$ft_method" = "docker" ] && command -v docker >/dev/null 2>&1; then
         if docker container inspect free-turn-proxy >/dev/null 2>&1; then
           if [ "$(docker inspect -f '{{.State.Running}}' free-turn-proxy 2>/dev/null || true)" != "true" ]; then
@@ -1138,6 +1108,18 @@ install_exists() {
   return 1
 }
 
+ensure_ddos_allowlist() {
+  local allowlist="$CONF_DIR/ddos_allowlist.conf"
+  mkdir -p "$CONF_DIR"
+  if [ ! -f "$allowlist" ]; then
+    printf '%s\n' '193.203.43.0/24' >"$allowlist"
+    chmod 600 "$allowlist"
+  elif ! grep -qx '193.203.43.0/24' "$allowlist"; then
+    printf '\n%s\n' '193.203.43.0/24' >>"$allowlist"
+    chmod 600 "$allowlist"
+  fi
+}
+
 stop_before_rebuild() {
   if [ -n "$SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
     if systemctl is-active --quiet obhod.service 2>/dev/null; then
@@ -1157,6 +1139,9 @@ cmd_install() {
     require_root
   fi
   validate_install_paths
+  if [ "$DEV" = "0" ]; then
+    ensure_ddos_allowlist
+  fi
   ui_init
   STEP_TOTAL=7
   banner

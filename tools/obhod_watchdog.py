@@ -13,6 +13,7 @@ BASELINE = ROOT / "tools" / "obhod_protection.baseline.json"
 PROTECTED = (
     "BOT/antiddos.py",
     "BOT/app.py",
+    "BOT/cloudflared.py",
     "BOT/audit.py",
     "BOT/guard.py",
     "BOT/inline.py",
@@ -24,6 +25,7 @@ PROTECTED = (
     "BOT/shell.py",
     "BOT/update.py",
     "BOT/vkcalls.py",
+    "Storage/remote/cloudflared_agent.py",
     "Storage/remote/ddos_agent.py",
     "Storage/remote/fail2ban_agent.py",
     "Storage/remote/freeturn_agent.py",
@@ -226,6 +228,18 @@ def check_release_pins() -> list[str]:
         problems.append("freeturn_agent.py must read the release checksums from github")
     if "checksums.txt" not in bot:
         problems.append("freeturn.py must read the release checksums of a newer tag")
+    cloudflared = read(ROOT / "Storage" / "remote" / "cloudflared_agent.py")
+    cloudflared_version = str(literal("PINNED_VERSION", cloudflared) or "")
+    cloudflared_digests = literal("PINNED_SHA256", cloudflared) or {}
+    if not re.match(r"^\d{4}\.\d{1,2}\.\d{1,2}$", cloudflared_version):
+        problems.append("cloudflared_agent.py must keep a pinned fallback version")
+    for arch in ("amd64", "arm64"):
+        if not HEX64.match(str(cloudflared_digests.get(arch, "") or "")):
+            problems.append("cloudflared_agent.py has no pinned digest for %s" % arch)
+    if "https://api.github.com" not in cloudflared or "https://github.com" not in cloudflared:
+        problems.append("cloudflared_agent.py must use only verified github release metadata")
+    if "clean_local_url" not in cloudflared or "--no-autoupdate" not in cloudflared:
+        problems.append("cloudflared_agent.py must restrict quick tunnels to a local managed endpoint")
     core = read(ROOT / "BOT" / "xray.py")
     if "VERSION_CHOICES = (XRAY_VERSION, LATEST_CHOICE)" not in core:
         problems.append("xray.py must offer the single pinned version and latest, nothing else")

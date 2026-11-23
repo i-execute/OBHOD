@@ -565,18 +565,19 @@ def test_no_nft_leaves_persisted_rules_unchanged(tmp_path: Path, monkeypatch: py
     assert path.read_text() == "old rules\n"
 
 
-def test_disable_refuses_to_report_success_when_table_might_remain(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_disable_refuses_to_report_success_when_table_might_remain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     m = agent()
+    flags = {"dir": str(tmp_path)}
     monkeypatch.setattr(m, "binary", lambda flags, name, fallback: "/bin/nft")
     monkeypatch.setattr(m, "run", lambda argv, timeout=60: (1, "", "permission denied"))
     with pytest.raises(m.DDosError) as error:
-        m.disable({})
-    assert error.value.code == "disable_failed"
+        m.disable(flags)
+    assert error.value.code == "backup_failed"
     monkeypatch.setattr(m, "run", lambda argv, timeout=60: ((1, "", "No such file") if argv[1] == "delete" else (0, "table ip unrelated\n", "")))
-    assert m.disable({}) == {"disabled": True}
+    assert m.disable(flags) == {"disabled": True}
     monkeypatch.setattr(m, "run", lambda argv, timeout=60: ((1, "", "denied") if argv[1] == "delete" else (0, "table inet obhod_ddos\n", "")))
     with pytest.raises(m.DDosError):
-        m.disable({})
+        m.disable(flags)
 
 
 def test_full_allowlist_fails_without_mutating_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1562,6 +1563,7 @@ def test_post_replace_write_error_restores_previous_file(tmp_path: Path, monkeyp
     elif target_type == "rules":
         monkeypatch.setattr(m, "ssh_safety_entries", lambda flags: [])
         monkeypatch.setattr(m, "nft_checkpoint", lambda *args: "")
+        monkeypatch.setattr(m, "persist_firewall_backup", lambda *args: str(tmp_path / "backup.nft"))
         monkeypatch.setattr(m, "run", lambda argv, timeout=60: ((0, "", "") if argv[1:2] == ["-c"] else pytest.fail("must not load rules")))
         operation = lambda: m.apply_rules(flags, m.policy_from({}, {}))
     else:
@@ -1611,6 +1613,7 @@ def test_sets_update_restores_saved_file_after_write_error(tmp_path: Path, monke
         return result
     monkeypatch.setattr(m, "write_atomic", fail_once)
     monkeypatch.setattr(m, "nft_checkpoint", lambda *args: "table inet obhod_ddos { set rkn_v4 { } }")
+    monkeypatch.setattr(m, "persist_firewall_backup", lambda *args: str(tmp_path / "backup.nft"))
     monkeypatch.setattr(m, "run", lambda argv, timeout=60: ((0, "", "") if argv[1:2] == ["-c"] else pytest.fail("must not load rules")))
     with pytest.raises(m.DDosError) as exc:
         m.update_rkn_sets(flags, m.policy_from({}, {}), ["5.143.224.0/24"], [])

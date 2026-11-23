@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -886,6 +887,15 @@ def test_the_tunnel_check_reports_the_funnel(tmp_path: Path) -> None:
     html = bot.rendered[-1].to_html()
     assert "obhod.tail1234.ts.net" in html
     assert i18n.t("DOM_READY") in html
+
+
+def test_tailscale_address_is_persisted_separately_from_public_subscription_ip(tmp_path: Path) -> None:
+    item, bot = panel(tmp_path)
+    bot.state.xray.sub_address = "1.1.1.1"
+    tunnel = SimpleNamespace(backend="tailscale", key_expiry="", expired=False, tailscale_ip="100.64.0.42", public_ip="100.64.0.42")
+    assert item.sync_tunnel_meta(tunnel)
+    assert bot.state.xray.tunnel_address == "100.64.0.42"
+    assert bot.state.xray.sub_address == "1.1.1.1"
 
 
 def test_a_bad_hostname_stops_the_tunnel(tmp_path: Path) -> None:

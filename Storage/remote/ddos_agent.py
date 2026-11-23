@@ -19,6 +19,13 @@ VERSION = "1.0.0"
 TABLE = "obhod_ddos"
 CONF_DIR = "/etc/obhod"
 CONF = os.path.join(CONF_DIR, "ddos.json")
+ALLOWLIST_NAME = "ddos_allowlist.conf"
+VK_CALLS_ALLOW = "193.203.43.0/24"
+VK_CALLS_FREETURN_UDP_PORT = 56583
+MODAT_NETWORKS = (
+    ipaddress.ip_network("85.217.140.0/24"),
+    ipaddress.ip_network("85.217.149.0/24"),
+)
 RULES = os.path.join(CONF_DIR, "ddos.nft")
 SYSCTL = "/etc/sysctl.d/99-obhod-ddos.conf"
 UNIT_DIR = "/etc/systemd/system"
@@ -421,6 +428,64 @@ def rkn_path(flags):
     return os.path.join(path_of(flags), "rkn_subnets.json")
 
 
+def allowlist_path(flags):
+    override = str(flags.get("allowlist", "") or "")
+    if override:
+        if not os.path.isabs(override) or ".." in override.split(os.sep):
+            raise DDosError("bad_path", "the allowlist must be a simple absolute path", "arg")
+        return override
+    return os.path.join(path_of(flags), ALLOWLIST_NAME)
+
+
+def allowlist_text(entries=None):
+    values = exempt_entries(entries, include_vk=True)
+    return (
+        "# OBHOD persistent Anti-DDoS allowlist.\n"
+        "# Source of truth for narrowly scoped exemptions; one CIDR per line.\n"
+        "# VK Calls only: keep this exact /24. Do not add Modat networks here.\n"
+        + "\n".join(values)
+        + "\n"
+    )
+
+
+def is_forbidden_exemption(value):
+    try:
+        network = ipaddress.ip_network(str(value or ""), strict=False)
+    except ValueError:
+        return True
+    return isinstance(network, ipaddress.IPv4Network) and any(network.overlaps(blocked) for blocked in MODAT_NETWORKS)
+
+
+def persistent_allowlist(flags, create=True):
+    target = allowlist_path(flags)
+    raw = ""
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            raw = handle.read(MAX_OUTPUT + 1)
+        if len(raw) > MAX_OUTPUT:
+            raise DDosError("too_large", "persistent allowlist is too large", "allowlist")
+    except FileNotFoundError:
+        if not create:
+            return [VK_CALLS_ALLOW]
+    except OSError as exc:
+        raise DDosError("fs", "cannot read persistent allowlist: " + str(exc)[:120], "allowlist") from exc
+    entries = []
+    for line in raw.splitlines():
+        token = line.split("#", 1)[0].strip()
+        if not token:
+            continue
+        cleaned = clean_entry(token, allow_private=True)
+        if cleaned and not is_forbidden_exemption(cleaned) and cleaned not in entries:
+            entries.append(cleaned)
+    if VK_CALLS_ALLOW not in entries:
+        entries.insert(0, VK_CALLS_ALLOW)
+    if create:
+        wanted = allowlist_text(entries)
+        if raw != wanted:
+            write_atomic(target, wanted, 0o600)
+    return entries[:MAX_CUSTOM_ENTRIES]
+
+
 def utc_stamp():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -499,6 +564,19 @@ def parse_entries(raw, allow_private=False):
             if len(out) >= MAX_CUSTOM_ENTRIES:
                 break
     return out
+
+
+def exempt_entries(entries, include_vk=False):
+    values = list(entries or []) if isinstance(entries, (list, tuple, set)) else [entries]
+    if include_vk:
+        values.append(VK_CALLS_ALLOW)
+    out = []
+    for item in parse_entries(values, allow_private=True):
+        if is_forbidden_exemption(item):
+            continue
+        if item not in out:
+            out.append(item)
+    return out[:MAX_CUSTOM_ENTRIES]
 
 
 def split_collapsed_entries(entries, allow_private=False):
@@ -730,10 +808,10 @@ def policy_from(raw, flags):
         "ports": ports_text(base.get("ports")) or "22,443",
         "rkn_enabled": truth(base.get("rkn_enabled"), True),
         "rkn_logging": truth(base.get("rkn_logging"), True),
-        "rkn_allow": parse_entries(base.get("rkn_allow"), allow_private=True),
+        "rkn_allow": exempt_entries(base.get("rkn_allow")),
         "rkn_exceptions": parse_rkn_exceptions(base.get("rkn_exceptions")),
         "manual_bans": parse_entries(base.get("manual_bans"), allow_private=False),
-        "unbanned": parse_entries(base.get("unbanned"), allow_private=True)[:64],
+        "unbanned": exempt_entries(base.get("unbanned"))[:64],
     }
     return policy
 
@@ -761,39 +839,13 @@ def parse_rkn_exceptions(raw):
     return out
 
 
-def port_set(policy):
-    return "{ " + ", ".join(policy["ports"].split(",")) + " }"
+def port_set(policy, ports=None):
+    values = list(ports if ports is not None else policy["ports"].split(","))
+    return "{ " + ", ".join(str(item) for item in values) + " }"
 
 
-def freeturn_accept_lines(flags=None):
-    if flags and path_of(flags) != CONF_DIR:
-        return []
-    conf = "/opt/free-turn-proxy/install.conf"
-    if not os.path.isfile(conf):
-        return []
-    port = 0
-    mode = "udp"
-    try:
-        with open(conf, "r", encoding="utf-8") as handle:
-            for raw in handle:
-                line = raw.strip()
-                if "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if key == "LISTEN_PORT" and value.isdigit() and 1 <= int(value) <= 65535:
-                    port = int(value)
-                elif key in ("PROXY_MODE", "MODE") and value.lower() in ("udp", "tcp"):
-                    mode = value.lower()
-    except OSError:
-        return []
-    if not port:
-        return []
-    out = ["    udp dport %d accept" % port]
-    if mode == "tcp":
-        out.append("    tcp dport %d accept" % port)
-    return out
+def udp_detector_ports(policy):
+    return [item for item in policy["ports"].split(",") if int(item) != VK_CALLS_FREETURN_UDP_PORT]
 
 
 def render_interval_set(name, family_type, elements):
@@ -858,7 +910,8 @@ def ssh_safety_entries(flags):
 
 def rules_text(policy, flags=None, ssh_safety=None):
     active_flags = flags or {}
-    allow_v4, allow_v6 = split_collapsed_entries(policy.get("rkn_allow") or [], allow_private=True)
+    durable_allow = persistent_allowlist(active_flags, create=False)
+    allow_v4, allow_v6 = split_collapsed_entries(exempt_entries([*(policy.get("rkn_allow") or []), *durable_allow], include_vk=True), allow_private=True)
     ban_v4, ban_v6 = split_collapsed_entries(policy.get("manual_bans") or [], allow_private=False)
     rkn_v4, rkn_v6 = [], []
     if policy.get("rkn_enabled", True):
@@ -903,6 +956,10 @@ def rules_text(policy, flags=None, ssh_safety=None):
             "    ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept",
         ]
     )
+    if allow_v4:
+        lines.append("    ip saddr @rkn_allow_v4 accept")
+    if allow_v6:
+        lines.append("    ip6 saddr @rkn_allow_v6 accept")
     if safe4:
         lines.append("    ip saddr . tcp dport @safe_ssh4 accept")
     if safe6:
@@ -914,10 +971,6 @@ def rules_text(policy, flags=None, ssh_safety=None):
             "    tcp flags & (fin|syn|psh|rst|ack|urg) == (fin|syn|psh|urg) counter drop",
         ]
     )
-    if allow_v4:
-        lines.append("    ip saddr @rkn_allow_v4 accept")
-    if allow_v6:
-        lines.append("    ip6 saddr @rkn_allow_v6 accept")
     if ban_v4:
         lines.append("    ip saddr @manual_ban_v4 counter drop")
     if ban_v6:
@@ -935,13 +988,21 @@ def rules_text(policy, flags=None, ssh_safety=None):
             lines.append('    ip6 saddr @rkn_v6 limit rate 10/minute burst 5 packets log prefix "OBHOD-RKN-v6: " level warn')
         lines.append("    ip6 saddr @rkn_v6 counter drop")
     for name in SETS:
-        lines.append("    ip saddr @%s counter drop" % name)
-    lines.extend(freeturn_accept_lines(flags))
+        if name == "udp_flood":
+            lines.append("    udp dport != %d ip saddr @%s counter drop" % (VK_CALLS_FREETURN_UDP_PORT, name))
+        else:
+            lines.append("    ip saddr @%s counter drop" % name)
+    detector_ports = udp_detector_ports(policy)
     lines.extend(
         [
             "    ct state new tcp flags & (fin|syn|rst|ack) == syn update @syn_flood { ip saddr limit rate over %d/second burst %d packets } counter accept" % (policy["syn_rate"], policy["syn_burst"]),
             "    ct state new update @conn_flood { ip saddr limit rate over %d/second burst %d packets }" % (policy["conn_rate"], policy["conn_burst"]),
-            "    udp dport %s update @udp_flood { ip saddr limit rate over %d/second burst %d packets }" % (port_set(policy), policy["udp_rate"], policy["udp_burst"]),
+        ]
+    )
+    if detector_ports:
+        lines.append("    udp dport %s update @udp_flood { ip saddr limit rate over %d/second burst %d packets }" % (port_set(policy, detector_ports), policy["udp_rate"], policy["udp_burst"]))
+    lines.extend(
+        [
             "    icmp type echo-request update @icmp_flood { ip saddr limit rate over %d/second burst %d packets }" % (policy["icmp_rate"], policy["icmp_burst"]),
             "    tcp dport != %s tcp flags & (fin|syn|rst|ack) == syn update @port_scan { ip saddr limit rate over 60/second burst 60 packets }" % port_set(policy),
             "    counter accept",
@@ -1312,6 +1373,9 @@ def status(flags):
     policy = policy_from(read_json(conf_path(flags)), {})
     body, why = table_text(flags)
     present = bool(body)
+    inspection = table_inspection(flags, body)
+    if not present and inspection == "absent":
+        why = ""
     counters = counters_of(body) if present else {}
     rkn_v4, rkn_v6, rkn_updated = load_rkn_subnets(flags)
     rkn_on = bool(present and ("@rkn_v4" in body or "@rkn_v6" in body))
@@ -1320,7 +1384,7 @@ def status(flags):
         "installed": os.path.isfile(rules_path(flags)),
         "enabled": bool(policy.get("enabled", True)),
         "table": present,
-        "table_inspection": table_inspection(flags, body),
+        "table_inspection": inspection,
         "policy": policy,
         "policy_sha256": policy_digest(policy),
         "counters": counters,
@@ -1351,6 +1415,42 @@ def status(flags):
         payload["notice"] = "rules are not written yet"
     return payload
 
+
+
+def persist_firewall_backup(flags, tool):
+    directory = os.path.join(path_of(flags), "backups")
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        raise DDosError("backup_failed", "cannot create firewall backup directory: " + str(exc)[:120], "backup") from None
+    code, body, err = run([tool, "list", "ruleset"])
+    if code != 0:
+        tables_code, tables, tables_err = run([tool, "list", "tables"])
+        rows = [line.strip() for line in tables.splitlines() if line.strip()]
+        if tables_code != 0 or rows:
+            raise DDosError("backup_failed", "cannot save firewall backup safely: " + (err or tables_err or "ruleset unavailable")[:120], "backup")
+        body = ""
+    if len(body) >= MAX_OUTPUT:
+        raise DDosError("backup_failed", "cannot save firewall backup safely: ruleset is too large", "backup")
+    target = ""
+    try:
+        handle, target = tempfile.mkstemp(prefix="nft-before-", suffix=".nft", dir=directory)
+        os.close(handle)
+        write_atomic(target, body, 0o600)
+    except (OSError, DDosError) as exc:
+        if target:
+            try:
+                os.unlink(target)
+            except OSError:
+                pass
+        raise DDosError("backup_failed", "cannot save firewall backup safely: " + str(exc)[:120], "backup") from None
+    try:
+        entries = sorted(os.path.join(directory, item) for item in os.listdir(directory) if item.startswith("nft-before-") and item.endswith(".nft"))
+        for stale in entries[:-12]:
+            os.unlink(stale)
+    except OSError:
+        pass
+    return target
 
 
 def nft_checkpoint(flags, tool):
@@ -1407,6 +1507,7 @@ def add_ssh_safety(body, safety):
 
 
 def apply_rules(flags, policy, prepared=None):
+    persistent_allowlist(flags, create=True)
     tool = ensure_nft(flags)
     target = rules_path(flags)
     body = rules_text(policy, flags) if prepared is None else prepared
@@ -1419,6 +1520,7 @@ def apply_rules(flags, policy, prepared=None):
         raise DDosError("no_nft", "nft is not installed; existing rules were left unchanged", "apply")
     os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
     snapshot = nft_checkpoint(flags, tool)
+    persist_firewall_backup(flags, tool)
     descriptor, check = tempfile.mkstemp(prefix=".obhod-check-", suffix=".nft", dir=os.path.dirname(target) or ".")
     os.close(descriptor)
     transaction = ("delete table inet %s\n" % TABLE if snapshot else "") + live_body
@@ -1492,6 +1594,7 @@ def restore_rules(flags):
     safety = ssh_safety_entries(flags)
     body = add_ssh_safety(body, safety)
     snapshot = nft_checkpoint(flags, tool)
+    persist_firewall_backup(flags, tool)
     transaction = ("delete table inet %s\n" % TABLE if snapshot else "") + body
     fd, target = tempfile.mkstemp(prefix=".ddos-restore-", suffix=".nft", dir=path_of(flags))
     try:
@@ -1699,6 +1802,7 @@ def update_rkn_sets(flags, policy, v4, v6):
                 raise DDosError("too_large", "saved rules are too large to update safely", "apply")
     except OSError:
         return False
+    persist_firewall_backup(flags, tool)
     fd, transaction = tempfile.mkstemp(prefix=".rkn-update-", suffix=".nft", dir=path_of(flags))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -1921,6 +2025,8 @@ def unban_cmd(flags):
     cleaned = clean_entry(raw_ip, allow_private=True)
     if not cleaned:
         raise DDosError("bad_ip", "invalid IP or CIDR", "unban")
+    if is_forbidden_exemption(cleaned):
+        raise DDosError("blocked_exemption", "this network is never allowlisted or unbanned", "unban")
     policy = policy_from(read_json(conf_path(flags)), {})
     policy["manual_bans"] = [item for item in (policy.get("manual_bans") or []) if item != cleaned]
     allows = list(policy.get("rkn_allow") or [])
@@ -1966,6 +2072,8 @@ def mutate_list_cmd(flags, field_name, add_mode, allow_private, stage_name):
     cleaned = clean_entry(raw_ip, allow_private=allow_private)
     if not cleaned:
         raise DDosError("bad_ip", "invalid IP or CIDR", stage_name)
+    if allow_private and is_forbidden_exemption(cleaned):
+        raise DDosError("blocked_exemption", "this network is never allowlisted or unbanned", stage_name)
     policy = policy_from(read_json(conf_path(flags)), {})
     items = list(policy.get(field_name) or [])
     if add_mode:
@@ -1984,6 +2092,7 @@ def disable(flags):
     tool = binary(flags, "nft", NFT)
     if not tool:
         raise DDosError("no_nft", "cannot confirm removal: nft is unavailable", "disable")
+    persist_firewall_backup(flags, tool)
     code, out, err = run([tool, "delete", "table", "inet", TABLE])
     if code != 0:
         list_code, tables, list_err = run([tool, "list", "tables"])
@@ -2045,7 +2154,13 @@ def proc_owners():
 def listening_from_proc():
     owners = proc_owners()
     rows = []
-    for path, family in (("/proc/net/tcp", 4), ("/proc/net/tcp6", 6)):
+    sources = (
+        ("/proc/net/tcp", 4, "tcp", "0A"),
+        ("/proc/net/tcp6", 6, "tcp", "0A"),
+        ("/proc/net/udp", 4, "udp", "07"),
+        ("/proc/net/udp6", 6, "udp", "07"),
+    )
+    for path, family, proto, listening_state in sources:
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 body = handle.read()
@@ -2053,17 +2168,18 @@ def listening_from_proc():
             continue
         for line in body.splitlines()[1:]:
             parts = line.split()
-            if len(parts) < 10 or parts[3] != "0A":
+            if len(parts) < 10 or parts[3] != listening_state:
                 continue
             local = parts[1].split(":")
             if len(local) != 2:
                 continue
             try:
                 port = int(local[1], 16)
-                raw = bytes.fromhex(local[0])[::-1]
-            except ValueError:
-                continue
-            try:
+                raw = bytes.fromhex(local[0])
+                if family == 4:
+                    raw = raw[::-1]
+                else:
+                    raw = b"".join(raw[index : index + 4][::-1] for index in range(0, 16, 4))
                 address = str(ipaddress.ip_address(raw))
             except ValueError:
                 continue
@@ -2071,37 +2187,64 @@ def listening_from_proc():
                 owner = owners.get(int(parts[9]), "")
             except ValueError:
                 owner = ""
-            rows.append({"port": port, "proto": "tcp", "process": owner, "address": address})
-    return rows
+            rows.append({"port": port, "proto": proto, "process": owner, "address": address})
+    return dedupe_listener_rows(rows)
+
+
+def dedupe_listener_rows(rows):
+    clean = []
+    seen = set()
+    for row in rows:
+        try:
+            port = int(row.get("port", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        proto = str(row.get("proto", "tcp") or "tcp").lower()
+        address = str(row.get("address", "") or "")[:45]
+        process = str(row.get("process", "") or "")[:40].lower()
+        if not 1 <= port <= 65535 or proto not in {"tcp", "udp"}:
+            continue
+        key = (port, proto, address, process)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append({"port": port, "proto": proto, "process": process, "address": address})
+    return clean[:512]
 
 
 def ss_rows(flags):
     tool = binary(flags, "ss", "ss")
     if not tool:
-        return []
-    code, out, _err = run([tool, "-Hltn"])
+        return None
+    code, out, _err = run([tool, "-Hltnu"])
     if code != 0:
-        return []
+        return None
     rows = []
     for line in out.splitlines():
         fields = line.split()
         if len(fields) < 4:
             continue
-        local = fields[3]
+        first = fields[0].lower()
+        proto = first if first in {"tcp", "udp"} else ("udp" if first.startswith("unconn") else "tcp")
+        local = ""
+        for item in fields[1:7]:
+            _address, separator, port = item.rpartition(":")
+            if separator and port.isdigit():
+                local = item
+                break
         address, _, port = local.rpartition(":")
         if not port.isdigit():
             continue
-        process = ""
-        if len(fields) > 5:
-            process = fields[5].split(":")[0].strip('"').lower()
-        rows.append({"port": int(port), "proto": "tcp", "process": process, "address": address.strip("[]")})
-    return rows
+        match = re.search(r'users:\(\("([^"\s,()]{1,40})"', line)
+        process = match.group(1).lower() if match else ""
+        rows.append({"port": int(port), "proto": proto, "process": process, "address": address.strip("[]")})
+    return dedupe_listener_rows(rows)
 
 
 def probe(flags):
     rows = ss_rows(flags)
     source = "ss"
-    if not rows:
+    if rows is None:
         rows = listening_from_proc()
         source = "proc"
     cleaned = []
@@ -2115,7 +2258,11 @@ def probe(flags):
         name = str(row.get("process", "") or "")[:40]
         if name and not re.match(r"^[a-z0-9_.+-]{1,40}$", name):
             name = ""
-        cleaned.append({"port": port, "proto": "tcp", "process": name, "address": address})
+        proto = str(row.get("proto", "tcp") or "tcp").lower()
+        if proto not in {"tcp", "udp"}:
+            continue
+        cleaned.append({"port": port, "proto": proto, "process": name, "address": address})
+    cleaned = dedupe_listener_rows(cleaned)
     return {"rows": cleaned, "count": len(cleaned), "source": source}
 
 

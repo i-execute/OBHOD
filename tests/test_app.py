@@ -58,6 +58,46 @@ def test_outgoing_or_unknown_sender_is_ignored(tmp_path: Path, event: dict) -> N
     assert not bot.sent
 
 
+def test_literal_hostname_uses_the_hostname_executable(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from BOT import runtime
+
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="node-a\n")
+
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+    assert runtime.literal_hostname() == "node-a"
+    assert seen[0][0] == ["hostname"]
+
+
+def test_runtime_identity_persists_cloudflared_refresh(tmp_path: Path, monkeypatch) -> None:
+    from BOT.cloudflared import CloudflaredState
+
+    bot = make_bot(tmp_path)
+
+    class Cloudflared:
+        async def status(self, cfg: object) -> CloudflaredState:
+            return CloudflaredState(installed=True, version="2026.11.1", service="active", url="https://short.trycloudflare.com")
+
+    async def tunnel_meta() -> bool:
+        return False
+
+    async def sync(force: bool = False) -> bool:
+        return False
+
+    bot.xray.cloudflared = Cloudflared()
+    monkeypatch.setattr(appmod, "literal_hostname", lambda: "node-a")
+    monkeypatch.setattr(appmod, "public_address", lambda: "")
+    monkeypatch.setattr(bot.xray, "refresh_tunnel_meta", tunnel_meta)
+    monkeypatch.setattr(bot, "subs_sync", sync)
+    result = asyncio.run(bot.refresh_runtime_identity("test"))
+    assert result["hostname"] == "node-a"
+    assert bot.store.load().cloudflared.url == "https://short.trycloudflare.com"
+
+
 def test_product_version_is_single_sourced_into_telegram_client(tmp_path: Path, monkeypatch) -> None:
     captured = {}
 

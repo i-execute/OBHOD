@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import antiddos, cores, i18n, notify
+from .cloudflared import CloudflaredState
 from .models import SshSettings
 from .freeturn import FtState
 from .xray import SUB_PORT, XrayState
@@ -27,6 +28,7 @@ class StoreError(Exception):
 class State:
     ssh: SshSettings = field(default_factory=SshSettings)
     admin_id: int = 0
+    hostname: str = ""
     log_tail: int = DEFAULT_TAIL
     schema: int = SCHEMA
     sub_port: int = SUB_PORT
@@ -35,6 +37,7 @@ class State:
     language_set: bool = False
     traffic: dict[str, Any] = field(default_factory=dict)
     xray: XrayState = field(default_factory=XrayState)
+    cloudflared: CloudflaredState = field(default_factory=CloudflaredState)
     freeturn: FtState = field(default_factory=FtState)
     core: str = "xray"
     emoji: bool = False
@@ -49,6 +52,7 @@ class State:
             "schema": int(self.schema),
             "ssh": self.ssh.to_dict(),
             "admin_id": int(self.admin_id),
+            "hostname": str(self.hostname or "")[:253],
             "log_tail": int(self.log_tail),
             "sub_port": effective_sub_port,
             "last_probe": dict(self.last_probe),
@@ -56,6 +60,7 @@ class State:
             "language_set": bool(self.language_set),
             "traffic": {str(key)[:TRAFFIC_NAME]: dict(value) for key, value in list(self.traffic.items())[:4096] if isinstance(value, dict)},
             "xray": self.xray.to_dict(),
+            "cloudflared": self.cloudflared.to_dict(),
             "freeturn": self.freeturn.to_dict(),
             "core": self.core if self.core in CORES else "xray",
             "emoji": bool(self.emoji),
@@ -69,6 +74,7 @@ class State:
         state = State(
             ssh=SshSettings.from_dict(data.get("ssh")),
             admin_id=int(data.get("admin_id", 0) or 0),
+            hostname=str(data.get("hostname", "") or "")[:253],
             log_tail=int(data.get("log_tail", DEFAULT_TAIL) or DEFAULT_TAIL),
             schema=int(data.get("schema", SCHEMA) or SCHEMA),
             sub_port=int(data.get("sub_port", SUB_PORT) or SUB_PORT),
@@ -77,6 +83,7 @@ class State:
             language_set=bool(data.get("language_set", False)),
             traffic={str(key)[:TRAFFIC_NAME]: dict(value) for key, value in list((data.get("traffic") or {}).items())[:4096] if isinstance(value, dict)} if isinstance(data.get("traffic"), dict) else {},
             xray=XrayState.from_dict(data.get("xray")),
+            cloudflared=CloudflaredState.from_dict(data.get("cloudflared")),
             freeturn=FtState.from_dict(data.get("freeturn")),
             core=str(data.get("core", "xray") or "xray"),
             emoji=bool(data.get("emoji", False)),

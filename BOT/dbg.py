@@ -650,7 +650,7 @@ class DebugPanel:
             if token[:1] in {"+", "-"}:
                 token = token[1:].strip()
             cleaned = antiddos.clean_entry(token, allow_private=allow_private)
-            if not cleaned or (not allow_private and cleaned in self._protected_rkn_ips()):
+            if not cleaned or (allow_private and antiddos.is_forbidden_exemption(cleaned)) or (not allow_private and cleaned in self._protected_rkn_ips()):
                 await self.bot.send(chat_id, target_screen(self.view(error=t("DDOS_BAD_ENTRY"))))
                 return
             if remove_explicit or cleaned in items:
@@ -703,7 +703,7 @@ class DebugPanel:
         target = self._resolve_ddos_token(token)
         allow_priv = mode == "ub"
         cleaned = antiddos.clean_entry(target, allow_private=allow_priv)
-        if not cleaned or (mode == "rb" and cleaned in self._protected_rkn_ips()):
+        if not cleaned or (mode == "ub" and antiddos.is_forbidden_exemption(cleaned)) or (mode == "rb" and cleaned in self._protected_rkn_ips()):
             await self.render(chat_id, msg_id, dscreens.ddos_ips_screen(self.view(error=t("DDOS_BAD_ENTRY"))))
             return
         records = self.ddos.ip_records() if self.ddos is not None else []

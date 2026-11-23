@@ -1,9 +1,10 @@
 {
   "files": {
-    "BOT/antiddos.py": "47432f557ee3ba1fdea3bc7163f03b4f3792f9bdba4dde06fa316217441dd77d",
-    "BOT/app.py": "399b3dc563a475e8e7ba3fc07c84fb2cd35820f0774af0639a78877bf13452c9",
+    "BOT/antiddos.py": "4c08300f5f9416071d92858c7e944f7192e87373fc890cab040a92de1598693a",
+    "BOT/app.py": "c46c7633ca89487b1734922b2f0a2205116fc97b0ed50d6703ba6d45cfbaec96",
     "BOT/audit.py": "10df919dc8bb9d0affdc513dfa4ad0c78870d43619cca60cddb44269cbc71676",
-    "BOT/guard.py": "29a2be7511e5795b04f15486025f0c7e735549e2463925f2c64c07c73485d880",
+    "BOT/cloudflared.py": "240f6b4072b23520851c450a0f1efb358065eb69c7921dad450f13cbe67a3307",
+    "BOT/guard.py": "4595fbd2b821befb1eebace4ef6193026f5cb200a3a661c16cac2911f21071e4",
     "BOT/inline.py": "e6d81b107d9ce11bba8f1cd6f7ad24e3413d7bd992b2c625aff326a5a394d950",
     "BOT/ratelimit.py": "42caff3e46368ba39fff9f7fce015bdb094904e6b8ef4ad9bf95a3eb2b1d9328",
     "BOT/releases.py": "636b3d49dd397b58fcdd9fa9c4fd10fdf740c44572b9a079929fe3d6fda678bc",
@@ -13,15 +14,16 @@
     "BOT/shell.py": "9fab9536eee40a0d0f367082130f73da5d5ced3333462c96108afab9dbe37626",
     "BOT/update.py": "07e61a4b1b03f8fa40a969cf1760658357e1f734983829b094d56f9e5a5d9b17",
     "BOT/vkcalls.py": "b4cdd54ac1e6fc1ba246bf16a0a56e6dcb5d51a7d5a0a57ab3e04fa4c14946fa",
-    "Storage/obhod_install.sh": "13c7a5926c909fe1d5d0d640eab6fc5d156a96ffdf50ba30452df374ee2256ba",
-    "Storage/remote/ddos_agent.py": "e61b66c7c31fd7f513ec0397424c50de06a0e02ba712d62ec38d3f147e214ec7",
-    "Storage/remote/fail2ban_agent.py": "e9852f965e217a639a61aa372e54f973ba993da9baefdcc9b5d23b393d002be0",
-    "Storage/remote/freeturn_agent.py": "22f852fdc1982e48adb1798826210e92d8eff729010d099822386eaa7f103ee9",
+    "Storage/obhod_install.sh": "82558b9031817a878eb46064642a394a6dff62de10ac773bccdc47b667e468ee",
+    "Storage/remote/cloudflared_agent.py": "59ddb207b91dc1a44cfcb65cde8f939a06d1a8dfd57327606d597494bf3dcda8",
+    "Storage/remote/ddos_agent.py": "50fdc84d17b837205f02c099e54f9a0db469e366026b25c7137a3e52d18e43da",
+    "Storage/remote/fail2ban_agent.py": "3b48e6eb70cf8154fe0216c178ef385b0d5aac08089da1e5862140d90331e4fc",
+    "Storage/remote/freeturn_agent.py": "cffc079567c1a35b1179277fb3ff4b9c018cd107877f9486be2206dd805ad0fc",
     "Storage/remote/rkn_upstream_agent.py": "47eb3352cb758281b8ba22fb0f5f64087d4d3a815294d11fb09f7bd62c484cee",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "f769499d19bf398f0933a7bc507cc97c19e6190eb9c0cce2b689839c7bdca49d",
-    "Storage/remote/xray_agent.py": "11e04bdada6bc935b280e9ebf4535ce53bf10b28b13d1e21466be519423d3c95",
-    "tools/obhod_watchdog.py": "47b420a9a3f5be08ca59bb81136a53a39ff83dced21feb31667f680081144389"
+    "Storage/remote/xray_agent.py": "3b274a9e2443dfa0cdfd777b1c52ba96bff39ed77dba6ec5c56268b888bfe0ef",
+    "tools/obhod_watchdog.py": "d1489f941d00c425cbc9589c205c2ea48a352eb69b8dc9c5ae8c51c3a928b03d"
   },
   "policy": [
     "dangerous_calls",

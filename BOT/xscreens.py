@@ -157,8 +157,8 @@ def home(view: XrayView) -> Any:
         blocks.append(quote(muted(t("XR_HOME_EMPTY"))))
     buttons = [
         row(button(t("XR_BTN_NEW"), "xr:new", icon="add"), button(t("XR_BTN_INBOUNDS_LIST"), "xr:list", icon="folder")),
-        row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
-        row(button(t("NAV_CORE"), "xr:core", icon="xray")),
+        row(button(t("NAV_SUBS"), "xr:subs", icon="link"), button(t("CLOUDFLARED_NAV"), "xr:cf:status", icon="tunnel")),
+        row(button(t("NAV_CORE"), "xr:core", icon="xray"), button(t("NAV_LOGS"), "xr:logs", icon="logs")),
         back_row("nav:home", view.lang),
     ]
     return screen(t("XR_TITLE"), t("XR_SUBTITLE"), blocks, buttons, icon="xray")
@@ -611,6 +611,27 @@ def tailscale_guide_block(t: i18n.Translator, open_: bool = False) -> str:
     return details(t("TS_GUIDE_TITLE"), body, open_=open_)
 
 
+def subscription_endpoint_alert(view: XrayView, before: tuple[str, ...], after: tuple[str, ...], reason: str = "") -> Any:
+    t = view.tr()
+    old_public, old_host, old_tailnet, _old_tag = tuple(list(before) + [""] * 4)[:4]
+    new_public, new_host, new_tailnet, new_tag = tuple(list(after) + [""] * 4)[:4]
+    title = t("SUB_ENDPOINT_CHANGED_TITLE")
+    rows = [
+        ("world", t("SUB_ENDPOINT_PUBLIC"), code(new_public or t("UI_NOT_SET"))),
+        ("link", t("SUB_ENDPOINT_HOST"), code(new_host or t("UI_NOT_SET"))),
+        ("world", t("SUB_ENDPOINT_TAILSCALE"), code(new_tailnet or t("UI_NOT_SET"))),
+        ("tag", t("SUB_ENDPOINT_TAG"), code(new_tag or t("UI_NOT_SET"))),
+    ]
+    changed_from = ", ".join(item for item in (old_public, old_host, old_tailnet) if item) or t("UI_NOT_SET")
+    blocks = [
+        quote(bold(title)),
+        quote(muted(t("SUB_ENDPOINT_CHANGED_BODY", previous=changed_from, reason=reason or "restart"))),
+        table(rows, (t("UI_PARAM"), t("UI_VALUE"))),
+    ]
+    buttons = [row(button(t("NAV_SUBS"), "xr:subs", icon="link")), back_row("nav:home", view.lang)]
+    return screen(title, "", blocks, buttons, icon="link")
+
+
 def tailscale_expiry_alert(view: XrayView, stage: str, days: int) -> Any:
     t = view.tr()
     state = view.state
@@ -710,6 +731,8 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
         pairs.append(("clock", t("TAILNET_EXPIRY"), code(tailnet_expiry_label(state.tunnel_key_expiry, state.tunnel_expired, view.lang))))
     if getattr(state, "tunnel_tags", ""):
         pairs.append(("tag", t("TAILSCALE_TAGS_ROW"), code(state.tunnel_tags)))
+    if getattr(state, "tunnel_address", ""):
+        pairs.append(("world", t("SUB_ENDPOINT_TAILSCALE"), code(state.tunnel_address)))
     pairs.append(("info", t("XR_HOME_INBOUNDS"), code(len(enabled_inbounds))))
     blocks.append(table(pairs, (t("UI_PARAM"), t("UI_VALUE"))))
     if not state.tgcloud_app_id and view.serverless_status == "missing":
@@ -782,6 +805,35 @@ def subs_screen(view: XrayView, rows_data: list[tuple[str, str, str]]) -> Any:
     buttons.append(row(button("Skip", "xr:subs:skip_tag", icon="ok")))
     buttons.append(back_row("xr:home", view.lang))
     return screen(t("XR_SUBS_TITLE"), t("XR_SUBS_SUBTITLE"), blocks, buttons, icon="link")
+
+
+def cloudflared_screen(view: XrayView, state: Any) -> Any:
+    t = view.tr()
+    blocks = banner(view, t)
+    installed = bool(getattr(state, "installed", False))
+    active = bool(getattr(state, "active", False))
+    rows = [
+        ("ok" if installed else "stop", t("CLOUDFLARED_STATUS"), code(t("UI_ON") if installed else t("UI_OFF"))),
+        ("box", t("CLOUDFLARED_VERSION"), code(str(getattr(state, "version", "") or t("UI_NOT_SET")))),
+        ("shield", t("CLOUDFLARED_FALLBACK"), code(t("CLOUDFLARED_FALLBACK_USED", version=getattr(state, "fallback_version", "") or "2026.11.1") if getattr(state, "fallback", False) else t("CLOUDFLARED_FALLBACK_READY", version=getattr(state, "pinned", "2026.11.1")))),
+        ("speed", t("CLOUDFLARED_SERVICE"), code(t("STATUS_RUNNING") if active else t("STATUS_STOPPED"))),
+        ("link", t("CLOUDFLARED_URL"), code(str(getattr(state, "url", "") or t("UI_NOT_SET")))),
+    ]
+    blocks.append(table(rows, (t("UI_PARAM"), t("UI_VALUE"))))
+    blocks.append(quote(muted(t("CLOUDFLARED_NOTE"))))
+    if view.error:
+        blocks.append(quote(bold(view.error)))
+    buttons = []
+    if not installed:
+        buttons.append(row(button(t("CLOUDFLARED_INSTALL"), "xr:cf:install", icon="box")))
+    elif active:
+        buttons.append(row(button(t("CLOUDFLARED_REFRESH"), "xr:cf:logs", icon="refresh"), button(t("CLOUDFLARED_STOP"), "xr:cf:down", icon="stop")))
+    else:
+        buttons.append(row(button(t("CLOUDFLARED_START"), "xr:cf:up", icon="tunnel"), button(t("CLOUDFLARED_REFRESH"), "xr:cf:status", icon="refresh")))
+    if installed:
+        buttons.append(row(button(t("CLOUDFLARED_REMOVE"), "xr:cf:remove", icon="delete")))
+    buttons.append(back_row("xr:home", view.lang))
+    return screen(t("CLOUDFLARED_TITLE"), t("CLOUDFLARED_SUBTITLE"), blocks, buttons, icon="tunnel")
 
 
 def core_screen(view: XrayView) -> Any:

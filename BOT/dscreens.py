@@ -450,7 +450,8 @@ def ddos_exposure_text(t: Any, findings: Any) -> str:
     except Exception:
         code = ""
     return t({"panel": "DDOS_EXPOSURE_PANEL", "core_api": "DDOS_EXPOSURE_CORE_API", "datastore": "DDOS_EXPOSURE_DATASTORE",
-              "risky": "DDOS_EXPOSURE_RISKY", "proxy": "DDOS_EXPOSURE_PROXY", "unexpected": "DDOS_EXPOSURE_UNEXPECTED"}.get(code, "DDOS_EXPOSURE_EMPTY"))
+              "risky": "DDOS_EXPOSURE_RISKY", "proxy": "DDOS_EXPOSURE_PROXY", "unexpected": "DDOS_EXPOSURE_UNEXPECTED",
+              "freeturn_peer": "DDOS_EXPOSURE_FREETURN"}.get(code, "DDOS_EXPOSURE_EMPTY"))
 
 
 def _compact_entries(entries: list[str], cap: int = 4) -> str:
@@ -540,6 +541,8 @@ def ddos_screen(view: DbgView) -> Any:
     if not records:
         state_rows.append(("ok", t("DDOS_BLOCKED_IPS"), code("0")))
     blocks.append(table(state_rows, (t("DDOS_TITLE"), t("UI_VALUE"))))
+    if antiddos.VK_CALLS_FREETURN_UDP_PORT in set(policy.ports):
+        blocks.append(quote(muted(t("DDOS_FREETURN_56583_NOTE"))))
     if table_unknown:
         blocks.append(quote(t("DDOS_TABLE_UNKNOWN")))
     elif status.table and not status.enabled:

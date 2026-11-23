@@ -35,6 +35,12 @@ SET_ALLOW_V6 = "rkn_allow_v6"
 SET_BAN_V4 = "manual_ban_v4"
 SET_BAN_V6 = "manual_ban_v6"
 DEFAULT_PORTS = (22, 443)
+VK_CALLS_ALLOW = "193.203.43.0/24"
+VK_CALLS_FREETURN_UDP_PORT = 56583
+MODAT_NETWORKS = (
+    ipaddress.ip_network("85.217.140.0/24"),
+    ipaddress.ip_network("85.217.149.0/24"),
+)
 MAX_PORTS = 16
 MAX_SET_SIZE = 1 << 20
 MAX_WINDOW = 3600
@@ -244,8 +250,38 @@ def parse_entries(raw: Any, *, allow_private: bool = False) -> list[str]:
     return out
 
 
+def is_forbidden_exemption(value: object) -> bool:
+    try:
+        network = ipaddress.ip_network(str(value or ""), strict=False)
+    except ValueError:
+        return True
+    return isinstance(network, ipaddress.IPv4Network) and any(network.overlaps(blocked) for blocked in MODAT_NETWORKS)
+
+
+def exempt_entries(entries: Iterable[str] | object, *, include_vk: bool = False) -> list[str]:
+    if isinstance(entries, (list, tuple, set, frozenset)):
+        source: object = list(entries)
+    else:
+        source = entries
+    parsed = parse_entries(source, allow_private=True)
+    if include_vk:
+        parsed.append(VK_CALLS_ALLOW)
+    out: list[str] = []
+    for item in parsed:
+        if is_forbidden_exemption(item):
+            continue
+        if item not in out:
+            out.append(item)
+    return out[:MAX_CUSTOM_ENTRIES]
+
+
 def entries_csv(entries: Iterable[str], *, allow_private: bool = False) -> str:
-    return ",".join(parse_entries(list(entries), allow_private=allow_private))
+    values = exempt_entries(entries) if allow_private else parse_entries(list(entries), allow_private=False)
+    return ",".join(values)
+
+
+def udp_detector_ports(policy: "Policy") -> list[int]:
+    return [port for port in policy.ports if int(port) != VK_CALLS_FREETURN_UDP_PORT]
 
 
 def split_collapsed_entries(
@@ -584,10 +620,10 @@ class Policy:
         self.ports = ports_of(",".join(str(item) for item in self.ports)) or list(DEFAULT_PORTS)
         self.rkn_enabled = bool(self.rkn_enabled)
         self.rkn_logging = bool(self.rkn_logging)
-        self.rkn_allow = parse_entries(self.rkn_allow, allow_private=True)
+        self.rkn_allow = exempt_entries(self.rkn_allow)
         self.rkn_exceptions = parse_rkn_exceptions(self.rkn_exceptions)
         self.manual_bans = parse_entries(self.manual_bans, allow_private=False)
-        self.unbanned = parse_entries(self.unbanned, allow_private=True)[:64]
+        self.unbanned = exempt_entries(self.unbanned)[:64]
         self.custom_sources = parse_source_urls(self.custom_sources)
         known = {url for _, url in RKN_SOURCES} | set(self.custom_sources)
         self.disabled_sources = [url for url in parse_source_urls(self.disabled_sources, MAX_CUSTOM_SOURCES + len(RKN_SOURCES)) if url in known]
@@ -691,9 +727,9 @@ def parse_rkn_exceptions(raw):
     return out
 
 
-def ports_set(policy: Policy) -> str:
-    ports = policy.ports or list(DEFAULT_PORTS)
-    return "{ " + ", ".join(str(item) for item in ports) + " }"
+def ports_set(policy: Policy, ports: Iterable[int] | None = None) -> str:
+    values = list(ports if ports is not None else (policy.ports or list(DEFAULT_PORTS)))
+    return "{ " + ", ".join(str(int(item)) for item in values) + " }"
 
 
 def _render_interval_set(name: str, family_type: str, elements: list[str]) -> list[str]:
@@ -721,7 +757,7 @@ def nft_table(
     rkn_v6: Iterable[str] | None = None,
 ) -> str:
     policy = policy.normalise()
-    allow_v4, allow_v6 = split_collapsed_entries(policy.rkn_allow, allow_private=True)
+    allow_v4, allow_v6 = split_collapsed_entries(exempt_entries(policy.rkn_allow, include_vk=True), allow_private=True)
     ban_v4, ban_v6 = split_collapsed_entries(policy.manual_bans, allow_private=False)
     active_rkn_v4: list[str] = []
     active_rkn_v6: list[str] = []
@@ -763,15 +799,19 @@ def nft_table(
             "    type filter hook input priority -10; policy accept;",
             '    iifname "lo" accept',
             "    ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept",
-            "    ct state invalid counter drop",
-            "    tcp flags & (fin|syn|rst|ack) == 0x0 counter drop",
-            "    tcp flags & (fin|syn|psh|rst|ack|urg) == (fin|syn|psh|urg) counter drop",
         ]
     )
     if allow_v4:
         lines.append("    ip saddr @%s accept" % SET_ALLOW_V4)
     if allow_v6:
         lines.append("    ip6 saddr @%s accept" % SET_ALLOW_V6)
+    lines.extend(
+        [
+            "    ct state invalid counter drop",
+            "    tcp flags & (fin|syn|rst|ack) == 0x0 counter drop",
+            "    tcp flags & (fin|syn|psh|rst|ack|urg) == (fin|syn|psh|urg) counter drop",
+        ]
+    )
     if ban_v4:
         lines.append("    ip saddr @%s counter drop" % SET_BAN_V4)
     if ban_v6:
@@ -788,17 +828,25 @@ def nft_table(
         if policy.rkn_logging:
             lines.append('    ip6 saddr @%s limit rate 10/minute burst 5 packets log prefix "OBHOD-RKN-v6: " level warn' % SET_RKN_V6)
         lines.append("    ip6 saddr @%s counter drop" % SET_RKN_V6)
+    detector_ports = udp_detector_ports(policy)
     lines.extend(
         [
             "    ip saddr @%s counter drop" % SET_SYN,
             "    ip saddr @%s counter drop" % SET_CONN,
-            "    ip saddr @%s counter drop" % SET_UDP,
+            "    udp dport != %d ip saddr @%s counter drop" % (VK_CALLS_FREETURN_UDP_PORT, SET_UDP),
             "    ip saddr @%s counter drop" % SET_ICMP,
             "    ip saddr @%s counter drop" % SET_SCAN,
             "    ct state new tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets } counter accept"
             % (SET_SYN, policy.syn_rate, policy.syn_burst),
             "    ct state new update @%s { ip saddr limit rate over %d/second burst %d packets }" % (SET_CONN, policy.conn_rate, policy.conn_burst),
-            "    udp dport %s update @%s { ip saddr limit rate over %d/second burst %d packets }" % (ports_set(policy), SET_UDP, policy.udp_rate, policy.udp_burst),
+            *(
+                [
+                    "    udp dport %s update @%s { ip saddr limit rate over %d/second burst %d packets }"
+                    % (ports_set(policy, detector_ports), SET_UDP, policy.udp_rate, policy.udp_burst)
+                ]
+                if detector_ports
+                else []
+            ),
             "    icmp type echo-request update @%s { ip saddr limit rate over %d/second burst %d packets }" % (SET_ICMP, policy.icmp_rate, policy.icmp_burst),
             "    tcp dport != %s tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets }"
             % (ports_set(policy), SET_SCAN, SCAN_RATE, SCAN_RATE),
@@ -1153,6 +1201,7 @@ class Finding:
 
 def socket_rows(raw: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    seen: set[tuple[int, str, str, str]] = set()
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
@@ -1160,16 +1209,16 @@ def socket_rows(raw: Any) -> list[dict[str, Any]]:
             port = int(item.get("port", 0) or 0)
         except (TypeError, ValueError):
             continue
-        if not 1 <= port <= 65535:
+        proto = str(item.get("proto", "tcp") or "tcp")[:4].lower()
+        if not 1 <= port <= 65535 or proto not in {"tcp", "udp"}:
             continue
-        rows.append(
-            {
-                "port": port,
-                "proto": str(item.get("proto", "tcp") or "tcp")[:4].lower(),
-                "process": str(item.get("process", "") or "")[:40].lower(),
-                "address": str(item.get("address", "") or "")[:45],
-            }
-        )
+        process = str(item.get("process", "") or "")[:40].lower()
+        address = str(item.get("address", "") or "")[:45]
+        key = (port, proto, process, address)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"port": port, "proto": proto, "process": process, "address": address})
     return rows[:512]
 
 
@@ -1186,13 +1235,14 @@ def listening_from_proc(tcp_text: str, tcp6_text: str = "", owners: dict[int, st
                 continue
             try:
                 port = int(local[1], 16)
-                raw = bytes.fromhex(local[0])[::-1]
+                raw = bytes.fromhex(local[0])
             except ValueError:
                 continue
             if family == 4 and len(raw) == 4:
-                address = ".".join(str(item) for item in raw)
+                address = ".".join(str(item) for item in raw[::-1])
             elif family == 6 and len(raw) == 16:
-                address = ipaddress.IPv6Address(raw).compressed
+                network_order = b"".join(raw[index : index + 4][::-1] for index in range(0, 16, 4))
+                address = ipaddress.IPv6Address(network_order).compressed
             else:
                 continue
             inode = parts[9]
@@ -1237,6 +1287,9 @@ def exposure(raw: Any, allow: list[int] | None = None) -> list[Finding]:
         if port in DATASTORE_PORTS:
             findings.append(Finding("datastore", port, row["proto"], process, address, "bad"))
             continue
+        if port == VK_CALLS_FREETURN_UDP_PORT and row["proto"] == "udp":
+            findings.append(Finding("freeturn_peer", port, row["proto"], process, address, "info"))
+            continue
         if port in permitted:
             continue
         if port in RISKY_PORTS:
@@ -1269,7 +1322,7 @@ def exposure_rows(findings: list[Finding]) -> list[tuple[str, str, str]]:
 
 def exposure_hint(findings: list[Finding]) -> str:
     codes = {item.code for item in findings}
-    for code in ("core_api", "datastore", "panel", "risky", "proxy", "unexpected"):
+    for code in ("core_api", "datastore", "panel", "risky", "proxy", "unexpected", "freeturn_peer"):
         if code in codes:
             return code
     return ""

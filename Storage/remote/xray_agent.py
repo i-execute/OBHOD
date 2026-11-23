@@ -2083,6 +2083,7 @@ def tunnel_state(prefer_port=0):
         "have_node_key": False,
         "tags": [],
         "public_ip": "",
+        "tailscale_ip": "",
     }
     if not found:
         return out
@@ -2106,6 +2107,16 @@ def tunnel_state(prefer_port=0):
                 raw_tags = self_node.get("Tags") or []
                 if isinstance(raw_tags, list):
                     out["tags"] = [str(item) for item in raw_tags if TUNNEL_TAG_ITEM_RE.match(str(item))][:8]
+                raw_ips = self_node.get("TailscaleIPs") or []
+                if isinstance(raw_ips, list):
+                    for item in raw_ips:
+                        try:
+                            parsed = ipaddress.ip_address(str(item or "").strip())
+                        except ValueError:
+                            continue
+                        if not parsed.is_unspecified and not parsed.is_multicast:
+                            out["tailscale_ip"] = str(parsed)[:64]
+                            break
                 raw_exp = str(self_node.get("KeyExpiry", "") or "").strip()
                 if raw_exp.startswith("0001-"):
                     raw_exp = ""

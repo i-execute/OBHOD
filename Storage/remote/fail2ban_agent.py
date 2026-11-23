@@ -41,7 +41,9 @@ DEFAULT_BAN_DAYS = 7
 DEFAULT_SSH_BANTIME = "7d"
 DEFAULT_SSH_FINDTIME = 3600
 DEFAULT_SSH_MAXRETRY = 3
-DEFAULT_IGNORE = "127.0.0.1/8 ::1"
+DEFAULT_IGNORE = "127.0.0.1/8 ::1 193.203.43.0/24"
+VK_CALLS_CIDR = "193.203.43.0/24"
+MODAT_CIDRS = ("85.217.140.0/24", "85.217.149.0/24")
 DURATION = re.compile(r"^[1-9][0-9]{0,4}[smhdw]$")
 
 LIMIT_FILTER = "\n".join(
@@ -93,6 +95,7 @@ ACTION = "\n".join(
     [
         "[Definition]",
         "actionstart = iptables -S {chain} >/dev/null 2>&1 || iptables -N {chain}; "
+        "iptables -C {chain} -s 193.203.43.0/24 -j RETURN 2>/dev/null || iptables -I {chain} 1 -s 193.203.43.0/24 -j RETURN; "
         "for p in <exemptports>; do iptables -C {chain} -p tcp --dport $p -j RETURN 2>/dev/null || "
         "iptables -A {chain} -p tcp --dport $p -j RETURN; done; "
         "iptables -C INPUT -j {chain} 2>/dev/null || iptables -A INPUT -j {chain}; "
@@ -297,12 +300,28 @@ def safe_address(value, label="the ip address"):
     return text
 
 
+def _forbidden_exception(value):
+    try:
+        network = ipaddress.ip_network(str(value or ""), strict=False)
+    except ValueError:
+        return True
+    return isinstance(network, ipaddress.IPv4Network) and any(network.overlaps(ipaddress.ip_network(item)) for item in MODAT_CIDRS)
+
+
 def safe_ignore(value):
     text = str(value or "").strip() or DEFAULT_IGNORE
     items = [item for item in text.replace(",", " ").split() if item]
     if len(items) > 16:
         raise ScriptError("bad_arg", "the ignore list is too long", "args")
-    checked = [safe_address(item, "the ignore list entry") for item in items]
+    checked = []
+    for item in items:
+        address = safe_address(item, "the ignore list entry")
+        if _forbidden_exception(address):
+            raise ScriptError("blocked_exemption", "Modat networks cannot be ignored or unbanned", "args")
+        if address not in checked:
+            checked.append(address)
+    if VK_CALLS_CIDR not in checked:
+        checked.append(VK_CALLS_CIDR)
     return " ".join(checked) or DEFAULT_IGNORE
 
 
@@ -646,6 +665,8 @@ def install(flags):
         code, text = run(["systemctl", "restart", "fail2ban"], timeout=180)
     if code != 0:
         raise ScriptError("start_failed", "fail2ban did not start: " + text[:400], "start")
+    for jail in (JAIL, JAIL_SSH, JAIL_SUB, JAIL_SEC, JAIL_HONEY):
+        run(["fail2ban-client", "set", jail, "unbanip", VK_CALLS_CIDR], timeout=60)
     return report(port)
 
 
@@ -680,6 +701,8 @@ def uninstall(flags):
 
 def set_ban(flags, ban):
     address = safe_address(flags.get("ip", ""))
+    if not ban and _forbidden_exception(address):
+        raise ScriptError("blocked_exemption", "Modat networks cannot be ignored or unbanned", "unban")
     if not have("fail2ban-client"):
         raise ScriptError("not_installed", "fail2ban is not installed on the server", "ban")
     action = "banip" if ban else "unbanip"

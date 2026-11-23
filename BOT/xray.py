@@ -256,7 +256,7 @@ DEFAULT_ACCESS_LOG = "/var/log/xray/access.log"
 DEFAULT_SSH_BANTIME = "7d"
 DEFAULT_BANTIME_MIN = 10080
 DEFAULT_SSH_MAXRETRY = 3
-DEFAULT_IGNOREIP = "127.0.0.1/8 ::1"
+DEFAULT_IGNOREIP = "127.0.0.1/8 ::1 193.203.43.0/24"
 DEFAULT_ERROR_LOG = "/var/log/xray/error.log"
 DEFAULT_METRICS = "127.0.0.1:11111"
 
@@ -1451,6 +1451,7 @@ class XrayState:
     tunnel_tags: str = ""
     tunnel_approval_url: str = ""
     tunnel_expiry_notified: str = ""
+    tunnel_address: str = ""
     tgcloud_app_id: str = ""
     api_enabled: bool = True
     api_port: int = API_PORT
@@ -1496,6 +1497,7 @@ class XrayState:
             "tunnel_tags": normalize_tailscale_tags(self.tunnel_tags),
             "tunnel_approval_url": self.tunnel_approval_url[:200],
             "tunnel_expiry_notified": self.tunnel_expiry_notified[:64],
+            "tunnel_address": str(self.tunnel_address or "")[:64],
             "tgcloud_app_id": str(self.tgcloud_app_id or "")[:20],
             "api_enabled": bool(self.api_enabled),
             "api_port": int(self.api_port),
@@ -1551,6 +1553,7 @@ class XrayState:
             tunnel_tags=normalize_tailscale_tags(data.get("tunnel_tags", "")),
             tunnel_approval_url=str(data.get("tunnel_approval_url", "") or "")[:200],
             tunnel_expiry_notified=str(data.get("tunnel_expiry_notified", "") or "")[:64],
+            tunnel_address=str(data.get("tunnel_address", "") or "")[:64],
             tgcloud_app_id=str(data.get("tgcloud_app_id", "") or "")[:20],
             api_enabled=bool(data.get("api_enabled", True)),
             api_port=int(data.get("api_port", API_PORT) or API_PORT),
