@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from . import ftscreens, fwguard, i18n, portguard, traffic
+from . import ftscreens, fwguard, i18n, traffic
 from .freeturn import (
     BACKENDS,
     DEFAULT_LISTEN_PORT,
