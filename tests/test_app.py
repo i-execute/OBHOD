@@ -1,0 +1,732 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from BOT import VERSION, app as appmod, i18n, inline, screens, serverless, version, xscreens
+from BOT.config import ConfigError
+from BOT.guard import SshState
+from BOT.models import ModelError
+from BOT.xray import API_PORT, SUB_PORT, new_inbound
+from tests.fakes import FakeEvent, FakeFtControl, make_bot, make_config
+
+
+def run(coro: object) -> None:
+    asyncio.run(coro)
+
+
+def test_admin_is_claimed_on_first_contact(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.cfg.admin_id = 0
+    evt = FakeEvent(from_id=55, chat_id=55)
+    assert run(bot.guard_admin(evt)) is None
+    run(bot.guard_admin(evt))
+    assert bot.state.admin_id == 55
+
+
+def test_foreign_user_is_denied(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+
+    async def scenario() -> bool:
+        return await bot.guard_admin(FakeEvent(from_id=99))
+
+    assert asyncio.run(scenario()) is False
+    assert len(bot.sent) == 1
+    assert i18n.t("DENIED_BODY") in bot.sent[0].to_html()
+
+
+def test_denial_does_not_reply_to_its_own_update(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    asyncio.run(bot.on_message(FakeEvent(text="hello", from_id=99, chat_id=99)))
+    asyncio.run(bot.on_message(FakeEvent(text="Access denied", from_id=1, chat_id=99, raw={"out": True})))
+    assert len(bot.sent) == 1
+    assert i18n.t("DENIED_BODY") in bot.sent[0].to_html()
+
+
+@pytest.mark.parametrize("event", [
+    {"from_id": 1},
+    {"from_id": 7, "raw": {"out": True}},
+    {"from_id": 0},
+])
+def test_outgoing_or_unknown_sender_is_ignored(tmp_path: Path, event: dict) -> None:
+    bot = make_bot(tmp_path)
+    asyncio.run(bot.on_message(FakeEvent(text="/start", **event)))
+    assert not bot.sent
+
+
+def test_literal_hostname_uses_the_hostname_executable(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from BOT import runtime
+
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="node-a\n")
+
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+    assert runtime.literal_hostname() == "node-a"
+    assert seen[0][0] == ["hostname"]
+
+
+def test_runtime_identity_persists_cloudflared_refresh(tmp_path: Path, monkeypatch) -> None:
+    from BOT.cloudflared import CloudflaredState
+
+    bot = make_bot(tmp_path)
+
+    class Cloudflared:
+        async def status(self, cfg: object) -> CloudflaredState:
+            return CloudflaredState(installed=True, version="2026.11.1", service="active", url="https://short.trycloudflare.com")
+
+    async def tunnel_meta() -> bool:
+        return False
+
+    async def sync(force: bool = False) -> bool:
+        return False
+
+    bot.xray.cloudflared = Cloudflared()
+    monkeypatch.setattr(appmod, "literal_hostname", lambda: "node-a")
+    monkeypatch.setattr(appmod, "public_address", lambda: "")
+    monkeypatch.setattr(bot.xray, "refresh_tunnel_meta", tunnel_meta)
+    monkeypatch.setattr(bot, "subs_sync", sync)
+    result = asyncio.run(bot.refresh_runtime_identity("test"))
+    assert result["hostname"] == "node-a"
+    assert bot.store.load().cloudflared.url == "https://short.trycloudflare.com"
+
+
+def test_product_version_is_single_sourced_into_telegram_client(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    class FakeGoyGram:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def on_msg(self, **kwargs):
+            pass
+
+        def on_cb(self, **kwargs):
+            pass
+
+        def on_inline(self, **kwargs):
+            pass
+
+        def on_update(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(appmod, "GoyGram", FakeGoyGram)
+    bot = make_bot(tmp_path)
+    asyncio.run(bot.boot())
+    assert VERSION == version.VERSION
+    assert captured["app_version"] == version.VERSION
+
+
+def test_start_is_registered_once(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    app = asyncio.run(bot.boot())
+    evt = FakeEvent(text="/start", chat_id=7)
+
+    async def dispatch() -> None:
+        for hook in app.hook:
+            await hook(evt)
+
+    asyncio.run(dispatch())
+    assert len(bot.sent) == 1
+
+
+def test_navigation_renders_every_page(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    for page in ("home", "server", "ssh", "settings", "ban", "sshd", "help", "tools", "protect", "xray", "other"):
+        run(bot.route(1, 0, f"nav:{page}"))
+    assert len(bot.rendered) == 11
+
+
+def test_unknown_callback_falls_back(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.route(1, 0, "zzz:none"))
+    assert bot.rendered
+
+
+def test_help_and_id_commands(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.on_command(FakeEvent(cmd="start")))
+    run(bot.on_command(FakeEvent(cmd="wg")))
+    run(bot.on_command(FakeEvent(cmd="vless")))
+    assert len(bot.sent) == 3
+    run(bot.on_command(FakeEvent(cmd="help")))
+    run(bot.on_command(FakeEvent(cmd="id")))
+    assert len(bot.sent) == 3
+
+
+def test_text_message_shows_home(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.on_message(FakeEvent(text="hello")))
+    assert not bot.sent
+
+
+def test_ssh_fields_are_validated(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    with pytest.raises(ModelError):
+        run(bot.ssh_input(1, "ssh_new_port", "0"))
+    with pytest.raises(ConfigError):
+        run(bot.ssh_input(1, "ssh_unknown", "x"))
+    for ident in ("ssh_host", "ssh_port", "ssh_user", "ssh_password", "ssh_key", "ssh_sudo"):
+        with pytest.raises(ConfigError):
+            run(bot.ssh_input(1, ident, "x"))
+
+
+def test_credential_fields_are_gone(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    values = bot.input_values()
+    for ident in ("ssh_host", "ssh_port", "ssh_user", "ssh_password", "ssh_key", "ssh_sudo"):
+        assert ident not in values
+        assert ident not in inline.FIELDS
+    assert "ssh_new_port" in values
+    assert not hasattr(bot.state.ssh, "password")
+    assert not hasattr(bot.state.ssh, "key")
+
+
+def test_ssh_screen_reports_a_local_shell(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    html = screens.ssh_settings(bot.view()).to_html()
+    assert i18n.t("SSH_LOCAL_MODE") in html
+    assert i18n.t("SSH_NO_PASSWORD") in html
+
+
+def test_ban_actions_use_the_guard(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.ban_action(1, 0, "install"))
+    assert "install" in bot.guard.calls
+    assert bot.state.xray.fail2ban_enabled is True
+    run(bot.ban_action(1, 0, "status"))
+    assert bot.ban is not None
+    run(bot.ban_action(1, 0, "reset"))
+    run(bot.ban_action(1, 0, "remove"))
+    assert bot.state.xray.fail2ban_enabled is False
+
+
+def test_ban_actions_need_no_credentials(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.ban_action(1, 0, "install"))
+    assert "install" in bot.guard.calls
+
+
+def test_sshd_actions_use_the_guard(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.sshd_action(1, 0, "status", ""))
+    assert "ssh_status" in bot.guard.calls
+    run(bot.sshd_action(1, 0, "auth", "no"))
+    assert "ssh_apply" in bot.guard.calls
+    run(bot.sshd_action(1, 0, "root", "no"))
+    run(bot.sshd_action(1, 0, "remove", ""))
+    assert "ssh_remove" in bot.guard.calls
+
+
+def test_ssh_new_port_and_pubkey_inputs(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.ssh_input(1, "ssh_new_port", "2200"))
+    assert "ssh_apply" in bot.guard.calls
+    run(bot.ssh_input(1, "ssh_pubkey", "ssh-ed25519 AAAA test"))
+    assert "ssh_add_key" in bot.guard.calls
+
+
+def test_inline_answers_only_the_admin(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    evt = FakeEvent(query="", from_id=7)
+    run(bot.on_inline(evt))
+    assert evt.results
+    assert evt.answers[0]["is_personal"] is True
+    assert evt.answers[0]["cache_time"] == 0
+    stranger = FakeEvent(query="", from_id=99)
+    run(bot.on_inline(stranger))
+    assert stranger.results == []
+
+
+def test_inline_token_round_trip_through_the_bot(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    query = inline.prefill("xr_sub_port") + "3331 "
+    evt = FakeEvent(query=query, from_id=7)
+    run(bot.on_inline(evt))
+    assert len(evt.results) == 1
+    chosen = FakeEvent(
+        update_type="chosen_inline_result",
+        from_id=7,
+        raw={"chosen_inline_result": {"result_id": evt.results[0]["id"], "from": {"id": 7}, "query": query}},
+    )
+    run(bot.on_chosen(chosen))
+    assert bot.state.xray.sub_port == 3331
+
+
+def test_chosen_option_applies_the_value(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    bot.state.xray.add(inbound)
+    evt = FakeEvent(query=inline.list_query("xr_fingerprint", str(inbound.id)), from_id=7)
+    run(bot.on_inline(evt))
+    picked = evt.results[3]
+    chosen = FakeEvent(
+        update_type="chosen_inline_result",
+        from_id=7,
+        raw={"chosen_inline_result": {"result_id": picked["id"], "from": {"id": 7}, "query": "list"}},
+    )
+    run(bot.on_chosen(chosen))
+    assert inbound.fingerprint == inline.options("xr_fingerprint")[2]
+
+
+def test_chosen_result_of_a_stranger_is_ignored(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    bot.state.xray.add(inbound)
+    evt = FakeEvent(query=inline.list_query("xr_fingerprint", str(inbound.id)), from_id=7)
+    run(bot.on_inline(evt))
+    before = inbound.fingerprint
+    chosen = FakeEvent(
+        update_type="chosen_inline_result",
+        from_id=99,
+        raw={"chosen_inline_result": {"result_id": evt.results[2]["id"], "from": {"id": 99}, "query": "list"}},
+    )
+    run(bot.on_chosen(chosen))
+    assert inbound.fingerprint == before
+
+
+def test_chosen_update_of_another_type_is_skipped(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    evt = FakeEvent(update_type="inline_query", from_id=7, raw={})
+    run(bot.on_chosen(evt))
+    assert bot.sent == []
+
+
+def test_marker_message_is_processed_and_deleted(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    token = inline.token_for("xr_sub_port")
+    marker = inline.payload_text(token, "i", -1, "2096")
+    evt = FakeEvent(text=marker, msg_id=10, from_id=7)
+    run(bot.on_message(evt))
+    assert bot.state.xray.sub_port == 2096
+    assert bot.app.deleted == [(1, 10)]
+
+
+def test_unknown_marker_is_dropped_silently(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    before = bot.state.xray.sub_port
+    evt = FakeEvent(text=inline.MARKER + inline.SEPARATOR + "aaaaaaaaaaix", msg_id=11, from_id=7)
+    run(bot.on_message(evt))
+    assert bot.app.deleted == [(1, 11)]
+    assert bot.state.xray.sub_port == before
+    assert len(bot.sent) == 1
+    assert i18n.t("INL_STALE") in bot.sent[0].to_html()
+
+
+def test_input_for_inbound_field(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    bot.state.xray.add(inbound)
+    token = inline.token_for("xr_sni", str(inbound.id))
+    marker = inline.payload_text(token, "i", -1, "www.microsoft.com")
+    run(bot.on_message(FakeEvent(text=marker, msg_id=12, from_id=7)))
+    assert inbound.sni == "www.microsoft.com"
+
+
+def test_input_error_is_reported(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    token = inline.token_for("xr_sub_port")
+    marker = inline.payload_text(token, "i", -1, "bad")
+    run(bot.on_message(FakeEvent(text=marker, msg_id=13, from_id=7)))
+    assert bot.sent
+
+
+def test_duplicate_marker_is_ignored(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    token = inline.token_for("xr_sub_port")
+    marker = inline.payload_text(token, "i", -1, "2096")
+    run(bot.on_message(FakeEvent(text=marker, msg_id=14, from_id=7)))
+    bot.state.xray.sub_port = 0
+    run(bot.on_message(FakeEvent(text=marker, msg_id=15, from_id=7)))
+    assert bot.state.xray.sub_port == 0
+
+
+def test_busy_flag_blocks_callbacks(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.busy = True
+    evt = FakeEvent(data="fb:install")
+    run(bot.on_callback(evt))
+    assert evt.answers and evt.answers[0]["alert"] is True
+
+
+def test_callback_pipeline_registers_admin(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    evt = FakeEvent(data="nav:home")
+    run(bot.on_callback(evt))
+    assert bot.rendered
+
+
+def test_ban_and_sshd_callbacks(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    for data in ("fb:install", "fb:status", "fb:reset", "fb:remove", "sshd:status", "sshd:auth:no", "sshd:root:no", "sshd:remove"):
+        run(bot.route(1, 0, data))
+    assert bot.rendered
+
+
+def test_address_prefers_sub_address(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot = make_bot(tmp_path)
+    monkeypatch.setattr("BOT.app.public_address", lambda: "")
+    assert bot.address() == ""
+    bot.state.xray.sub_address = "198.51.100.5"
+    assert bot.address() == "198.51.100.5"
+
+
+def test_address_falls_back_to_the_detected_interface(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bot = make_bot(tmp_path)
+    monkeypatch.setattr("BOT.app.public_address", lambda: "203.0.113.77")
+    assert bot.address() == "203.0.113.77"
+
+
+def test_input_values_are_prefilled(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.remark = "main"
+    bot.state.xray.add(inbound)
+    values = bot.input_values()
+    assert values["ssh_new_port"] == "22"
+    assert values["xr_remark"] == "main"
+    assert values["xr_port"] == "443"
+    assert values["xr_bantime"] == "10080"
+
+
+def test_save_and_load_roundtrip(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.save()
+    again = make_bot(tmp_path)
+    assert again.state.xray.inbounds[0].clients[0].email == "owner"
+
+
+def test_language_menu_renders_three_choices(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.route(1, 0, "nav:lang"))
+    html = bot.rendered[-1].to_html()
+    for code_value in ("en", "ru", "zh"):
+        assert f"lang:set:{code_value}" in html
+    assert bot.language == "en"
+
+
+def test_language_switch_is_persisted(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.route(1, 0, "lang:set:zh"))
+    assert bot.state.language == "zh"
+    again = make_bot(tmp_path)
+    assert again.state.language == "zh"
+    assert again.language == "zh"
+    html = bot.rendered[-1].to_html()
+    assert i18n.t("LANG_TITLE", "zh") in html
+
+
+def test_language_switch_changes_every_screen(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.xray.add(new_inbound("vless", 443, "raw", "reality"))
+    for code_value in i18n.LANGUAGES:
+        bot.state.language = code_value
+        bot.save()
+        for page in ("home", "ssh", "settings", "ban", "sshd", "help", "lang", "xray"):
+            run(bot.route(1, 0, f"nav:{page}"))
+        html = bot.rendered[-1].to_html()
+        assert i18n.t("NAV_CORE", code_value) in html
+
+
+def test_language_command_and_unknown_choice(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.on_command(FakeEvent(cmd="language")))
+    assert not bot.sent
+    run(bot.route(1, 0, "lang:set:de"))
+    assert bot.state.language == "en"
+    run(bot.route(1, 0, "lang:show"))
+    assert bot.rendered
+
+
+def test_language_reaches_views_and_panel(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.language = "ru"
+    assert bot.view().lang == "ru"
+    assert bot.xray.view().lang == "ru"
+    assert i18n.t("NAV_SETTINGS", "ru") in screens.settings(bot.view()).to_html()
+    bot.state.language = "zh"
+    assert bot.xray.view().lang == "zh"
+    assert i18n.t("NAV_CORE", "zh") in xscreens.core_screen(bot.xray.view()).to_html()
+
+
+def test_denied_screen_uses_the_chosen_language(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.language = "zh"
+    run(bot.guard_admin(FakeEvent(from_id=99)))
+    assert i18n.t("DENIED_BODY", "zh") in bot.sent[-1].to_html()
+
+
+def test_toast_and_notice_are_localized(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.language = "ru"
+    bot.busy = True
+    evt = FakeEvent(data="fb:install")
+    run(bot.on_callback(evt))
+    assert evt.answers[0]["text"] == i18n.t("TOAST_BUSY", "ru")
+
+
+def test_sshd_password_switch_is_blocked_without_a_key(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+
+    async def empty_status(cfg: object) -> SshState:
+        bot.guard.calls.append("ssh_status")
+        return SshState(
+            ports=[22],
+            permit_root_login="prohibit-password",
+            service="active",
+            keys=0,
+            key_user="root",
+            key_path="/root/.ssh/authorized_keys",
+            key_list=[],
+        )
+
+    bot.guard.ssh_status = empty_status
+    sent: list[object] = []
+
+    async def grab(chat_id: int, rich: object) -> None:
+        sent.append(rich)
+
+    bot.send = grab
+    run(bot.sshd_action(1, 0, "auth", "no"))
+    assert "ssh_apply" not in bot.guard.calls
+    assert sent
+    blob = str(sent[-1])
+    assert "/root/.ssh/authorized_keys" in blob
+    assert "SSHD_PW_BLOCKED" not in blob
+
+
+def test_sshd_password_switch_passes_when_a_key_exists(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.sshd_action(1, 0, "auth", "no"))
+    assert "ssh_apply" in bot.guard.calls
+
+
+def test_freeturm_is_reachable_from_the_router(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.freeturn.control = FakeFtControl()
+    run(bot.route(1, 0, "ft:home"))
+    assert "FreeTurn" in str(bot.rendered[-1])
+    run(bot.route(1, 0, "ft:check"))
+    assert bot.state.freeturn.installed is True
+
+
+def test_turn_scan_updates_the_existing_ddos_allow_policy(tmp_path: Path) -> None:
+    from BOT import antiddos
+
+    bot = make_bot(tmp_path)
+    control = FakeFtControl()
+    control.relay_addresses = ["8.8.8.8", "85.217.140.2"]
+    bot.freeturn.control = control
+    state = asyncio.run(control.probe())
+    bot.freeturn.state = state
+    bot.state.freeturn = state
+    assert asyncio.run(bot.turn_scan_once()) is True
+    policy = antiddos.Policy.from_dict(bot.state.ddos)
+    assert policy.freeturn_ports == [56123]
+    assert policy.turn_allow == ["8.8.8.8"]
+    assert bot.store.load().turn_scan.cidrs == ["8.8.8.8"]
+
+
+def test_core_switch_between_the_two_engines(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    run(bot.route(1, 0, "core:show"))
+    assert "core" in str(bot.rendered[-1]).lower()
+    run(bot.route(1, 0, "core:set:freeturn"))
+    assert bot.state.core == "freeturn"
+    run(bot.route(1, 0, "core:set:xray"))
+    assert bot.state.core == "xray"
+    run(bot.route(1, 0, "core:set:other"))
+    assert bot.state.core == "xray"
+
+
+def test_freeturm_inline_inputs_are_routed(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.freeturn.control = FakeFtControl()
+    run(bot.dispatch_input(7, "ft_port", "-", "56140"))
+    assert bot.state.freeturn.config.listen_port == 56140
+
+
+def test_a_new_inbound_is_pushed_to_the_live_subscription(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.sub_enabled = True
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = True
+    control = bot.control
+    first = asyncio.run(bot.subs_sync())
+    assert first is True
+    assert control.calls[-1][0] == "sub-sync"
+    again = asyncio.run(bot.subs_sync())
+    assert again is False
+    extra = new_inbound("vless", 8443, "grpc", "tls")
+    extra.make_client("owner")
+    bot.state.xray.add(extra)
+    assert asyncio.run(bot.subs_sync()) is True
+    assert control.calls[-1][0] == "sub-sync"
+
+
+def test_telegram_serverless_subscription_refreshes_for_new_inbounds(tmp_path: Path, monkeypatch) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tgcloud_app_id = "123456"
+    bot.xray.tgcloud_token = "app" + "123456" + ":" + "A" * 32
+    pushes = []
+    monkeypatch.setattr(serverless, "publish_static", lambda token, files: pushes.append((token, dict(files))) or {})
+    first = new_inbound("vless", 443, "raw", "reality")
+    first.make_client("owner")
+    bot.state.xray.add(first)
+    assert asyncio.run(bot.subs_sync(force=True)) is True
+    first_files = pushes[-1][1]
+    assert len(first_files) == 1
+    first_payload = next(iter(first_files.values())).strip()
+    assert len(base64.b64decode(first_payload, validate=True).decode().splitlines()) == 1
+    second = new_inbound("vless", 8443, "grpc", "tls")
+    second.make_client("owner")
+    bot.state.xray.add(second)
+    assert asyncio.run(bot.subs_sync()) is True
+    second_files = pushes[-1][1]
+    assert list(first_files) == list(second_files)
+    decoded = base64.b64decode(next(iter(second_files.values())).strip(), validate=True).decode()
+    assert len(decoded.splitlines()) == 2
+    assert not any(call[0] == "sub-sync" for call in bot.control.calls)
+
+
+def test_serverless_warning_is_shown_when_the_app_probe_reports_missing(tmp_path: Path, monkeypatch, capsys) -> None:
+    bot = make_bot(tmp_path)
+
+    async def get_me(refresh: bool = True):
+        return {"id": 123456, "supports_inline_queries": True}
+
+    bot.app.get_me = get_me
+    monkeypatch.setattr(serverless, "check_app", lambda app_id: {"status": "missing", "http_status": 404, "error_type": "APP_NOT_FOUND"})
+    assert asyncio.run(bot.check_inline_mode()) is True
+    assert i18n.t("TUI_SERVERLESS_WARN", "en", app_id=123456) in capsys.readouterr().err
+    assert bot.serverless_status["status"] == "missing"
+    html = xscreens.subs_screen(bot.xray.view(), []).to_html()
+    assert i18n.t("TGCLOUD_NOT_ENABLED", "en").replace(">", "&gt;") in html
+
+
+def test_serverless_input_shows_progress_then_both_subscription_links(tmp_path: Path, monkeypatch) -> None:
+    bot = make_bot(tmp_path)
+    token = "app123456:" + "A" * 32
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.tunnel_host = "obhod.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = True
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    uploaded = []
+    monkeypatch.setattr(serverless, "verify_token", lambda value: {"app_id": "123456", "revision": 7})
+    monkeypatch.setattr(serverless, "publish_static", lambda value, files: uploaded.append(dict(files)) or {})
+    monkeypatch.setattr(serverless, "validate_subscription", lambda value, url, links: list(links))
+
+    asyncio.run(bot.dispatch_input(7, "xr_tgcloud_key", "-", token))
+
+    assert len(bot.sent) == 2
+    progress = bot.sent[0].to_html()
+    final = bot.sent[-1].to_html()
+    assert i18n.t("TGCLOUD_CONNECTING", "en") in progress
+    assert "app123456.tgcloud.ai/" in final
+    assert "base64/base64" not in final
+    assert "obhod.tail1234.ts.net" in final
+    assert i18n.t("TGCLOUD_SUB", "en") in final
+    assert uploaded and len(uploaded[-1]) == 1
+    assert bot.state.xray.tgcloud_app_id == "123456"
+    assert bot.xray.tgcloud_token == token
+    key_file = bot.xray.tgcloud_key_path()
+    assert key_file.read_text(encoding="utf-8") == token
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    assert token not in str(bot.state.to_dict())
+    assert bot.busy is False
+
+
+def test_serverless_rejected_token_shows_error_and_clears_progress(tmp_path: Path, monkeypatch) -> None:
+    bot = make_bot(tmp_path)
+    token = "app123456:" + "A" * 32
+    def reject(_value: str):
+        raise serverless.ServerlessError("invalid Serverless token", 401)
+
+    monkeypatch.setattr(serverless, "verify_token", reject)
+    asyncio.run(bot.dispatch_input(7, "xr_tgcloud_key", "-", token))
+
+    assert len(bot.sent) == 2
+    assert "invalid Serverless token" in bot.sent[-1].to_html()
+    assert bot.state.xray.tgcloud_app_id == ""
+    assert bot.xray.tgcloud_token == ""
+    assert bot.busy is False
+
+
+def test_the_subscription_push_is_off_without_a_permanent_domain(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.state.xray.sub_address = "203.0.113.10"
+    bot.state.xray.sub_enabled = True
+    bot.state.xray.tunnel_host = "obhod-test.tail1234.ts.net"
+    bot.state.xray.tunnel_enabled = False
+    before = len(bot.control.calls)
+    assert asyncio.run(bot.subs_sync()) is False
+    assert asyncio.run(bot.subs_sync(force=True)) is False
+    assert len(bot.control.calls) == before
+    bot.state.xray.tunnel_enabled = True
+    assert asyncio.run(bot.subs_sync()) is True
+    assert bot.control.calls[-1][-1] == "obhod-test.tail1234.ts.net"
+
+
+def test_the_subscription_push_is_off_until_it_is_enabled(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    bot.state.xray.add(inbound)
+    bot.state.xray.sub_enabled = False
+    before = len(bot.control.calls)
+    assert asyncio.run(bot.subs_sync()) is False
+    assert len(bot.control.calls) == before
+
+
+def make_ports_config(state_dir: Path, sub_port: int, api_port: int) -> SimpleNamespace:
+    cfg = make_config(state_dir)
+    cfg.sub_port = sub_port
+    cfg.api_port = api_port
+    return cfg
+
+
+def test_the_env_ports_seed_the_state(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.cfg = make_ports_config(tmp_path, 2097, 62790)
+    bot.seed_ports()
+    assert bot.state.sub_port == 2097
+    assert bot.state.xray.sub_port == 2097
+    assert bot.state.xray.api_port == 62790
+
+
+def test_the_seed_never_overwrites_a_choice(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.state.sub_port = 9443
+    bot.state.xray.sub_port = 9443
+    bot.state.xray.api_port = 40000
+    bot.cfg = make_ports_config(tmp_path, 2097, 62790)
+    bot.seed_ports()
+    assert bot.state.sub_port == 9443
+    assert bot.state.xray.api_port == 40000
+
+
+def test_without_env_ports_the_defaults_stay(tmp_path: Path) -> None:
+    bot = make_bot(tmp_path)
+    bot.seed_ports()
+    assert bot.state.sub_port == SUB_PORT
+    assert bot.state.xray.api_port == API_PORT

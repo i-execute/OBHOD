@@ -1,0 +1,561 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .models import SshSettings
+from .shell import LocalShell, ShellError, ShellOutput, agent_argv
+
+PROTO = 3
+RECOMMENDED_VERSION = "v26.11.9"
+DEFAULT_VERSION = RECOMMENDED_VERSION
+UNIT_NAME = "xray.service"
+CORE_NAME = "xray"
+
+PINNED_SHA256 = {
+    "64": "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82",
+    "arm64-v8a": "64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be",
+    "arm32-v7a": "19c51e08a6562705fb1cb032a84fd87df21d7e27b194f035be7e754dbe3a97b3",
+    "arm32-v6": "955be2b84854ba566b2afc6c20186967e5a0ce7b2078e0f4e9a99e3aac662f38",
+    "32": "225343a01db48e23c1d3091e7fa45971b0d12c20943927846a4a87da374e384d",
+    "s390x": "5657912fbd7429d8a0202dccd8815a297fe49d009216a5359af238ebb6f0db4c",
+    "riscv64": "296884b8601ee95dba31e6664c6121d80e33697382a1f564f05b028e61601a84",
+}
+
+ASSET_BY_ARCH = {
+    "x86_64": "64",
+    "amd64": "64",
+    "aarch64": "arm64-v8a",
+    "arm64": "arm64-v8a",
+    "armv7l": "arm32-v7a",
+    "armv7": "arm32-v7a",
+    "armv6l": "arm32-v6",
+    "i686": "32",
+    "i386": "32",
+    "s390x": "s390x",
+    "riscv64": "riscv64",
+}
+
+RELEASE_URL = "https://github.com/XTLS/Xray-core/releases/download/{version}/Xray-linux-{asset}.zip"
+DGST_URL = RELEASE_URL + ".dgst"
+
+XRAY_ERROR_CODES = {
+    "bad_arg": "wrong arguments",
+    "needs_root": "root rights are required on the server",
+    "no_python": "python3 is missing on the server",
+    "unsupported_arch": "the server architecture is not supported",
+    "download_failed": "the core release download failed",
+    "digest_mismatch": "the archive digest does not match",
+    "unpack_failed": "the core archive could not be unpacked",
+    "config_invalid": "the core rejected the configuration",
+    "config_missing": "no configuration was supplied",
+    "no_systemd": "systemd is missing on the server",
+    "start_failed": "the core did not start",
+    "not_installed": "the core is not installed",
+    "port_busy": "the port is busy on the server, another service holds it, pick another port",
+    "not_found": "not found",
+    "internal": "internal error of the core script",
+    "transport": "the transport to the server failed",
+    "proto_mismatch": "the core script protocol version does not match",
+}
+
+REMOTE_DIR = Path(__file__).resolve().parent.parent
+AGENT_PATH = REMOTE_DIR / "Storage" / "remote" / "xray_agent.py"
+SUB_SERVER_PATH = REMOTE_DIR / "Storage" / "remote" / "sub_server.py"
+
+
+def _load_remote(name: str, path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise XrayError(f"{name} is missing next to the bot: {exc}", "internal") from None
+
+
+def agent_code() -> str:
+    return _load_remote("core script", AGENT_PATH)
+
+
+def sub_server_code() -> str:
+    return _load_remote("subscription server", SUB_SERVER_PATH)
+
+
+ARG_LIMIT = 65536
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def payload_arg(flag: str, payload: bytes) -> tuple[str, bytes]:
+    encoded = b64(payload)
+    if len(encoded) + len(flag) + 4 > ARG_LIMIT:
+        return "--%s=-" % flag, encoded.encode("ascii")
+    return "--%s=%s" % (flag, encoded), b""
+
+
+@dataclass
+class XrayResponse:
+    result: str = "err"
+    code: str = ""
+    msg: str = ""
+    stage: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+    logs: list[str] = field(default_factory=list)
+    proto: int = PROTO
+
+    @property
+    def ok(self) -> bool:
+        return self.result == "ok"
+
+    def raise_for_status(self) -> None:
+        if self.ok:
+            return
+        text = self.msg or XRAY_ERROR_CODES.get(self.code, self.code) or "unknown error"
+        if self.stage and self.code != "bad_arg":
+            text = f"{text} (stage {self.stage})"
+        raise XrayError(text, self.code or "internal", self.data)
+
+
+class XrayError(Exception):
+    def __init__(self, message: str, code: str = "internal", data: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.data: dict[str, Any] = dict(data) if isinstance(data, dict) else {}
+
+
+SUB_PORT = 2096
+
+
+@dataclass
+class TunnelState:
+    installed: bool = False
+    version: str = ""
+    backend: str = "absent"
+    hostname: str = ""
+    url: str = ""
+    funnel: bool = False
+    key_expiry: str = ""
+    expired: bool = False
+    have_node_key: bool = False
+    tags: list[str] = field(default_factory=list)
+    public_ip: str = ""
+    tailscale_ip: str = ""
+    approval_url: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "installed": bool(self.installed),
+            "version": self.version[:32],
+            "backend": self.backend[:24],
+            "hostname": self.hostname[:96],
+            "url": self.url[:128],
+            "funnel": bool(self.funnel),
+            "key_expiry": self.key_expiry[:32],
+            "expired": bool(self.expired),
+            "have_node_key": bool(self.have_node_key),
+            "tags": [str(item)[:56] for item in self.tags[:8]],
+            "public_ip": self.public_ip[:64],
+            "tailscale_ip": self.tailscale_ip[:64],
+            "approval_url": self.approval_url[:200],
+        }
+
+    @staticmethod
+    def from_dict(raw: dict[str, Any] | None) -> "TunnelState":
+        data = raw or {}
+        raw_tags = data.get("tags") or []
+        return TunnelState(
+            installed=bool(data.get("installed", False)),
+            version=str(data.get("version", "") or "")[:32],
+            backend=str(data.get("backend", "") or "absent")[:24],
+            hostname=str(data.get("hostname", "") or "")[:96],
+            url=str(data.get("url", "") or "")[:128],
+            funnel=bool(data.get("funnel", False)),
+            key_expiry=str(data.get("key_expiry", "") or "")[:32],
+            expired=bool(data.get("expired", False)),
+            have_node_key=bool(data.get("have_node_key", False)),
+            tags=[str(item)[:56] for item in raw_tags[:8]] if isinstance(raw_tags, list) else [],
+            public_ip=str(data.get("public_ip", "") or "")[:64],
+            tailscale_ip=str(data.get("tailscale_ip", "") or "")[:64],
+            approval_url=str(data.get("approval_url", "") or "")[:200],
+        )
+
+    def healthy(self) -> bool:
+        return bool(self.installed and self.funnel and not self.expired and self.url.startswith("https://"))
+
+
+@dataclass
+class SubState:
+    installed: bool = False
+    registry: str = ""
+    unit: str = ""
+    entries: int = 0
+    port: int = SUB_PORT
+    listening: bool = False
+    service: str = "absent"
+    systemd: bool = False
+
+    @property
+    def active(self) -> bool:
+        return bool(self.listening)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "SubState":
+        raw = raw or {}
+        return cls(
+            installed=bool(raw.get("installed", False)),
+            registry=str(raw.get("registry", "") or ""),
+            unit=str(raw.get("unit", "") or ""),
+            entries=int(raw.get("entries", 0) or 0),
+            port=int(raw.get("port", SUB_PORT) or SUB_PORT),
+            listening=bool(raw.get("listening", False)),
+            service=str(raw.get("service", "absent") or "absent"),
+            systemd=bool(raw.get("systemd", False)),
+        )
+
+
+@dataclass
+class CoreState:
+    installed: bool = False
+    version: str = ""
+    pinned: str = DEFAULT_VERSION
+    core_path: str = ""
+    config_path: str = ""
+    config_exists: bool = False
+    config_digest: str = ""
+    inbounds: int = 0
+    port: int = 0
+    ports: list[int] = field(default_factory=list)
+    listening: list[int] = field(default_factory=list)
+    service: str = "absent"
+    unit: bool = False
+    systemd: bool = False
+    arch: str = ""
+    asset: str = ""
+    fallback: bool = False
+    fallback_version: str = ""
+
+    @property
+    def running(self) -> bool:
+        return self.service == "active"
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> CoreState:
+        raw = raw or {}
+        return cls(
+            installed=bool(raw.get("installed", False)),
+            version=str(raw.get("version", "") or ""),
+            pinned=str(raw.get("pinned", DEFAULT_VERSION) or DEFAULT_VERSION),
+            core_path=str(raw.get("core_path", "") or ""),
+            config_path=str(raw.get("config_path", "") or ""),
+            config_exists=bool(raw.get("config_exists", False)),
+            config_digest=str(raw.get("config_digest", "") or ""),
+            inbounds=int(raw.get("inbounds", 0) or 0),
+            port=int(raw.get("port", 0) or 0),
+            ports=[int(item) for item in raw.get("ports") or []],
+            listening=[int(item) for item in raw.get("listening") or []],
+            service=str(raw.get("service", "absent") or "absent"),
+            unit=bool(raw.get("unit", False)),
+            systemd=bool(raw.get("systemd", False)),
+            arch=str(raw.get("arch", "") or ""),
+            asset=str(raw.get("asset", "") or ""),
+            fallback=bool(raw.get("fallback", False)),
+            fallback_version=str(raw.get("fallback_version", "") or ""),
+        )
+
+
+def parse_response(text: str) -> XrayResponse:
+    payload = ""
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            payload = stripped
+    if not payload:
+        raise XrayError((text or "").strip()[:400] or "the core script returned no answer", "transport")
+    try:
+        raw = json.loads(payload)
+    except ValueError:
+        raise XrayError(f"the answer is not parseable: {payload[:200]}", "transport") from None
+    if not isinstance(raw, dict):
+        raise XrayError("the answer is not an object", "transport")
+    response = XrayResponse(
+        result=str(raw.get("result", "err")),
+        code=str(raw.get("code", "") or ""),
+        msg=str(raw.get("msg", "") or ""),
+        stage=str(raw.get("stage", "") or ""),
+        data=raw.get("data") if isinstance(raw.get("data"), dict) else {},
+        logs=[str(item) for item in raw.get("logs") or []],
+        proto=int(raw.get("proto", 0) or 0),
+    )
+    if response.proto != PROTO:
+        raise XrayError(f"the core script speaks protocol {response.proto} and the bot expects {PROTO}", "proto_mismatch")
+    return response
+
+
+class XrayControl:
+    def __init__(self, shell: LocalShell | None = None, timeout: float = 300.0) -> None:
+        self.shell = shell or LocalShell()
+        self.timeout = float(timeout)
+
+    async def call(
+        self,
+        cfg: SshSettings,
+        argv: list[str],
+        timeout: float | None = None,
+        source: str = "",
+        stdin: bytes | None = None,
+    ) -> XrayResponse:
+        try:
+            out: ShellOutput = await self.shell.run_argv(
+                agent_argv(argv, source or agent_code()),
+                stdin=stdin,
+                timeout=timeout or self.timeout,
+            )
+        except ShellError as exc:
+            raise XrayError(exc.message, "transport") from None
+        return parse_response(out.text)
+
+    async def probe(self, cfg: SshSettings) -> CoreState:
+        response = await self.call(cfg, ["probe"], timeout=90)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def install_core(
+        self,
+        cfg: SshSettings,
+        version: str = "latest",
+        url: str = "",
+        sha256: str = "",
+        force: bool = False,
+    ) -> XrayResponse:
+        argv = ["install-core", f"--version={version}"]
+        if url:
+            argv.append(f"--url={url}")
+        if sha256:
+            argv.append(f"--sha256={sha256}")
+        if force:
+            argv.append("--force")
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 600.0))
+        response.raise_for_status()
+        return response
+
+    async def apply(self, cfg: SshSettings, config: str, version: str = "latest", restart: bool = True) -> CoreState:
+        payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
+        flag, stdin = payload_arg("config-b64", payload)
+        argv = ["apply", flag, f"--version={version}"]
+        if not restart:
+            argv.append("--no-restart")
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 600.0), stdin=stdin)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def inbound_apply(
+        self,
+        cfg: SshSettings,
+        inbound_id: int,
+        config: str,
+        remark: str = "",
+        version: str = "latest",
+    ) -> CoreState:
+        payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
+        flag, stdin = payload_arg("config-b64", payload)
+        argv = [
+            "inbound-apply",
+            f"--id={int(inbound_id)}",
+            f"--remark={str(remark or '')[:64]}",
+            f"--version={version}",
+            flag,
+        ]
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 600.0), stdin=stdin)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def inbound_stop(self, cfg: SshSettings, inbound_id: int) -> CoreState:
+        response = await self.call(cfg, ["inbound-stop", f"--id={int(inbound_id)}"], timeout=120)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def inbound_remove(self, cfg: SshSettings, inbound_id: int) -> CoreState:
+        response = await self.call(cfg, ["inbound-remove", f"--id={int(inbound_id)}"], timeout=120)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def test_config(self, cfg: SshSettings, config: str) -> tuple[bool, str]:
+        payload = config.encode("utf-8") if isinstance(config, str) else bytes(config)
+        flag, stdin = payload_arg("config-b64", payload)
+        response = await self.call(cfg, ["test-config", flag], timeout=120, stdin=stdin)
+        response.raise_for_status()
+        return bool(response.data.get("valid", False)), str(response.data.get("output", "") or "")
+
+    async def restart(self, cfg: SshSettings) -> CoreState:
+        response = await self.call(cfg, ["restart"], timeout=180)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def stop(self, cfg: SshSettings) -> CoreState:
+        response = await self.call(cfg, ["stop"], timeout=120)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def start(self, cfg: SshSettings) -> CoreState:
+        response = await self.call(cfg, ["start"], timeout=120)
+        response.raise_for_status()
+        return CoreState.from_dict(response.data)
+
+    async def logs(self, cfg: SshSettings, tail: int = 120) -> list[str]:
+        response = await self.call(cfg, ["logs", f"--tail={int(tail)}"], timeout=120)
+        response.raise_for_status()
+        return [str(item) for item in response.data.get("lines") or []]
+
+    async def x25519(self, cfg: SshSettings) -> tuple[str, str]:
+        response = await self.call(cfg, ["x25519"], timeout=60)
+        response.raise_for_status()
+        return str(response.data.get("private", "") or ""), str(response.data.get("public", "") or "")
+
+    async def mldsa65(self, cfg: SshSettings, auto_install: bool = False) -> tuple[str, str]:
+        argv = ["mldsa65"]
+        if auto_install:
+            argv.append("--auto-install=true")
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 300.0) if auto_install else 90)
+        response.raise_for_status()
+        return str(response.data.get("seed", "") or ""), str(response.data.get("verify", "") or "")
+
+    async def vlessenc(self, cfg: SshSettings, auto_install: bool = False) -> dict[str, Any]:
+        argv = ["vlessenc"]
+        if auto_install:
+            argv.append("--auto-install=true")
+        response = await self.call(cfg, argv, timeout=max(self.timeout, 300.0) if auto_install else 90)
+        response.raise_for_status()
+        data = response.data if isinstance(response.data, dict) else {}
+        out: dict[str, Any] = {str(key): value for key, value in data.items() if not isinstance(value, list)}
+        items = []
+        for item in data.get("items") or []:
+            if isinstance(item, dict):
+                items.append({str(key): str(value) for key, value in item.items()})
+        if items:
+            out["items"] = items
+        return out
+
+    async def stats(self, cfg: SshSettings, pattern: str = "user>>>") -> dict[str, int]:
+        response = await self.call(cfg, ["stats", "--pattern=" + str(pattern)[:64]], timeout=90)
+        response.raise_for_status()
+        found: dict[str, int] = {}
+        for key, value in (response.data.get("stats") or {}).items():
+            name = str(key)[:300]
+            try:
+                found[name] = max(int(value), 0)
+            except (TypeError, ValueError):
+                continue
+        return found
+
+    async def sub_install(self, cfg: SshSettings, port: int = SUB_PORT, domain: str = "") -> SubState:
+        payload = sub_server_code().encode("utf-8")
+        flag, stdin = payload_arg("server-b64", payload)
+        response = await self.call(cfg, ["sub-install", flag, f"--port={int(port)}", "--domain=" + str(domain)[:128]], timeout=180, stdin=stdin)
+        response.raise_for_status()
+        return SubState.from_dict(response.data)
+
+    async def sub_sync(self, cfg: SshSettings, registry: dict[str, Any], port: int = SUB_PORT, domain: str = "") -> SubState:
+        payload = json.dumps(registry, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        flag, stdin = payload_arg("registry-b64", payload)
+        response = await self.call(cfg, ["sub-sync", flag, f"--port={int(port)}", "--domain=" + str(domain)[:128]], timeout=180, stdin=stdin)
+        response.raise_for_status()
+        return SubState.from_dict(response.data)
+
+    async def tunnel_status(self, cfg: SshSettings) -> "TunnelState":
+        response = await self.call(cfg, ["tunnel-status"], timeout=90)
+        response.raise_for_status()
+        return TunnelState.from_dict(response.data)
+
+    async def tunnel_install(self, cfg: SshSettings) -> "TunnelState":
+        response = await self.call(cfg, ["tunnel-install"], timeout=900)
+        response.raise_for_status()
+        return TunnelState.from_dict(response.data)
+
+    async def tunnel_up(
+        self,
+        cfg: SshSettings,
+        key: str = "",
+        hostname: str = "",
+        port: int = SUB_PORT,
+        https_port: int = 0,
+        auto_install: bool = False,
+        exit_node: bool = False,
+        tags: str = "",
+    ) -> "TunnelState":
+        argv = ["tunnel-up", "--key=" + str(key)[:320], "--hostname=" + str(hostname)[:96], "--port=%d" % int(port)]
+        if https_port:
+            argv.append("--https-port=%d" % int(https_port))
+        if auto_install:
+            argv.append("--auto-install=1")
+        if exit_node:
+            argv.append("--exit-node=1")
+        if tags:
+            argv.append("--tags=" + str(tags)[:160])
+        response = await self.call(cfg, argv, timeout=900 if auto_install else 600)
+        response.raise_for_status()
+        return TunnelState.from_dict(response.data)
+
+    async def tunnel_down(self, cfg: SshSettings) -> "TunnelState":
+        response = await self.call(cfg, ["tunnel-down"], timeout=180)
+        response.raise_for_status()
+        return TunnelState.from_dict(response.data)
+
+    async def sub_status(self, cfg: SshSettings, port: int = SUB_PORT) -> SubState:
+        response = await self.call(cfg, ["sub-status", f"--port={int(port)}"], timeout=90)
+        response.raise_for_status()
+        return SubState.from_dict(response.data)
+
+    async def sub_stop(self, cfg: SshSettings, port: int = SUB_PORT) -> SubState:
+        response = await self.call(cfg, ["sub-stop", f"--port={int(port)}"], timeout=120)
+        response.raise_for_status()
+        return SubState.from_dict(response.data)
+
+    async def uninstall(self, cfg: SshSettings, purge: bool = True) -> XrayResponse:
+        argv = ["uninstall"]
+        if purge:
+            argv.append("--purge")
+        response = await self.call(cfg, argv, timeout=180)
+        response.raise_for_status()
+        return response
+
+
+def release_asset(version: str, asset: str) -> str:
+    return RELEASE_URL.format(version=version, asset=asset)
+
+
+def asset_of_arch(arch: str) -> str:
+    return ASSET_BY_ARCH.get(arch, "")
+
+
+def pinned_digest(arch: str) -> str:
+    return PINNED_SHA256.get(ASSET_BY_ARCH.get(arch, ""), "")
+
+
+def digest_of(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def parse_dgst(body: str, key: str = "SHA2-256") -> str:
+    for line in (body or "").splitlines():
+        token = line.strip()
+        if "=" not in token:
+            continue
+        name, value = token.split("=", 1)
+        if name.strip().upper().replace("_", "-") == key.upper():
+            return value.strip().lower()
+    return ""
+
+
+def parse_xray_version(text: str) -> str:
+    for line in (text or "").splitlines():
+        token = line.strip()
+        if token.startswith("Xray"):
+            parts = token.split()
+            if len(parts) >= 2:
+                return parts[1]
+    return ""

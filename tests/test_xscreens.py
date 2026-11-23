@@ -1,0 +1,414 @@
+from __future__ import annotations
+
+import pytest
+
+from BOT import i18n, screens, subs, xscreens
+from BOT.store import State
+from BOT.scan import ScanResult, security_fits
+from BOT.ui import MAX_BUTTONS, count_buttons
+from BOT.xray import NETWORKS, SECURITIES, XrayState, new_inbound
+
+
+def view(security: str = "reality", network: str = "raw") -> xscreens.XrayView:
+    from BOT.xray import XrayState
+
+    state = XrayState()
+    state.inbounds.append(new_inbound("vless", 443, network, security))
+    return xscreens.XrayView(state=state, core={"installed": True, "service": "active", "version": "26.10.31"})
+
+
+def test_home_and_core_line() -> None:
+    item = view()
+    html = xscreens.home(item).to_html()
+    assert "Xray" in html
+    assert "26.10.31" in html
+    assert count_buttons(html) <= MAX_BUTTONS
+    assert i18n.t("HOME_CORE_MISSING") in xscreens.core_line(xscreens.XrayView(state=item.state, core={"installed": False}), i18n.translator())
+    assert i18n.t("HOME_CORE_MISSING", "zh") in xscreens.core_line(xscreens.XrayView(state=item.state, core={"installed": False}, lang="zh"), i18n.translator("zh"))
+
+
+def test_new_menu_lists_only_supported_values() -> None:
+    html = xscreens.new_menu(view()).to_html()
+    for network in NETWORKS:
+        assert f"xr:wiz:net:{network}" in html
+    for forbidden in (":tls", ":none", "vmess", "trojan", "shadowsocks", "ws", "httpupgrade"):
+        assert forbidden not in html
+
+
+def test_custom_menu_shows_relevant_fields() -> None:
+    item = view()
+    item.draft = {"network": "xhttp", "security": "reality", "port": "443"}
+    html = xscreens.custom_menu(item).to_html()
+    assert "443" in html
+    assert "xr:cyc:network" in html
+
+
+@pytest.mark.parametrize("security", SECURITIES)
+@pytest.mark.parametrize("network", NETWORKS)
+def test_inbound_screen_matches_security(security: str, network: str) -> None:
+    state_inbound = new_inbound("vless", 8443, network, security)
+    state_inbound.make_client("owner")
+    item = view(security, network)
+    html = xscreens.inbound_screen(item, state_inbound).to_html()
+    assert "id" in html
+    assert count_buttons(html) <= MAX_BUTTONS
+    relevant = xscreens.relevant_fields(security, network)
+    if "mldsa65" in relevant:
+        assert "ml-dsa-65" in html
+    if "service" in relevant:
+        assert "grpc" in html or i18n.t("FIELD_SERVICE") in html
+
+
+def test_inbound_screen_marks_rest_fields_collapsed() -> None:
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    html = xscreens.inbound_screen(view(), inbound).to_html()
+    assert "<details" in html
+    assert i18n.t("XR_INBOUND_REST") in html
+
+
+def test_links_screen_renders_links() -> None:
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    links = [("owner", "vless://uuid@host:443?security=reality")]
+    html = xscreens.links_screen(view(), inbound, "host", links).to_html()
+    assert "vless://uuid" in html
+    assert "copy_text" in html
+
+
+def test_links_screen_moves_a_long_link_into_the_summary() -> None:
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    long_link = "vless://" + "a" * 500
+    html = xscreens.links_screen(view(), inbound, "host", [("owner", long_link)]).to_html()
+    assert "<details>" in html
+    assert long_link in html
+    assert "copy_text" not in html
+
+
+def test_inbound_screen_offers_a_list_for_fixed_choices() -> None:
+    from BOT import inline
+
+    inline.configure("ab" * 32)
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    html = xscreens.inbound_screen(view(), inbound).to_html()
+    assert i18n.t("BTN_LIST") in html
+    assert inline.list_query("xr_fingerprint", str(inbound.id)) in html
+
+
+def test_inbound_screen_direct_link_without_clients() -> None:
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    item = view()
+    item.address = "203.0.113.10"
+    html = xscreens.inbound_screen(item, inbound).to_html()
+    assert "vless://" in html
+    assert f"xr:subscan:{inbound.id}" in html
+    assert "xr:cladd" not in html
+    assert "xr:cl:" not in html
+
+
+def test_subnet_scan_screen_renders_results_and_pick_buttons() -> None:
+    from BOT.scan import ScanResult
+
+    item = view()
+    item.address = "203.0.113.10"
+    item.vps_subnet = "203.0.113.0/24"
+    res = ScanResult(target="203.0.113.44:443", host="203.0.113.44", ip="203.0.113.44", port=443, feasible=True, tls13=True, h2=True, x25519=True, server_names=["cdn.example.com"], latency_ms=9)
+    html = xscreens.subnet_scan_screen(item, [res], ctx="new").to_html()
+    assert "203.0.113.0/24" in html
+    assert "xr:subscan:vps:new" in html
+    assert "xr:subscan:pick:new:0" in html
+
+
+def test_mldsa_screen() -> None:
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    html = xscreens.mldsa_screen(view(), inbound).to_html()
+    assert "3500" in html
+    assert "xr:mldsa" in html
+
+
+def test_subs_screen_shows_path_format() -> None:
+    item = view()
+    html = xscreens.subs_screen(item, []).to_html()
+    assert "xr:subs:apply" not in html
+    assert "xr:dom:up" in html
+    assert "<table" not in html
+    assert i18n.t("XR_SUBS_NO_DOMAIN") in html
+    assert "switch_inline_query_current_chat" in html
+    item.state.tunnel_host = "obhod-test.tail1234.ts.net:8443"
+    item.state.tunnel_enabled = True
+    named = xscreens.subs_screen(item, []).to_html()
+    assert named.count("xr:subs:apply") == 0
+    assert "xr:dom:off" in named
+    assert i18n.t("XR_SUBS_NO_DOMAIN") not in named
+
+
+def test_subs_credentials_are_shown_only_for_nonworking_providers() -> None:
+    state = XrayState()
+    state.tunnel_host = "obhod.tail1234.ts.net:8443"
+    state.tunnel_enabled = True
+    view_item = xscreens.XrayView(state=state, lang="en", serverless_token_set=True)
+    view_item.state.tgcloud_app_id = "123456"
+    rows = [("__TGCLOUD_VERIFY_ERROR__", "", "")]
+    html = xscreens.subs_screen(view_item, rows).to_html()
+    assert i18n.t("DOM_KEY_INPUT") not in html
+    assert i18n.t("TGCLOUD_KEY_INPUT") in html
+
+    view_item.state.tunnel_enabled = False
+    view_item.state.tunnel_host = ""
+    view_item.serverless_token_set = True
+    html_cloud_only = xscreens.subs_screen(view_item, []).to_html()
+    assert i18n.t("DOM_KEY_INPUT") in html_cloud_only
+    assert i18n.t("TGCLOUD_KEY_INPUT") not in html_cloud_only
+    assert i18n.t("TAILSCALE_DNS_BTN") in html_cloud_only
+
+
+def test_subs_screen_keeps_one_link_in_a_collapsed_block() -> None:
+    state = XrayState()
+    state.sub_address = "203.0.113.10"
+    state.tunnel_host = "obhod-test.tail1234.ts.net:8443"
+    state.tunnel_enabled = True
+    state.sub_enabled = True
+    inbound = new_inbound("vless", 28443, "raw", "reality")
+    inbound.make_client("owner")
+    state.add(inbound)
+    bundle = subs.aggregate(state, [], "203.0.113.10", 30960)
+    html = xscreens.subs_screen(xscreens.XrayView(state=state, lang="en", bundle=bundle, address="203.0.113.10"), []).to_html()
+    assert html.count("<details>") == 1
+    assert html.count("vless://") == 0
+    assert subs.url_of(bundle, "203.0.113.10", 30960, state.public_base()) in html
+    assert "/json" not in html
+
+
+def test_core_screen_with_and_without_state() -> None:
+    item = view()
+    html = xscreens.core_screen(item).to_html()
+    assert "26.10.31" in html
+    empty = xscreens.XrayView(state=item.state)
+    assert i18n.t("XR_CORE_UNKNOWN") in xscreens.core_screen(empty).to_html()
+
+
+def test_scan_screen_with_results() -> None:
+    result = ScanResult(
+        target="www.google.com:443",
+        host="www.google.com",
+        port=443,
+        feasible=True,
+        tls13=True,
+        h2=True,
+        x25519=True,
+        pq_hybrid=True,
+        pq_group="x25519mlkem768",
+        cert_valid=True,
+        days_left=40,
+        latency_ms=12,
+        server_names=["www.google.com"],
+    )
+    item = view()
+    item.state.scan_targets = ["www.google.com:443"]
+    html = xscreens.scan_screen(item, [result]).to_html()
+    assert "www.google.com:443" in html
+    assert "x25519mlkem768" in html
+    assert "xr:scan:use:0" in html
+
+
+def test_scan_screen_without_results() -> None:
+    html = xscreens.scan_screen(view()).to_html()
+    assert i18n.t("XR_SCAN_EMPTY") in html
+    assert "<code>none</code>" in html
+    assert "<code>0</code>" in html
+    assert "&lt;code&gt;" not in html
+
+
+def test_scan_targets_and_input_screens() -> None:
+    item = view()
+    item.state.scan_targets = ["a:443", "b:443"]
+    assert "a:443" in xscreens.scan_targets_screen(item).to_html()
+    html = xscreens.input_screen(item, "xr_port", "1", "xr:in:1").to_html()
+    assert "switch_inline_query_current_chat" in html
+    with pytest.raises(Exception):
+        xscreens.input_screen(item, "nope")
+
+
+def test_confirm_logs_busy() -> None:
+    assert "xr:del2:1" in xscreens.confirm_screen(view(), "t", "b", "xr:del2:1").to_html()
+    assert "line" in xscreens.logs_screen(view(), ["line"], 200).to_html()
+    assert "work" in xscreens.busy_screen("work").to_html()
+
+
+def test_version_row_and_defaults() -> None:
+    assert "xr:core:ver:latest" in xscreens.version_row("v26.10.31")
+    assert len(xscreens.default_targets()) >= 100
+    assert xscreens.stat_line(new_inbound("vless", 443, "raw", "reality")) == "vless 443 raw reality"
+
+
+def test_the_scan_screen_reports_what_the_target_fits() -> None:
+    from BOT import xscreens
+    from BOT.scan import ScanResult
+    from BOT.xray import XrayState
+
+    state = XrayState()
+    state.scan_targets = ["www.cloudflare.com:443"]
+    state.scan_results = [
+        ScanResult(
+            host="www.cloudflare.com",
+            port=443,
+            feasible=True,
+            latency_ms=31,
+            tls13=True,
+            h2=True,
+            x25519=True,
+            pq_hybrid=True,
+            cert_valid=True,
+            days_left=90,
+            cert_chain_bytes=4096,
+            ml_dsa_ready=True,
+            cert_key_type="ECDSA",
+            server_names=["cloudflare"],
+            pq_group="x25519mlkem768",
+        ).to_dict()
+    ]
+    view = xscreens.XrayView(state=state, lang="en")
+    html = xscreens.scan_screen(view).build()
+    stored = ScanResult.from_dict(state.scan_results[0])
+    kinds = [kind for kind, ok, _ in security_fits(stored) if ok]
+    for kind in ("reality", "reality-x25519mlkem768", "reality-mldsa65", "tls"):
+        assert xscreens.security_label(kind, "en") in html
+    assert len(kinds) == html.count(i18n.t("XR_SCAN_FIT_YES", "en"))
+
+
+def test_the_mismatch_screen_offers_another_encryption() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.remark = "reality-443"
+    inbound.reality_private = "k" * 43
+    inbound.reality_public = "v" * 43
+    inbound.dest = "legacy.example.com:443"
+    state.add(inbound)
+    legacy = ScanResult(
+        target="legacy.example.com:443",
+        host="legacy.example.com",
+        port=443,
+        tls13=True,
+        h2=True,
+        x25519=True,
+        pq_hybrid=False,
+        cert_valid=True,
+        days_left=30,
+        cert_chain_bytes=1200,
+        ml_dsa_ready=False,
+        latency_ms=91,
+    )
+    view = xscreens.XrayView(state=state, lang="en")
+    html = xscreens.scan_mismatch_screen(view, legacy, inbound, 0).to_html()
+    assert i18n.t("XR_SCAN_MISMATCH_TITLE", "en") in html
+    assert "xr:scan:sec:tls:0" in html
+    assert "xr:scan:sec:reality-x25519mlkem768:0" not in html
+    assert i18n.t("XR_SCAN_MISMATCH_BODY", "en", target="legacy.example.com:443", security="reality, x25519").replace("<code>", "").replace("</code>", "") in html.replace("<code>", "").replace("</code>", "")
+
+
+def test_the_mismatch_screen_explains_a_short_chain() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.mldsa65_seed = "s" * 32
+    inbound.mldsa65_verify = "v" * 32
+    state.add(inbound)
+    short = ScanResult(target="a.example:443", host="a.example", port=443, tls13=True, h2=True, x25519=True, pq_hybrid=True, cert_valid=True, days_left=30, cert_chain_bytes=1800, ml_dsa_ready=False)
+    view = xscreens.XrayView(state=state, lang="en")
+    html = xscreens.scan_mismatch_screen(view, short, inbound, 1).to_html()
+    assert "1800" in html
+    assert "3500" in html
+    assert "xr:scan:sec:reality-x25519mlkem768:1" in html
+    assert "xr:scan:sec:reality:1" in html
+
+
+def test_the_target_check_screen_is_minimal() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.dest = "www.apple.com:443"
+    inland = ScanResult(
+        target="www.apple.com:443",
+        tls13=True,
+        h2=True,
+        x25519=True,
+        pq_hybrid=True,
+        pq_group="X25519MLKEM768",
+        groups={"X25519MLKEM768": "yes", "P256MLKEM768": "no"},
+        cert_valid=True,
+        days_left=44,
+        cert_chain_bytes=3231,
+    )
+    state.add(inbound)
+    view = xscreens.XrayView(state=state, lang="en")
+    html = xscreens.target_check_screen(view, inbound, inland).to_html()
+    assert i18n.t("XR_CHECK_TITLE", "en") in html
+    assert "3231" in html
+    assert "3500" in html
+    assert xscreens.security_label("reality", "en") in html
+    assert "x25519mlkem768" in html
+    assert "xr:fit:" + str(inbound.id) in html
+    empty = xscreens.target_check_screen(view, None, None).to_html()
+    assert i18n.t("XR_CHECK_MISSING", "en") in empty
+
+
+def test_the_config_settings_show_the_target_check() -> None:
+    state = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.reality_private = "k" * 43
+    inbound.dest = "www.cloudflare.com:443"
+    inbound.pq_mode = "x25519mlkem768"
+    state.add(inbound)
+    view = screens.View(state=State(xray=state), core={"installed": True}, ft_clients=1, lang="en")
+    html = screens.settings(view).to_html()
+    assert i18n.t("SET_CHECK_TARGET", "en") in html
+    assert "www.cloudflare.com:443" in html
+    assert xscreens.security_label("reality-x25519mlkem768", "en") in html
+    assert "xr:fit:" + str(inbound.id) in html
+
+
+def test_the_encryption_screen_renders_in_every_language() -> None:
+    st = XrayState()
+    inbound = new_inbound("vless", 443, "raw", "reality")
+    inbound.make_client("owner")
+    st.add(inbound)
+    for language in ("en", "ru", "zh"):
+        html = xscreens.encryption_screen(xscreens.XrayView(state=st, lang=language), inbound).to_html()
+        assert "<table" in html
+        assert "mlkem768" in html
+        assert "{" not in html
+        assert html.count('type="callback_data"') >= 7
+
+
+def test_the_encryption_screen_without_an_inbound() -> None:
+    html = xscreens.encryption_screen(xscreens.XrayView(state=XrayState(), lang="en"), None).to_html()
+    assert i18n.t("XR_CHECK_MISSING") in html
+
+
+def test_the_domain_screen_renders_in_every_language() -> None:
+    from BOT.xrayrpc import TunnelState
+
+    st = XrayState()
+    st.add(new_inbound("vless", 443, "raw", "reality"))
+    tunnel = TunnelState(installed=True, version="1.80.2", backend="Running", hostname="obhod.tail1234.ts.net", url="https://obhod.tail1234.ts.net", funnel=True)
+    for language in ("en", "ru", "zh"):
+        html = xscreens.domain_screen(xscreens.XrayView(state=st, lang=language), tunnel).to_html()
+        assert i18n.t("DOM_TITLE", language) in html
+        assert "obhod.tail1234.ts.net" in html
+        assert "{" not in html
+
+
+def test_the_domain_screen_shows_the_https_url_once_the_tunnel_is_on() -> None:
+    st = XrayState(sub_address="203.0.113.10")
+    st.tunnel_host = "obhod.tail1234.ts.net:8443"
+    st.tunnel_enabled = True
+    html = xscreens.domain_screen(xscreens.XrayView(state=st, lang="en"), None).to_html()
+    assert "https://obhod.tail1234.ts.net:8443" in html
+    assert "xr:dom:up" in html
+    assert i18n.t("DOM_KEY_INPUT") not in html
+
+
+def test_the_home_screen_has_a_domain_button() -> None:
+    html = xscreens.home(view()).to_html()
+    assert 'data="xr:dom"' not in html
+    assert 'data="xr:subs"' in html
