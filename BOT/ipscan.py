@@ -392,7 +392,6 @@ def _cymru_rows(data: dict[str, Any], t: i18n.Translator) -> list[tuple[str, str
 
 def report_blocks(data: dict[str, Any], lang: str = i18n.DEFAULT_LANGUAGE) -> list[str]:
     t = i18n.translator(lang)
-    target = str(data.get("target") or "")
     kind = str(data.get("kind") or "")
     shown_ip = str(data.get("ip") or "")
     metadata = data.get("meta") if isinstance(data.get("meta"), dict) else {}
