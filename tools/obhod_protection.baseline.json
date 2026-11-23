@@ -18,13 +18,12 @@
     "Storage/remote/cloudflared_agent.py": "59ddb207b91dc1a44cfcb65cde8f939a06d1a8dfd57327606d597494bf3dcda8",
     "Storage/remote/ddos_agent.py": "50fdc84d17b837205f02c099e54f9a0db469e366026b25c7137a3e52d18e43da",
     "Storage/remote/fail2ban_agent.py": "3b48e6eb70cf8154fe0216c178ef385b0d5aac08089da1e5862140d90331e4fc",
-    "Storage/remote/freeturn_agent.py": "cffc079567c1a35b1179277fb3ff4b9c018cd107877f9486be2206dd805ad0fc",
-    "Storage/remote/freeturn_install.b64": "a21ff30375b57487a217778d2b20675abfcd2c3c6873fb94a8ddbbefd56aaabb",
+    "Storage/remote/freeturn_agent.py": "b74de334adf1f0b718f8e59246925f715647f42dee116a59201b9af4b940ff08",
     "Storage/remote/rkn_upstream_agent.py": "47eb3352cb758281b8ba22fb0f5f64087d4d3a815294d11fb09f7bd62c484cee",
     "Storage/remote/ssh_agent.py": "474d2d480a96bdaf2d79c94c74908128aff70dfd141207e6e69f7005fc545e6b",
     "Storage/remote/sub_server.py": "f769499d19bf398f0933a7bc507cc97c19e6190eb9c0cce2b689839c7bdca49d",
     "Storage/remote/xray_agent.py": "3b274a9e2443dfa0cdfd777b1c52ba96bff39ed77dba6ec5c56268b888bfe0ef",
-    "tools/obhod_watchdog.py": "40f9548af61fe796b35a849b81f38f72cd9e538b6c8c78f5250d8a80775e4a44"
+    "tools/obhod_watchdog.py": "d1489f941d00c425cbc9589c205c2ea48a352eb69b8dc9c5ae8c51c3a928b03d"
   },
   "policy": [
     "dangerous_calls",

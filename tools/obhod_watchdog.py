@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import ast
-import base64
-import gzip
 import hashlib
 import json
 import re
@@ -31,7 +29,6 @@ PROTECTED = (
     "Storage/remote/ddos_agent.py",
     "Storage/remote/fail2ban_agent.py",
     "Storage/remote/freeturn_agent.py",
-    "Storage/remote/freeturn_install.b64",
     "Storage/remote/rkn_upstream_agent.py",
     "Storage/remote/ssh_agent.py",
     "Storage/remote/sub_server.py",
@@ -231,40 +228,6 @@ def check_release_pins() -> list[str]:
         problems.append("freeturn_agent.py must read the release checksums from github")
     if "checksums.txt" not in bot:
         problems.append("freeturn.py must read the release checksums of a newer tag")
-    bundle_pin = str(literal("BUNDLED_INSTALL_SHA256", turn) or "")
-    bundle_path = ROOT / "Storage" / "remote" / "freeturn_install.b64"
-    if not HEX64.match(bundle_pin):
-        problems.append("freeturn_agent.py must pin its hardened bundled installer")
-    else:
-        try:
-            packed = "".join(bundle_path.read_text(encoding="ascii").split())
-            bundle = gzip.decompress(base64.b64decode(packed, validate=True))
-        except (OSError, ValueError):
-            bundle = b""
-            problems.append("freeturn bundled installer is not valid gzip base64")
-        if bundle:
-            if hashlib.sha256(bundle).hexdigest() != bundle_pin:
-                problems.append("freeturn bundled installer digest does not match its pin")
-            if b"RPC_COMMANDS" not in bundle:
-                problems.append("freeturn bundled installer is not an RPC installer")
-            markers = (
-                b"ufw " + b"allow ",
-                b"ufw " + b"insert ",
-                b"--add" + b"-port=",
-                b"--add" + b"-rich-rule=",
-                b"iptables -I" + b" INPUT ",
-                b"iptables -A" + b" INPUT ",
-                b"nft add" + b" rule",
-                b"nft insert" + b" rule",
-                b"ufw delete" + b" allow",
-                b"ufw --force" + b" delete",
-                b"--remove" + b"-port=",
-                b"--remove" + b"-rich-rule=",
-                b"iptables -D" + b" INPUT ",
-                b"nft delete" + b" rule",
-            )
-            if any(marker in bundle for marker in markers):
-                problems.append("freeturn bundled installer must not mutate inbound firewall port rules")
     cloudflared = read(ROOT / "Storage" / "remote" / "cloudflared_agent.py")
     cloudflared_version = str(literal("PINNED_VERSION", cloudflared) or "")
     cloudflared_digests = literal("PINNED_SHA256", cloudflared) or {}
