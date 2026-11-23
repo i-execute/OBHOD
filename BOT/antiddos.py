@@ -32,11 +32,11 @@ SET_RKN_V4 = "rkn_v4"
 SET_RKN_V6 = "rkn_v6"
 SET_ALLOW_V4 = "rkn_allow_v4"
 SET_ALLOW_V6 = "rkn_allow_v6"
+SET_TURN_ALLOW_V4 = "turn_allow_v4"
+SET_TURN_ALLOW_V6 = "turn_allow_v6"
 SET_BAN_V4 = "manual_ban_v4"
 SET_BAN_V6 = "manual_ban_v6"
 DEFAULT_PORTS = (22, 443)
-VK_CALLS_ALLOW = "193.203.43.0/24"
-VK_CALLS_FREETURN_UDP_PORT = 56583
 MODAT_NETWORKS = (
     ipaddress.ip_network("85.217.140.0/24"),
     ipaddress.ip_network("85.217.149.0/24"),
@@ -258,14 +258,12 @@ def is_forbidden_exemption(value: object) -> bool:
     return isinstance(network, ipaddress.IPv4Network) and any(network.overlaps(blocked) for blocked in MODAT_NETWORKS)
 
 
-def exempt_entries(entries: Iterable[str] | object, *, include_vk: bool = False) -> list[str]:
+def exempt_entries(entries: Iterable[str] | object) -> list[str]:
     if isinstance(entries, (list, tuple, set, frozenset)):
         source: object = list(entries)
     else:
         source = entries
     parsed = parse_entries(source, allow_private=True)
-    if include_vk:
-        parsed.append(VK_CALLS_ALLOW)
     out: list[str] = []
     for item in parsed:
         if is_forbidden_exemption(item):
@@ -281,7 +279,8 @@ def entries_csv(entries: Iterable[str], *, allow_private: bool = False) -> str:
 
 
 def udp_detector_ports(policy: "Policy") -> list[int]:
-    return [port for port in policy.ports if int(port) != VK_CALLS_FREETURN_UDP_PORT]
+    blocked = set(ports_of(policy.freeturn_ports))
+    return [port for port in policy.ports if int(port) not in blocked]
 
 
 def split_collapsed_entries(
@@ -307,7 +306,7 @@ def split_collapsed_entries(
                 continue
             v6.append(net)
     return (
-        [str(net) for net in ipaddress.collapse_addresses(v4)],
+        [str(net) for net in ipaddress.collapse_addresses(v4) if not is_forbidden_exemption(str(net))],
         [str(net) for net in ipaddress.collapse_addresses(v6)],
     )
 
@@ -339,7 +338,7 @@ def sanitize_rkn_networks(
                 continue
             v6.append(net)
     return (
-        [str(net) for net in ipaddress.collapse_addresses(v4)],
+        [str(net) for net in ipaddress.collapse_addresses(v4) if not is_forbidden_exemption(str(net))],
         [str(net) for net in ipaddress.collapse_addresses(v6)],
     )
 
@@ -600,6 +599,8 @@ class Policy:
     rkn_enabled: bool = True
     rkn_logging: bool = True
     rkn_allow: list[str] = field(default_factory=list)
+    turn_allow: list[str] = field(default_factory=list)
+    freeturn_ports: list[int] = field(default_factory=list)
     rkn_exceptions: list[str] = field(default_factory=list)
     manual_bans: list[str] = field(default_factory=list)
     unbanned: list[str] = field(default_factory=list)
@@ -621,6 +622,8 @@ class Policy:
         self.rkn_enabled = bool(self.rkn_enabled)
         self.rkn_logging = bool(self.rkn_logging)
         self.rkn_allow = exempt_entries(self.rkn_allow)
+        self.freeturn_ports = ports_of(self.freeturn_ports)
+        self.turn_allow = exempt_entries(self.turn_allow) if self.freeturn_ports else []
         self.rkn_exceptions = parse_rkn_exceptions(self.rkn_exceptions)
         self.manual_bans = parse_entries(self.manual_bans, allow_private=False)
         self.unbanned = exempt_entries(self.unbanned)[:64]
@@ -646,6 +649,8 @@ class Policy:
             "rkn_enabled": bool(self.rkn_enabled),
             "rkn_logging": bool(self.rkn_logging),
             "rkn_allow": list(self.rkn_allow),
+            "turn_allow": list(self.turn_allow),
+            "freeturn_ports": list(self.freeturn_ports),
             "rkn_exceptions": list(self.rkn_exceptions),
             "manual_bans": list(self.manual_bans),
             "unbanned": list(self.unbanned),
@@ -653,8 +658,15 @@ class Policy:
             "disabled_sources": list(self.disabled_sources),
         }
 
+    def allow_entries(self) -> list[str]:
+        """Manual RKN exemptions only; discovered TURN peers are port-scoped."""
+        return exempt_entries(self.rkn_allow)
+
+    def turn_entries(self) -> list[str]:
+        return exempt_entries(self.turn_allow) if self.freeturn_ports else []
+
     def allow_csv(self) -> str:
-        return entries_csv(self.rkn_allow, allow_private=True)
+        return entries_csv(self.allow_entries(), allow_private=True)
 
     def bans_csv(self) -> str:
         return entries_csv(self.manual_bans, allow_private=False)
@@ -684,6 +696,8 @@ class Policy:
             rkn_enabled=_parse_bool(data.get("rkn_enabled"), True),
             rkn_logging=_parse_bool(data.get("rkn_logging"), True),
             rkn_allow=parse_entries(data.get("rkn_allow"), allow_private=True),
+            turn_allow=parse_entries(data.get("turn_allow"), allow_private=True),
+            freeturn_ports=ports_of(data.get("freeturn_ports")),
             rkn_exceptions=parse_rkn_exceptions(data.get("rkn_exceptions")),
             manual_bans=parse_entries(data.get("manual_bans"), allow_private=False),
             unbanned=parse_entries(data.get("unbanned"), allow_private=True)[:64],
@@ -698,7 +712,7 @@ def firewall_policy_differs(left: Policy, right: Policy) -> bool:
     for key in ("custom_sources", "disabled_sources"):
         a.pop(key, None)
         b.pop(key, None)
-    for key in ("ports", "rkn_allow", "rkn_exceptions", "manual_bans", "unbanned"):
+    for key in ("ports", "rkn_allow", "turn_allow", "freeturn_ports", "rkn_exceptions", "manual_bans", "unbanned"):
         a[key] = sorted(a[key])
         b[key] = sorted(b[key])
     return a != b
@@ -717,7 +731,7 @@ def parse_rkn_exceptions(raw):
         except ValueError:
             continue
         proto = parts[1].lower()
-        if address.is_unspecified or address.is_multicast or proto not in ("tcp", "udp") or not 1 <= port <= 65535:
+        if address.is_unspecified or address.is_multicast or is_forbidden_exemption(str(address)) or proto not in ("tcp", "udp") or not 1 <= port <= 65535:
             continue
         entry = "%s %s %d" % (address, proto, port)
         if entry not in out:
@@ -757,8 +771,10 @@ def nft_table(
     rkn_v6: Iterable[str] | None = None,
 ) -> str:
     policy = policy.normalise()
-    allow_v4, allow_v6 = split_collapsed_entries(exempt_entries(policy.rkn_allow, include_vk=True), allow_private=True)
+    allow_v4, allow_v6 = split_collapsed_entries(policy.allow_entries(), allow_private=True)
+    turn_v4, turn_v6 = split_collapsed_entries(policy.turn_entries(), allow_private=True)
     ban_v4, ban_v6 = split_collapsed_entries(policy.manual_bans, allow_private=False)
+    freeturn_ports = ports_of(policy.freeturn_ports)
     active_rkn_v4: list[str] = []
     active_rkn_v6: list[str] = []
     if policy.rkn_enabled:
@@ -770,6 +786,8 @@ def nft_table(
     lines = ["table inet %s {" % TABLE]
     lines.extend(_render_interval_set(SET_ALLOW_V4, "ipv4_addr", allow_v4))
     lines.extend(_render_interval_set(SET_ALLOW_V6, "ipv6_addr", allow_v6))
+    lines.extend(_render_interval_set(SET_TURN_ALLOW_V4, "ipv4_addr", turn_v4))
+    lines.extend(_render_interval_set(SET_TURN_ALLOW_V6, "ipv6_addr", turn_v6))
     lines.extend(_render_interval_set(SET_BAN_V4, "ipv4_addr", ban_v4))
     lines.extend(_render_interval_set(SET_BAN_V6, "ipv6_addr", ban_v6))
     lines.extend(_render_interval_set(SET_RKN_V4, "ipv4_addr", active_rkn_v4))
@@ -816,6 +834,10 @@ def nft_table(
         lines.append("    ip saddr @%s counter drop" % SET_BAN_V4)
     if ban_v6:
         lines.append("    ip6 saddr @%s counter drop" % SET_BAN_V6)
+    if turn_v4 and freeturn_ports:
+        lines.append("    ip saddr @%s udp dport %s accept" % (SET_TURN_ALLOW_V4, ports_set(policy, freeturn_ports)))
+    if turn_v6 and freeturn_ports:
+        lines.append("    ip6 saddr @%s udp dport %s accept" % (SET_TURN_ALLOW_V6, ports_set(policy, freeturn_ports)))
     if exceptions and (active_rkn_v4 or active_rkn_v6):
         lines.append("    jump rkn_check")
     if active_rkn_v4 and not exceptions:
@@ -829,11 +851,14 @@ def nft_table(
             lines.append('    ip6 saddr @%s limit rate 10/minute burst 5 packets log prefix "OBHOD-RKN-v6: " level warn' % SET_RKN_V6)
         lines.append("    ip6 saddr @%s counter drop" % SET_RKN_V6)
     detector_ports = udp_detector_ports(policy)
+    udp_drop = "    ip saddr @%s counter drop" % SET_UDP
+    if freeturn_ports:
+        udp_drop = "    udp dport != %s ip saddr @%s counter drop" % (ports_set(policy, freeturn_ports), SET_UDP)
     lines.extend(
         [
             "    ip saddr @%s counter drop" % SET_SYN,
             "    ip saddr @%s counter drop" % SET_CONN,
-            "    udp dport != %d ip saddr @%s counter drop" % (VK_CALLS_FREETURN_UDP_PORT, SET_UDP),
+            udp_drop,
             "    ip saddr @%s counter drop" % SET_ICMP,
             "    ip saddr @%s counter drop" % SET_SCAN,
             "    ct state new tcp flags & (fin|syn|rst|ack) == syn update @%s { ip saddr limit rate over %d/second burst %d packets } counter accept"
@@ -1062,11 +1087,16 @@ class Status:
                 if addr and addr not in seen:
                     seen.add(addr)
                     records.append(IpRecord(addr, reason, True))
-        for item in [*(self.policy.unbanned or []), *(self.policy.rkn_allow or [])]:
+        for item in [*(self.policy.unbanned or []), *self.policy.allow_entries()]:
             addr = str(item or "").strip()
             if addr and addr not in seen:
                 seen.add(addr)
                 records.append(IpRecord(addr, "unbanned", False))
+        for item in self.policy.turn_entries():
+            addr = str(item or "").strip()
+            if addr and addr not in seen:
+                seen.add(addr)
+                records.append(IpRecord(addr, "turn", False))
         return records
 
     def blocked_count(self) -> int:
@@ -1268,8 +1298,9 @@ DECOYS = (21, 23, 2121, 2323, 2222, 3389)
 API_PORTS = (10085, 10086, 10087)
 
 
-def exposure(raw: Any, allow: list[int] | None = None) -> list[Finding]:
+def exposure(raw: Any, allow: list[int] | None = None, freeturn_ports: Iterable[int] | None = None) -> list[Finding]:
     permitted = set(allow or [])
+    peer_ports = set(ports_of(freeturn_ports or ()))
     findings: list[Finding] = []
     for row in socket_rows(raw):
         port = int(row["port"])
@@ -1287,7 +1318,7 @@ def exposure(raw: Any, allow: list[int] | None = None) -> list[Finding]:
         if port in DATASTORE_PORTS:
             findings.append(Finding("datastore", port, row["proto"], process, address, "bad"))
             continue
-        if port == VK_CALLS_FREETURN_UDP_PORT and row["proto"] == "udp":
+        if port in peer_ports and row["proto"] == "udp":
             findings.append(Finding("freeturn_peer", port, row["proto"], process, address, "info"))
             continue
         if port in permitted:

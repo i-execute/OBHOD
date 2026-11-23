@@ -185,6 +185,16 @@ def test_a_digestless_install_is_reported(tmp_path: Path) -> None:
     assert "without a published digest" in result.stdout
 
 
+def test_a_tampered_freeturn_bundle_is_reported(tmp_path: Path) -> None:
+    target = clone(tmp_path)
+    bundle = target / "Storage" / "remote" / "freeturn_install.b64"
+    body = bundle.read_text(encoding="ascii")
+    bundle.write_text(("A" if body[:1] != "A" else "B") + body[1:], encoding="ascii")
+    result = run_tool(target, "policy")
+    assert result.returncode == 1
+    assert "bundled installer" in result.stdout
+
+
 def test_a_missing_cloudflared_digest_is_reported(tmp_path: Path) -> None:
     target = clone(tmp_path)
     agent = target / "Storage" / "remote" / "cloudflared_agent.py"

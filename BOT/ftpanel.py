@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from . import ftscreens, fwguard, i18n, portguard, traffic
+from . import ftscreens, fwguard, i18n, traffic
 from .freeturn import (
     BACKENDS,
     DEFAULT_LISTEN_PORT,
@@ -64,6 +64,23 @@ class FtPanel:
         self.state.config = FtConfig.from_dict(self.draft.to_dict())
         self.bot.state.freeturn = self.state
         self.bot.save()
+
+    async def sync_ddos(self, rescan: bool = True) -> None:
+        sync = getattr(self.bot, "sync_freeturn_ddos", None)
+        if callable(sync):
+            try:
+                await sync(force=True)
+            except Exception:
+                pass
+        if not rescan:
+            return
+        scan = getattr(self.bot, "turn_scan_once", None)
+        if not callable(scan):
+            return
+        try:
+            await scan()
+        except Exception:
+            return
 
     def view(self, notice: str = "", error: str = "") -> ftscreens.FtView:
         xr_panel = getattr(self.bot, "xray", None)
@@ -264,55 +281,6 @@ class FtPanel:
             port = 0
         return port if 1 <= port <= 65535 else 0
 
-    async def _auto_guard_vk(self, port: int) -> None:
-        if not 1 <= int(port or 0) <= 65535:
-            return
-        if self.guard.get("port") == port and self.guard.get("mode") == "open":
-            return
-        if not isinstance(self.control, FtControl) and "vk" not in fwguard.CACHE:
-            return
-        try:
-            extra = [int(getattr(getattr(self.bot.state, "panel", None), "port", 0) or 0)]
-            keep = portguard.protected_ports(self.bot.state, extra)
-            portguard.check(port, keep, "vk")
-        except Exception:
-            return
-        try:
-            found, reason = await asyncio.to_thread(fwguard.vk_cidrs)
-        except Exception:
-            found, reason = [], "unreachable"
-        if not found:
-            return
-        try:
-            if isinstance(self.control, FtControl):
-                res = await self.control.firewall("vk", port, fwguard.join_cidrs(found), proto=self.guard_proto(), keep=portguard.join(keep))
-            else:
-                res = await self.control.firewall("vk", port, fwguard.join_cidrs(found), proto=self.guard_proto())
-            self.guard = {
-                "port": res.port,
-                "proto": res.proto,
-                "backend": res.backend,
-                "mode": res.mode,
-                "rules": res.rules,
-                "cidrs": res.cidrs,
-            }
-            dbg_panel = getattr(self.bot, "debug", None)
-            if dbg_panel is not None and isinstance(getattr(dbg_panel, "vk", None), dict):
-                dbg_panel.vk = {
-                    "cidrs": list(found),
-                    "applied": list(found),
-                    "guard": dict(self.guard),
-                    "reason": reason or "ok",
-                    "domains": [holder for _asn, holder in fwguard.ASNS],
-                    "asns": fwguard.holders(),
-                    "added": [],
-                    "removed": [],
-                    "changed": False,
-                }
-            self.note("fw", "auto_vk", "%s %s" % (res.mode, res.backend))
-        except Exception:
-            return
-
     async def firewall(self, chat_id: int, msg_id: int, action: str, confirmed: str = "") -> None:
         t = self.tr()
         port = self.guard_port()
@@ -408,6 +376,7 @@ class FtPanel:
             self.link = self.state.links["owner"]
             self.name = "owner"
         self.save()
+        await self.sync_ddos()
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_NOTICE_CHECKED"))))
 
     async def apply(self, chat_id: int, msg_id: int) -> None:
@@ -461,8 +430,8 @@ class FtPanel:
         if "owner" in self.state.links:
             self.link = self.state.links["owner"]
             self.name = "owner"
-        await self._auto_guard_vk(int(self.draft.listen_port))
         self.save()
+        await self.sync_ddos()
         self.note("apply", "ok", "port=%d" % int(self.draft.listen_port))
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_NOTICE_APPLIED"))))
 
@@ -474,15 +443,25 @@ class FtPanel:
                 await self.control.stop()
                 notice = t("FT_NOTICE_STOPPED")
                 self.state.running = False
+                self.state.listening = False
+                self.state.listen_ports = []
             else:
                 await self.control.restart()
                 notice = t("FT_NOTICE_RESTARTED")
-                self.state.running = True
+                try:
+                    self.state = await self.control.probe()
+                    self.state.config.transport = self.draft.transport
+                    self.draft = FtConfig.from_dict(self.state.config.to_dict())
+                except FtError:
+                    self.state.running = True
+                    self.state.listening = False
+                    self.state.listen_ports = []
         except FtError as exc:
             self.note(action, "failed", exc.code)
             await self.render(chat_id, msg_id, ftscreens.home(self.view(error=self.describe(exc))))
             return
         self.save()
+        await self.sync_ddos()
         self.note(action, "ok")
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=notice)))
 
@@ -687,6 +666,7 @@ class FtPanel:
         self.conf = ""
         self.name = ""
         self.save()
+        await self.sync_ddos()
         self.note("uninstall", "ok")
         await self.render(chat_id, msg_id, ftscreens.home(self.view(notice=t("FT_UNINSTALL_DONE"))))
 

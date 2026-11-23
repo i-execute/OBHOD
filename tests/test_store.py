@@ -151,6 +151,20 @@ def test_scanner_and_config_settings_roundtrip(tmp_path: Path) -> None:
     assert again.xray.dns_servers == ["1.1.1.1"]
 
 
+def test_turn_scan_state_roundtrips(tmp_path: Path) -> None:
+    store = Store(tmp_path / "state.json")
+    state = State()
+    state.turn_scan.cidrs = ["8.8.8.8", "85.217.140.0/24"]
+    state.turn_scan.scanned_at = 100
+    state.turn_scan.next_scan_at = 10900
+    state.turn_scan.error = ""
+    store.save(state)
+    restored = store.load().turn_scan
+    assert restored.cidrs == ["8.8.8.8"]
+    assert restored.scanned_at == 100
+    assert restored.next_scan_at == 10900
+
+
 def test_config_defaults_survive_an_old_state_file(tmp_path: Path) -> None:
     from BOT.xray import API_PORT, DEFAULT_ACCESS_LOG, DEFAULT_METRICS
 

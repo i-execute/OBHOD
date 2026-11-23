@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import antiddos, cores, i18n, notify
+from . import antiddos, cores, i18n, notify, turnscan
 from .cloudflared import CloudflaredState
 from .models import SshSettings
 from .freeturn import FtState
@@ -15,7 +15,7 @@ from .xray import SUB_PORT, XrayState
 
 DEFAULT_TAIL = 200
 TRAFFIC_NAME = 64
-SCHEMA = 8
+SCHEMA = 9
 
 CORES = cores.keys()
 
@@ -39,6 +39,7 @@ class State:
     xray: XrayState = field(default_factory=XrayState)
     cloudflared: CloudflaredState = field(default_factory=CloudflaredState)
     freeturn: FtState = field(default_factory=FtState)
+    turn_scan: turnscan.State = field(default_factory=turnscan.State)
     core: str = "xray"
     emoji: bool = False
     notify: dict[str, Any] = field(default_factory=dict)
@@ -62,6 +63,7 @@ class State:
             "xray": self.xray.to_dict(),
             "cloudflared": self.cloudflared.to_dict(),
             "freeturn": self.freeturn.to_dict(),
+            "turn_scan": self.turn_scan.to_dict(),
             "core": self.core if self.core in CORES else "xray",
             "emoji": bool(self.emoji),
             "notify": notify.Settings.from_dict(self.notify).to_dict(),
@@ -85,6 +87,7 @@ class State:
             xray=XrayState.from_dict(data.get("xray")),
             cloudflared=CloudflaredState.from_dict(data.get("cloudflared")),
             freeturn=FtState.from_dict(data.get("freeturn")),
+            turn_scan=turnscan.State.from_dict(data.get("turn_scan")),
             core=str(data.get("core", "xray") or "xray"),
             emoji=bool(data.get("emoji", False)),
             notify=notify.Settings.from_dict(data.get("notify")).to_dict(),

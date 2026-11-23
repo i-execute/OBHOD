@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from BOT import commands, dscreens, freeturn, ftscreens, fwguard, i18n, inline, ipscan, screens, xscreens
+from BOT import commands, dscreens, freeturn, ftscreens, i18n, inline, ipscan, screens, xscreens
 from BOT.ui import count_buttons
 from Storage import obhod_setup
 from tests.test_app import FakeEvent, make_bot, run
@@ -162,34 +162,24 @@ def test_round17_tui_inline_disabled_warning_text_and_check(tmp_path: Path, caps
     assert "\033[1;31m" in err
 
 
-def test_round17_auto_protect_syncs_vk_udp_guard_and_ip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_round17_auto_protect_updates_identity_without_changing_the_freeturn_firewall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import BOT.app
 
     bot = make_bot(tmp_path)
     bot.freeturn.state = freeturn.FtState(installed=True, running=True)
     bot.freeturn.state.config.listen_port = 39871
     bot.freeturn.draft.listen_port = 39871
+    called: list[tuple[Any, ...]] = []
 
-    called: dict[str, Any] = {}
-
-    async def fake_fw(mode: str, port: int, cidrs: str = "", proto: str = "udp", keep: str = "", timeout: float = 0) -> freeturn.FtGuard:
-        called["mode"] = mode
-        called["port"] = port
-        called["proto"] = proto
-        called["cidrs"] = cidrs
-        called["keep"] = keep
-        return freeturn.FtGuard(port=port, proto=proto, backend="nft", mode="vk", rules=4, cidrs=2)
+    async def fake_fw(*args: Any, **kwargs: Any) -> freeturn.FtGuard:
+        called.append((*args, kwargs))
+        return freeturn.FtGuard()
 
     monkeypatch.setattr(BOT.app, "public_address", lambda: "203.0.113.77")
     monkeypatch.setattr(bot.freeturn.control, "firewall", fake_fw)
-    monkeypatch.setitem(fwguard.CACHE, "vk", (9999999999.0, ["95.142.192.0/21", "5.61.16.0/21"], ""))
 
     outcomes = asyncio.run(bot.auto_protect())
-    assert outcomes.get("vk_fw") == "vk"
-    assert called["mode"] == "vk"
-    assert called["port"] == 39871
-    assert called["proto"] == "udp"
+    assert "vk_fw" not in outcomes
+    assert called == []
     assert bot.state.xray.sub_address == "203.0.113.77"
     assert bot.freeturn.draft.host == "203.0.113.77"
-    assert bot.debug.vk["guard"]["mode"] == "vk"
-    assert bot.debug.vk["guard"]["port"] == 39871

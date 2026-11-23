@@ -293,8 +293,8 @@ def test_successful_ss_output_never_falls_back_to_host_proc(monkeypatch: pytest.
 def test_ss_rows_keep_udp_listener_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
     module = load("obhod_ddos_udp_%d" % id(monkeypatch))
     monkeypatch.setattr(module, "binary", lambda flags, name, fallback: "/bin/ss" if name == "ss" else "")
-    monkeypatch.setattr(module, "run", lambda argv, timeout=60: (0, "udp UNCONN 0 0 0.0.0.0:56583 0.0.0.0:*\n", ""))
-    assert module.ss_rows({}) == [{"port": 56583, "proto": "udp", "process": "", "address": "0.0.0.0"}]
+    monkeypatch.setattr(module, "run", lambda argv, timeout=60: (0, "udp UNCONN 0 0 0.0.0.0:56917 0.0.0.0:*\n", ""))
+    assert module.ss_rows({}) == [{"port": 56917, "proto": "udp", "process": "", "address": "0.0.0.0"}]
 
 
 def test_the_config_path_cannot_escape(bench) -> None:
@@ -365,28 +365,36 @@ def test_the_agent_has_no_writable_state_outside_its_directory(bench) -> None:
     assert "TMPDIR" not in body
 
 
-def test_ddos_rules_do_not_open_installed_freeturn_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ddos_rules_use_the_current_freeturn_port_without_opening_it(tmp_path: Path) -> None:
     module = load("obhod_ddos_ft_%d" % id(tmp_path))
-    ft_conf = tmp_path / "install.conf"
-    ft_conf.write_text('LISTEN_PORT="56696"\nPROXY_MODE="udp"\n', encoding="utf-8")
-    real_isfile = module.os.path.isfile
-    real_open = open
-
-    def fake_isfile(path: str) -> bool:
-        if path == "/opt/free-turn-proxy/install.conf":
-            return True
-        return real_isfile(path)
-
-    def fake_open(path: str, *args: object, **kwargs: object):
-        if path == "/opt/free-turn-proxy/install.conf":
-            return real_open(ft_conf, *args, **kwargs)
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(module.os.path, "isfile", fake_isfile)
-    monkeypatch.setattr("builtins.open", fake_open, raising=False)
-    rules = module.rules_text(module.policy_from({}, {}), {})
+    policy = module.policy_from({"ports": "443,56696", "freeturn_ports": "56696"}, {})
+    rules = module.rules_text(policy, {"dir": str(tmp_path)})
     assert "udp dport 56696 accept" not in rules
-    assert "udp dport != 56583 ip saddr @udp_flood counter drop" in rules
+    assert "udp dport != { 56696 } ip saddr @udp_flood counter drop" in rules
+    assert "udp dport { 443 } update @udp_flood" in rules
+
+
+def test_turn_relay_allow_requires_a_factual_freeturn_port(tmp_path: Path) -> None:
+    module = load("obhod_ddos_turn_allow_%d" % id(tmp_path))
+    inactive = module.policy_from({"turn_allow": "8.8.8.8"}, {})
+    assert inactive["turn_allow"] == []
+    active = module.policy_from({"freeturn_ports": "56696", "turn_allow": "8.8.8.8,85.217.140.2"}, {})
+    assert active["turn_allow"] == ["8.8.8.8"]
+    rules = module.rules_text(active, {"dir": str(tmp_path)})
+    assert "ip saddr @turn_allow_v4 udp dport { 56696 } accept" in rules
+    assert "ip saddr @turn_allow_v4 accept" not in rules
+    assert "ip saddr @rkn_allow_v4 accept" not in rules
+    blocked = module.policy_from({"freeturn_ports": "56696", "turn_allow": "8.8.8.8", "manual_bans": "8.8.8.8"}, {})
+    blocked_rules = module.rules_text(blocked, {"dir": str(tmp_path)})
+    assert blocked_rules.index("ip saddr @manual_ban_v4 counter drop") < blocked_rules.index("ip saddr @turn_allow_v4 udp dport { 56696 } accept")
+    assert module.parse_rkn_exceptions("85.217.149.2 udp 443;8.8.8.8 udp 443") == ["8.8.8.8 udp 443"]
+
+
+def test_no_fixed_vk_calls_exceptions_remain(tmp_path: Path) -> None:
+    module = load("obhod_ddos_no_fixed_vk_%d" % id(tmp_path))
+    legacy_cidr = ".".join(("193", "203", "43", "0")) + "/24"
+    rules = module.rules_text(module.policy_from({"ports": "443"}, {}), {"dir": str(tmp_path)})
+    assert legacy_cidr not in rules
 
 
 def test_protocol_matches_bot_transport(bench) -> None:

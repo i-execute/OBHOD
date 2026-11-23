@@ -387,48 +387,9 @@ def test_freeturn_agent_locale_env_nft_accept_policy_drop_and_iptables_order(
     assert captured_env.get("LANG") == "C.UTF-8"
     assert captured_env.get("LC_ALL") == "C.UTF-8"
 
-    nft_ruleset = (
-        "table inet hostfw {\n"
-        "\tchain input {\n"
-        "\t\ttype filter hook input priority filter; policy accept;\n"
-        "\t\tct state established,related accept\n"
-        "\t\tcounter drop\n"
-        "\t}\n"
-        "}\n"
-    )
-    nft_cmds: list[list[str]] = []
-
-    def _fake_nft_run(argv: list[str], timeout: float = 15.0) -> tuple[int, str]:
-        nft_cmds.append(list(argv))
-        if argv[:3] == ["nft", "list", "ruleset"]:
-            return 0, nft_ruleset
-        return 0, ""
-
-    monkeypatch.setattr(agent.shutil, "which", lambda name: f"/usr/sbin/{name}")
-    monkeypatch.setattr(agent, "run_tool", _fake_nft_run)
-    monkeypatch.setattr(agent, "tool_text", lambda argv, timeout=15.0: nft_ruleset if argv[:3] == ["nft", "list", "ruleset"] else "")
-    agent.nft_open_port(56432, ["udp"])
-    assert ["nft", "insert", "rule", "inet", "hostfw", "input", "udp", "dport", "56432", "accept"] in nft_cmds
-
-    ipt_cmds: list[list[str]] = []
-    ipt_listing = (
-        "-P INPUT ACCEPT\n"
-        "-A INPUT -j DROP\n"
-        "-A INPUT -p udp -m udp --dport 56432 -j ACCEPT\n"
-    )
-    checks_left = [0, 1]
-
-    def _fake_ipt_run(argv: list[str], timeout: float = 15.0) -> tuple[int, str]:
-        ipt_cmds.append(list(argv))
-        if "-C" in argv:
-            return (checks_left.pop(0) if checks_left else 1), ""
-        return 0, ""
-
-    monkeypatch.setattr(agent, "run_tool", _fake_ipt_run)
-    monkeypatch.setattr(agent, "tool_text", lambda argv, timeout=15.0: ipt_listing)
-    agent._iptables_accept_above_drop("iptables", "udp", 56432)
-    assert ["iptables", "-D", "INPUT", "-p", "udp", "--dport", "56432", "-j", "ACCEPT"] in ipt_cmds
-    assert ["iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", "56432", "-j", "ACCEPT"] in ipt_cmds
+    agent_body = (Path(__file__).resolve().parent.parent / "Storage" / "remote" / "freeturn_agent.py").read_text(encoding="utf-8")
+    assert "def nft_open_port" not in agent_body
+    assert "def ensure_apply_port_open" not in agent_body
 
     real_service = (Path(__file__).resolve().parent.parent / "Storage" / "obhod.service").read_text(encoding="utf-8")
     assert "ProtectSystem=strict" in real_service

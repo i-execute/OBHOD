@@ -520,6 +520,23 @@ def test_freeturm_is_reachable_from_the_router(tmp_path: Path) -> None:
     assert bot.state.freeturn.installed is True
 
 
+def test_turn_scan_updates_the_existing_ddos_allow_policy(tmp_path: Path) -> None:
+    from BOT import antiddos
+
+    bot = make_bot(tmp_path)
+    control = FakeFtControl()
+    control.relay_addresses = ["8.8.8.8", "85.217.140.2"]
+    bot.freeturn.control = control
+    state = asyncio.run(control.probe())
+    bot.freeturn.state = state
+    bot.state.freeturn = state
+    assert asyncio.run(bot.turn_scan_once()) is True
+    policy = antiddos.Policy.from_dict(bot.state.ddos)
+    assert policy.freeturn_ports == [56123]
+    assert policy.turn_allow == ["8.8.8.8"]
+    assert bot.store.load().turn_scan.cidrs == ["8.8.8.8"]
+
+
 def test_core_switch_between_the_two_engines(tmp_path: Path) -> None:
     bot = make_bot(tmp_path)
     run(bot.route(1, 0, "core:show"))

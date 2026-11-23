@@ -598,6 +598,8 @@ class FtShare:
 class FtState:
     installed: bool = False
     running: bool = False
+    listening: bool = False
+    listen_ports: list[int] = field(default_factory=list)
     euid: int = -1
     arch: str = ""
     method: str = ""
@@ -621,10 +623,25 @@ class FtState:
     def link_values(self) -> list[str]:
         return [text for text in self.links.values() if text.startswith("freeturn://")]
 
+    def active_listen_ports(self) -> list[int]:
+        if not self.installed or not self.running or not self.listening:
+            return []
+        out: list[int] = []
+        for value in self.listen_ports:
+            if is_port(value) and int(value) not in out:
+                out.append(int(value))
+        return out
+
     def to_dict(self) -> dict[str, Any]:
+        ports: list[int] = []
+        for value in self.listen_ports:
+            if is_port(value) and int(value) not in ports:
+                ports.append(int(value))
         return {
             "installed": bool(self.installed),
             "running": bool(self.running),
+            "listening": bool(self.listening),
+            "listen_ports": ports if self.listening else [],
             "euid": int(self.euid),
             "arch": self.arch,
             "method": self.method,
@@ -665,9 +682,19 @@ class FtState:
         owner_link = str(owner.get("link", "") or "").strip()[:LINK_MAX]
         if owner_link.startswith("freeturn://"):
             links[OWNER_NAME] = complete_link(owner_link, config)
+        installed = bool(data.get("installed", False) or owner_link)
+        running = bool(data.get("running", False))
+        listening = bool(data.get("listening", False))
+        raw_ports = data.get("listen_ports") if isinstance(data.get("listen_ports"), list) else []
+        listen_ports: list[int] = []
+        for value in raw_ports:
+            if is_port(value) and int(value) not in listen_ports:
+                listen_ports.append(int(value))
         return cls(
-            installed=bool(data.get("installed", False) or owner_link),
-            running=bool(data.get("running", False)),
+            installed=installed,
+            running=running,
+            listening=listening,
+            listen_ports=listen_ports,
             euid=int(data.get("euid", -1) or -1),
             arch=str(data.get("arch", "") or "")[:24],
             method=str(data.get("method", "") or "")[:16],
@@ -897,6 +924,18 @@ class FtControl:
         response = await self.call(["logs", "--tail=%d" % size], timeout=120)
         response.raise_for_status()
         return [str(item) for item in response.data.get("lines") or []][-size:]
+
+    async def relay_peers(self, tail: int = 512) -> tuple[list[str], list[str]]:
+        size = max(1, min(int(tail), 2000))
+        try:
+            out: ShellOutput = await self.shell.run_argv(agent_argv(["relay-peers", "--tail=%d" % size], agent_code()), timeout=120)
+        except ShellError as exc:
+            raise FtError(exc.message, "transport") from None
+        response = parse_response(out.text)
+        response.raise_for_status()
+        addresses = [str(item)[:64] for item in response.data.get("addresses") or []]
+        hosts = [str(item)[:253] for item in response.data.get("hosts") or []]
+        return addresses[:256], hosts[:128]
 
     async def client_list(self) -> tuple[list[FtClient], FtShare]:
         response = await self.call(["client-list"], timeout=120)

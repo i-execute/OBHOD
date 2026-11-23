@@ -146,6 +146,15 @@ def test_global_fields(tmp_path: Path) -> None:
         item.set_field("xr_bantime", "", "0")
 
 
+def test_fail2ban_ignoreip_rejects_modat_networks(tmp_path: Path) -> None:
+    item, _bot = panel(tmp_path)
+    with pytest.raises(PanelError, match="Modat networks"):
+        item.set_field("xr_ignoreip", "", "85.217.140.2")
+    with pytest.raises(PanelError, match="Modat networks"):
+        item.set_field("xr_ignoreip", "", "85.217.149.0/23")
+    item.set_field("xr_ignoreip", "", "8.8.8.8")
+
+
 def test_mldsa_fields(tmp_path: Path) -> None:
     item, bot = panel(tmp_path)
     inbound = new_inbound("vless", 443, "raw", "reality")

@@ -266,6 +266,7 @@ class Bot:
         self.subs_failed = 0.0
         self.notify = notify.Centre(notify.Settings.from_dict(self.state.notify))
         self.notify_task: Any = None
+        self.turn_scan_task: Any = None
         self.notify_seen_bans: set[str] = set()
         self.notify_seen_ssh: set[str] = set()
         self.notify_seen_ddos: set[str] = set()
@@ -279,6 +280,8 @@ class Bot:
         self.update_step_delay = UPDATE_STEP_DELAY
         ui.use_icons(self.emoji_enabled)
         self.seed_ports()
+        if self.sync_turn_runtime_policy():
+            self.save()
 
     def seed_ports(self) -> None:
         sub = int(getattr(self.cfg, "sub_port", 0) or 0)
@@ -293,6 +296,96 @@ class Bot:
             changed = True
         if changed:
             self.save()
+
+    def turn_policy(self) -> antiddos.Policy:
+        policy = antiddos.Policy.from_dict(self.state.ddos)
+        ports = self.state.freeturn.active_listen_ports()
+        policy.freeturn_ports = ports
+        policy.turn_allow = list(self.state.turn_scan.cidrs) if ports else []
+        return policy.normalise()
+
+    def sync_turn_runtime_policy(self) -> bool:
+        desired = self.turn_policy().to_dict()
+        current = self.state.ddos if isinstance(self.state.ddos, dict) else {}
+        if current == desired:
+            return False
+        self.state.ddos = desired
+        return True
+
+    async def sync_freeturn_ddos(self, force: bool = False) -> bool:
+        changed = self.sync_turn_runtime_policy()
+        if changed:
+            self.save()
+        policy = self.turn_policy()
+        if not policy.enabled:
+            return changed
+        try:
+            status = self.ddos_state
+            if status is None:
+                status = await ddos_call(self.guard, self.state.ssh, ddos_argv("status"), 60)
+            if status.installed and status.enabled and (force or antiddos.firewall_policy_differs(policy, status.policy)):
+                status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
+            self.ddos_state = status
+            self.debug.ddos = status
+        except Exception as exc:
+            log.debug("freeturn ddos sync skipped: %s", type(exc).__name__)
+        return changed
+
+    async def turn_scan_once(self) -> bool:
+        scan = self.state.turn_scan
+        if not self.state.freeturn.active_listen_ports():
+            scan.cidrs = []
+            scan.error = ""
+            scan.schedule()
+            self.sync_turn_runtime_policy()
+            self.save()
+            return False
+        control = getattr(self.freeturn, "control", None)
+        peers = getattr(control, "relay_peers", None)
+        if not callable(peers):
+            scan.failed("relay_peers_unavailable")
+            self.save()
+            return False
+        try:
+            addresses, hosts = await peers()
+            scan.record(addresses, hosts)
+        except Exception as exc:
+            scan.failed(type(exc).__name__)
+            self.save()
+            log.debug("turn relay scan skipped: %s", type(exc).__name__)
+            return False
+        await self.sync_freeturn_ddos()
+        self.save()
+        return True
+
+    async def turn_scan_start(self) -> None:
+        if self.turn_scan_task is not None and not self.turn_scan_task.done():
+            return
+        self.turn_scan_task = asyncio.create_task(self.turn_scan_loop())
+
+    async def turn_scan_loop(self) -> None:
+        while True:
+            try:
+                scan = self.state.turn_scan
+                if scan.due():
+                    await self.turn_scan_once()
+                delay = max(1, int(self.state.turn_scan.next_scan_at - time.time()))
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                self.state.turn_scan.failed(type(exc).__name__)
+                self.save()
+                log.debug("turn relay loop skipped: %s", type(exc).__name__)
+
+    async def stop_background_tasks(self) -> None:
+        tasks = [task for task in (self.notify_task, self.turn_scan_task) if task is not None and not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.notify_task = None
+        self.turn_scan_task = None
 
     def is_busy(self) -> bool:
         if not self.busy:
@@ -723,9 +816,8 @@ class Bot:
             self.freeturn.name = "owner"
         if state.installed and (not isinstance(self.freeturn.control, FtControl) or os.path.isfile("/opt/free-turn-proxy/clients.list")):
             self.freeturn.clients, self.freeturn.share = await self.freeturn._safe_list()
-        if state.installed and state.running:
-            await self.freeturn._auto_guard_vk(int(state.config.listen_port or 0))
         self.freeturn.save()
+        await self.sync_freeturn_ddos()
 
     def expected_ddos_ports(self) -> list[int]:
         raw: list[int] = list(antiddos.DEFAULT_PORTS)
@@ -742,10 +834,8 @@ class Bot:
                 if 1 <= port <= 65535:
                     raw.append(port)
         ft_state = getattr(self.freeturn, "state", None)
-        if ft_state is not None and getattr(ft_state, "installed", False):
-            ft_port = int(getattr(getattr(ft_state, "config", None), "listen_port", 0) or 0)
-            if 1 <= ft_port <= 65535:
-                raw.append(ft_port)
+        if ft_state is not None:
+            raw.extend(ft_state.active_listen_ports())
         return antiddos.ports_of(raw)
 
     async def auto_protect(self) -> dict[str, str]:
@@ -762,18 +852,23 @@ class Bot:
                 changed_addr = True
             if changed_addr:
                 self.save()
-        ft_state = getattr(self.freeturn, "state", None)
-        if ft_state is not None and ft_state.installed and ft_state.running:
-            await self.freeturn._auto_guard_vk(int(ft_state.config.listen_port or 0))
-            outcomes["vk_fw"] = str(self.freeturn.guard.get("mode") or "skip")
         try:
-            policy = antiddos.Policy.from_dict(self.state.ddos)
+            runtime_changed = self.sync_turn_runtime_policy()
+            policy = self.turn_policy()
+            merged_ports = antiddos.ports_of([*policy.ports, *self.expected_ddos_ports()])
+            if set(merged_ports) != set(policy.ports):
+                policy.ports = merged_ports
+                self.state.ddos = policy.to_dict()
+                runtime_changed = True
+            if runtime_changed:
+                self.save()
             status = await ddos_call(self.guard, self.state.ssh, ddos_argv("status"), 60)
+            policy_mismatch = status.installed and antiddos.firewall_policy_differs(policy, status.policy)
             suspicious = (
                 status.transaction_state != "none"
                 or status.table_inspection == "unknown"
                 or (status.table and not status.installed)
-                or (status.installed and antiddos.firewall_policy_differs(policy, status.policy))
+                or (policy_mismatch and not runtime_changed)
                 or status.saved_policy_consistency in ("mismatch", "unknown")
                 or status.live_rate_consistency in ("mismatch", "unknown")
             )
@@ -782,13 +877,7 @@ class Bot:
             if suspicious:
                 outcomes["ddos"] = "review"
             else:
-                merged_ports = antiddos.ports_of([*policy.ports, *self.expected_ddos_ports()])
-                ports_changed = set(merged_ports) != set(policy.ports)
-                if ports_changed:
-                    policy.ports = merged_ports
-                    self.state.ddos = policy.to_dict()
-                    self.save()
-                if policy.enabled and (not status.installed or not status.table or not status.enabled or set(status.policy.ports) != set(policy.ports)):
+                if policy.enabled and (not status.installed or not status.table or not status.enabled or policy_mismatch):
                     status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
                 self.ddos_state = status
                 self.debug.ddos = status
@@ -917,13 +1006,20 @@ class Bot:
             await self.notify_start()
         except Exception as exc:
             log.warning("the notification poller was skipped: %s", exc)
+        try:
+            await self.turn_scan_start()
+        except Exception as exc:
+            log.warning("the turn relay scanner was skipped: %s", exc)
         if os.geteuid() == 0:
             try:
                 await self.track(self.ensure_cores_warm(), "cores_warmup")
                 await self.track(self.auto_protect(), "auto_protect")
             except Exception as exc:
                 log.debug("cores warmup not scheduled: %s", exc)
-        await app.run()
+        try:
+            await app.run()
+        finally:
+            await self.stop_background_tasks()
 
     async def verify_update(self) -> None:
         if getattr(self.state.xray, "purged_auto_raw", False):

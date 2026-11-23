@@ -133,6 +133,13 @@ def test_a_wide_range_is_refused(tmp_path: Path) -> None:
     assert "too wide" in answer["msg"]
 
 
+def test_modat_ranges_are_never_accepted_by_the_trusted_peer_guard(tmp_path: Path) -> None:
+    for blocked in ("85.217.140.0/24", "85.217.149.0/23"):
+        answer = run_agent(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=" + blocked)
+        assert answer["result"] == "err"
+        assert answer["code"] == "blocked_exemption"
+
+
 def test_a_hostile_range_is_refused(tmp_path: Path) -> None:
     for bad in ("127.0.0.1; reboot", "$(id)", "0.0.0.0/0"):
         answer = run_agent(tmp_path, "fw-guard", "--mode=vk", "--port=56272", "--cidrs=%s" % bad)
@@ -177,6 +184,12 @@ def test_the_prefix_parser_filters_ipv6_and_junk() -> None:
 def test_the_prefix_list_is_collapsed() -> None:
     merged = fwguard.collapse(["87.240.128.0/18", "87.240.128.0/19", "93.186.224.0/21"])
     assert merged == ["87.240.128.0/18", "93.186.224.0/21"]
+
+
+def test_local_trusted_peer_sources_never_include_modat_networks() -> None:
+    body = b'{"data":{"prefixes":[{"prefix":"85.217.140.0/24"},{"prefix":"8.8.8.0/24"}]}}'
+    assert fwguard.prefixes_of(body) == ["8.8.8.0/24"]
+    assert fwguard.collapse(["85.217.149.0/23", "8.8.8.0/24"]) == ["8.8.8.0/24"]
 
 
 def test_the_vk_list_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -302,31 +315,21 @@ def test_vk_asns_cover_all_six_llc_vk_networks() -> None:
     assert numbers == (47541, 47542, 47764, 28709, 60863, 62243)
 
 
-def test_apply_automatically_enables_vk_firewall_and_respects_manual_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_apply_does_not_automatically_change_the_freeturn_firewall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tests.fakes import FakeFtControl, make_bot
 
     applied: list[tuple] = []
 
-    class AutoGuardControl(FakeFtControl):
+    class GuardControl(FakeFtControl):
         async def firewall(self, mode: str, port: int, cidrs: str = "", proto: str = "udp", timeout: float = 0) -> FtGuard:
             applied.append((mode, port, cidrs, proto))
             return FtGuard(port=port, proto=proto, backend="nftables", mode=mode, rules=10, cidrs=2)
 
-    monkeypatch.setitem(fwguard.CACHE, "vk", (9999999999.0, ["87.240.128.0/18", "95.142.204.0/23"]))
-    monkeypatch.setattr(fwguard, "vk_cidrs", lambda timeout=0: (["87.240.128.0/18", "95.142.204.0/23"], ""))
-
+    monkeypatch.setattr(fwguard, "vk_cidrs", lambda timeout=0: (_ for _ in ()).throw(AssertionError("automatic firewall lookup")))
     bot = make_bot(tmp_path)
-    bot.freeturn.control = AutoGuardControl()
-    port = bot.freeturn.draft.listen_port
+    bot.freeturn.control = GuardControl()
     asyncio.run(bot.freeturn.apply(1, 0))
-    assert ("vk", port, "87.240.128.0/18,95.142.204.0/23", "udp") in applied
-    assert bot.freeturn.guard["mode"] == "vk"
-
-    applied.clear()
-    bot.freeturn.guard = {"port": port, "proto": "udp", "backend": "nftables", "mode": "open", "rules": 1, "cidrs": 0}
-    asyncio.run(bot.freeturn.apply(1, 0))
-    assert not any(call[0] == "vk" for call in applied)
-    assert bot.freeturn.guard["mode"] == "open"
+    assert applied == []
 
 
 def test_the_panel_applies_the_range_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -562,7 +562,8 @@ class DebugPanel:
         if probe:
             try:
                 allow = portguard.protected_ports(self.bot.state) + [int(getattr(self.bot.state.xray, "api_port", 0) or 0)]
-                self.ddos_exposure = await guard.ddos_exposure(client, cfg, allow)
+                freeturn_ports = self.bot.state.freeturn.active_listen_ports()
+                self.ddos_exposure = await guard.ddos_exposure(client, cfg, allow, freeturn_ports)
             except Exception as exc:
                 self.ddos_exposure = []
                 self.error = str(getattr(exc, "message", exc))[:160]
@@ -579,7 +580,7 @@ class DebugPanel:
         )
         for item in candidates:
             cleaned = antiddos.clean_entry(str(item or ""), allow_private=True)
-            if cleaned and cleaned not in protected:
+            if cleaned and not antiddos.is_forbidden_exemption(cleaned) and cleaned not in protected:
                 protected.append(cleaned)
         return protected
 
@@ -606,7 +607,7 @@ class DebugPanel:
         digest = observed.policy_sha256
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise antiddos.DDoSerror("firewall policy digest is unavailable; source update cancelled")
-        extra = [*self._protected_rkn_ips(), *policy.rkn_allow]
+        extra = [*self._protected_rkn_ips(), *policy.allow_entries()]
         v4, v6, ok_sources, errors = await asyncio.to_thread(
             antiddos.fetch_rkn_subnets,
             custom_sources=policy.custom_sources,

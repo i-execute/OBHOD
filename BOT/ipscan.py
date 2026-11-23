@@ -107,23 +107,32 @@ def routable_ip(raw: object) -> str:
         return ""
 
 
-def resolve_ip(target: str) -> str:
+def resolve_all(target: str) -> list[str]:
     try:
-        address = ipaddress.ip_address(target)
-        return address.compressed
+        return [ipaddress.ip_address(target).compressed]
     except ValueError:
         pass
     try:
-        infos = socket.getaddrinfo(target, None, proto=socket.IPPROTO_TCP)
+        infos = socket.getaddrinfo(target, None, type=socket.SOCK_STREAM)
     except OSError:
-        return ""
+        return []
+    out: list[str] = []
     for family, _socktype, _proto, _canon, sockaddr in infos:
-        if family == socket.AF_INET and sockaddr:
-            return str(sockaddr[0])
-    for family, _socktype, _proto, _canon, sockaddr in infos:
-        if family == socket.AF_INET6 and sockaddr:
-            return str(sockaddr[0])
-    return ""
+        if family not in {socket.AF_INET, socket.AF_INET6} or not sockaddr:
+            continue
+        try:
+            address = ipaddress.ip_address(sockaddr[0]).compressed
+        except ValueError:
+            continue
+        if address not in out:
+            out.append(address)
+    return out
+
+
+def resolve_ip(target: str) -> str:
+    values = resolve_all(target)
+    ipv4 = next((value for value in values if ":" not in value), "")
+    return ipv4 or (values[0] if values else "")
 
 
 def fetch_ip_api(ip_or_host: str = "") -> dict[str, Any]:

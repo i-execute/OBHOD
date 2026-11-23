@@ -16,6 +16,10 @@ OK_TTL = 86400.0
 FAIL_TTL = 300.0
 MIN_PREFIX = 8
 MAX_PREFIXES = 512
+MODAT_NETWORKS = (
+    ipaddress.ip_network("85.217.140.0/24"),
+    ipaddress.ip_network("85.217.149.0/24"),
+)
 ASNS = (
     (47541, "VKONTAKTE-SPB-AS LLC VK"),
     (47542, "VKONTAKTE-MSK-CDN-AS LLC VK"),
@@ -64,7 +68,7 @@ def prefixes_of(body: bytes) -> list[str]:
             network = ipaddress.ip_network(prefix, strict=False)
         except ValueError:
             continue
-        if network.version == 4 and network.prefixlen >= MIN_PREFIX:
+        if network.version == 4 and network.prefixlen >= MIN_PREFIX and not any(network.overlaps(blocked) for blocked in MODAT_NETWORKS):
             out.append(str(network))
     return out
 
@@ -73,10 +77,12 @@ def collapse(items: list[str]) -> list[str]:
     networks = []
     for item in items:
         try:
-            networks.append(ipaddress.ip_network(item, strict=False))
+            network = ipaddress.ip_network(item, strict=False)
         except ValueError:
             continue
-    return [str(item) for item in ipaddress.collapse_addresses(networks)]
+        if network.version == 4 and not any(network.overlaps(blocked) for blocked in MODAT_NETWORKS):
+            networks.append(network)
+    return [str(item) for item in ipaddress.collapse_addresses(networks) if not any(item.overlaps(blocked) for blocked in MODAT_NETWORKS)]
 
 
 def fetch_asn(asn: int, timeout: float = TIMEOUT) -> tuple[list[str], str]:
@@ -127,7 +133,7 @@ def vk_cidrs(timeout: float = TIMEOUT, use_cache: bool = True) -> tuple[list[str
 
 
 def join_cidrs(items: list[str]) -> str:
-    return ",".join(items)
+    return ",".join(collapse(items))
 
 
 def clear() -> None:

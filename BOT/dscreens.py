@@ -541,8 +541,8 @@ def ddos_screen(view: DbgView) -> Any:
     if not records:
         state_rows.append(("ok", t("DDOS_BLOCKED_IPS"), code("0")))
     blocks.append(table(state_rows, (t("DDOS_TITLE"), t("UI_VALUE"))))
-    if antiddos.VK_CALLS_FREETURN_UDP_PORT in set(policy.ports):
-        blocks.append(quote(muted(t("DDOS_FREETURN_56583_NOTE"))))
+    if policy.freeturn_ports:
+        blocks.append(quote(muted(t("DDOS_FREETURN_DYNAMIC_NOTE"))))
     if table_unknown:
         blocks.append(quote(t("DDOS_TABLE_UNKNOWN")))
     elif status.table and not status.enabled:

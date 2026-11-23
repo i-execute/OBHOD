@@ -405,6 +405,8 @@ class FakeFtControl:
             {
                 "installed": True,
                 "running": True,
+                "listening": True,
+                "listen_ports": [56123],
                 "euid": 0,
                 "arch": "x86_64",
                 "method": "systemd",
@@ -429,6 +431,8 @@ class FakeFtControl:
             {
                 "installed": True,
                 "running": True,
+                "listening": True,
+                "listen_ports": [int(config.listen_port)] if config.mode == "udp" else [],
                 "euid": 0,
                 "arch": "x86_64",
                 "method": config.method,
@@ -489,6 +493,10 @@ class FakeFtControl:
     async def wg_peers(self, iface: str = "all", timeout: float = 0) -> Any:
         self.calls.append(["wg-peers", iface])
         return list(getattr(self, "peers", [])), ["freeturn"]
+
+    async def relay_peers(self, tail: int = 512) -> Any:
+        self.calls.append(["relay-peers", str(tail)])
+        return list(getattr(self, "relay_addresses", [])), list(getattr(self, "relay_hosts", []))
 
     async def uninstall(self, target: str = "all", purge: bool = True) -> Any:
         from BOT.freeturn import FtResponse

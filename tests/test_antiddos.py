@@ -225,12 +225,45 @@ def test_an_allowed_port_cannot_hide_a_panel() -> None:
     assert antiddos.exposure(rows, allow=[54321])[0].code == "panel"
 
 
-def test_fixed_vk_exception_is_rendered_but_not_persisted_as_policy() -> None:
-    policy = antiddos.Policy(rkn_allow=["5.143.224.2", "85.217.140.0/24"]).normalise()
-    assert policy.rkn_allow == ["5.143.224.2"]
-    assert antiddos.VK_CALLS_ALLOW not in policy.to_dict()["rkn_allow"]
+def test_turn_scan_allow_entries_are_rendered_only_for_a_live_freeturn_port_and_modat_is_filtered() -> None:
+    inactive = antiddos.Policy(turn_allow=["5.143.224.2"]).normalise()
+    assert inactive.turn_allow == []
+    policy = antiddos.Policy(turn_allow=["5.143.224.2", "85.217.140.0/24"], freeturn_ports=[56123]).normalise()
+    assert policy.turn_allow == ["5.143.224.2"]
+    table = antiddos.nft_table(policy, rkn_v4=["5.143.224.0/24"], rkn_v6=[])
+    assert "5.143.224.2" in table
+    assert "5.143.224.0/24" in table
+    assert "85.217.140.0/24" not in table
+    assert "ip saddr @turn_allow_v4 udp dport { 56123 } accept" in table
+    assert "ip saddr @turn_allow_v4 accept" not in table
+    assert "ip saddr @rkn_allow_v4 accept" not in table
+    blocked_peer = antiddos.Policy(turn_allow=["5.143.224.2"], freeturn_ports=[56123], manual_bans=["5.143.224.2"]).normalise()
+    blocked_table = antiddos.nft_table(blocked_peer, rkn_v4=[], rkn_v6=[])
+    assert blocked_table.index("ip saddr @manual_ban_v4 counter drop") < blocked_table.index("ip saddr @turn_allow_v4 udp dport { 56123 } accept")
+
+
+def test_modat_is_rejected_from_every_rkn_exemption_form() -> None:
+    policy = antiddos.Policy(
+        rkn_allow=["85.217.140.2", "85.217.149.0/23"],
+        turn_allow=["85.217.149.2"],
+        unbanned=["85.217.140.0/24"],
+        rkn_exceptions=["85.217.140.2 udp 443"],
+    ).normalise()
+    assert policy.rkn_allow == []
+    assert policy.turn_allow == []
+    assert policy.unbanned == []
+    assert policy.rkn_exceptions == []
+
+
+def test_live_random_freeturn_port_is_excluded_from_udp_detector() -> None:
+    from BOT.freeturn import FtConfig, FtState, random_listen_port
+
+    port = random_listen_port()
+    state = FtState(installed=True, running=True, listening=True, listen_ports=[port], config=FtConfig(listen_port=port))
+    policy = antiddos.Policy(ports=[443, port], freeturn_ports=state.active_listen_ports()).normalise()
     table = antiddos.nft_table(policy, rkn_v4=[], rkn_v6=[])
-    assert antiddos.VK_CALLS_ALLOW in table
+    assert "udp dport != { %d } ip saddr @udp_flood counter drop" % port in table
+    assert "udp dport { 443 } update @udp_flood" in table
 
 
 def test_exposure_hint_names_the_worst_thing_first() -> None:

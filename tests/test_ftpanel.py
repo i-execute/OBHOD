@@ -43,7 +43,8 @@ def test_home_renders_the_state(tmp_path: Path) -> None:
 def test_check_reads_the_state_and_persists_it(tmp_path: Path) -> None:
     bot, panel, control = panel_for(tmp_path)
     run(panel.route(1, 0, "ft:check"))
-    assert control.calls == [["probe"]]
+    assert control.calls[0] == ["probe"]
+    assert ["relay-peers", "512"] in control.calls
     assert bot.state.freeturn.installed is True
     assert bot.state.freeturn.config.listen_port == 56123
     stored = (Path(tmp_path) / "state.json").read_text(encoding="utf-8")
@@ -90,6 +91,7 @@ def test_apply_success_keeps_no_key(tmp_path: Path) -> None:
     assert control.calls[0][3] == "a" * 64
     assert panel.key_once == ""
     assert bot.state.freeturn.installed is True
+    assert ["relay-peers", "512"] in control.calls
 
 
 def test_stop_and_restart_flip_the_state(tmp_path: Path) -> None:

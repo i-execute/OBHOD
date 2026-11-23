@@ -22,7 +22,7 @@ DEFAULT_MAXRETRY = 1
 DEFAULT_SSH_BANTIME = "7d"
 DEFAULT_SSH_FINDTIME = 3600
 DEFAULT_SSH_MAXRETRY = 3
-DEFAULT_IGNOREIP = "127.0.0.1/8 ::1 193.203.43.0/24"
+DEFAULT_IGNOREIP = "127.0.0.1/8 ::1"
 DEFAULT_LOGPATH = "/var/log/xray/access.log"
 
 
@@ -320,7 +320,9 @@ def ddos_argv(action: str, policy: antiddos.Policy | None = None) -> list[str]:
     argv.append("--rkn_enabled=%d" % (1 if shaped.rkn_enabled else 0))
     argv.append("--rkn_logging=%d" % (1 if shaped.rkn_logging else 0))
     argv.append("--ports=" + ",".join(str(item) for item in shaped.ports))
-    argv.append("--rkn_allow=" + shaped.allow_csv())
+    argv.append("--freeturn_ports=" + ",".join(str(item) for item in shaped.freeturn_ports))
+    argv.append("--rkn_allow=" + ",".join(shaped.rkn_allow))
+    argv.append("--turn_allow=" + ",".join(shaped.turn_allow))
     argv.append("--manual_bans=" + shaped.bans_csv())
     argv.append("--unbanned=" + shaped.unbanned_csv())
     argv.append("--rkn_exceptions=" + ";".join(shaped.rkn_exceptions))
@@ -343,10 +345,15 @@ async def ddos_call(
     return antiddos.Status.from_dict(response.data)
 
 
-async def ddos_exposure(guard: "GuardClient", cfg: SshSettings, allow: list[int] | None = None) -> list[antiddos.Finding]:
+async def ddos_exposure(
+    guard: "GuardClient",
+    cfg: SshSettings,
+    allow: list[int] | None = None,
+    freeturn_ports: list[int] | None = None,
+) -> list[antiddos.Finding]:
     response = await guard._call(cfg, DDOS_SCRIPT, "ddos script", ["probe"], 120)
     data = response.data if isinstance(response.data, dict) else {}
-    return antiddos.exposure(data.get("rows"), allow)
+    return antiddos.exposure(data.get("rows"), allow, freeturn_ports)
 
 
 def honey_argv(action: str, ports: str = "", limit: int = 0) -> list[str]:

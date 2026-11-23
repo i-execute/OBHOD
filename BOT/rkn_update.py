@@ -39,7 +39,7 @@ def main() -> int:
     except (OSError, ValueError, subprocess.SubprocessError):
         print("firewall policy unavailable or inconsistent; existing protection left intact", file=sys.stderr)
         return 2
-    extra = list(policy.rkn_allow)
+    extra = policy.allow_entries()
     for parent, key in (("ssh", "host"), ("xray", "sub_address")):
         data = raw.get(parent)
         if isinstance(data, dict):
@@ -47,6 +47,7 @@ def main() -> int:
     ft = raw.get("freeturn")
     if isinstance(ft, dict) and isinstance(ft.get("config"), dict):
         extra.append(str(ft["config"].get("host", "")))
+    extra = antiddos.exempt_entries(extra)
     try:
         v4, v6, count, errors = antiddos.fetch_rkn_subnets(custom_sources=policy.custom_sources, disabled_sources=policy.disabled_sources, extra_protected=extra, cache_path=state_dir / "rkn_sources_cache.json")
     except (antiddos.DDoSerror, OSError, ValueError):

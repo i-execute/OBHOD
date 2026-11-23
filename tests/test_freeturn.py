@@ -63,6 +63,41 @@ def err_envelope(code: str, msg: str, stage: str = "apply") -> str:
     return json.dumps({"proto": 3, "result": "err", "code": code, "msg": msg, "stage": stage, "logs": []})
 
 
+def test_relay_peer_rpc_uses_embedded_agent_protocol() -> None:
+    shell = FakeShell(ok_envelope({"addresses": ["8.8.8.8"], "hosts": ["relay.example.org"]}))
+    control = FtControl(shell)
+    addresses, hosts = __import__("asyncio").run(control.relay_peers())
+    assert addresses == ["8.8.8.8"]
+    assert hosts == ["relay.example.org"]
+    assert "relay-peers" in shell.calls[0][0][-1]
+
+
+def test_relay_peer_parser_accepts_only_turn_log_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = load_agent()
+    monkeypatch.setattr(
+        agent,
+        "relay_log_text",
+        lambda tail: "client 198.51.100.1 connected\nclient relay: 9.9.9.9\nrelay peer 8.8.8.8:3478\nTURN endpoint [2001:4860:4860::8888]:3478\nrelay server relay.example.org:3478\n",
+    )
+    assert agent.relay_peers({"tail": "512"}) == {
+        "addresses": ["8.8.8.8", "2001:4860:4860::8888"],
+        "hosts": ["relay.example.org"],
+    }
+
+
+def test_live_listener_state_requires_a_reported_udp_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = load_agent()
+    data: dict[str, Any] = {"installed": True, "running": True, "config": {"listen_port": 56123, "mode": "udp"}}
+    monkeypatch.setattr(agent, "port_listening", lambda port, proto="udp": port == 56123 and proto == "udp")
+    agent.listener_snapshot(data, "probe", {"LISTEN_PORT": "56123", "PROXY_MODE": "udp"})
+    assert data["listening"] is True
+    assert data["listen_ports"] == [56123]
+    stale = FtState.from_dict({"installed": True, "running": True, "listening": True, "config": {"listen_port": 56123, "mode": "udp"}})
+    assert stale.active_listen_ports() == []
+    factual = FtState.from_dict({"installed": True, "running": True, "listening": True, "listen_ports": [56123], "config": {"listen_port": 56123, "mode": "tcp"}})
+    assert factual.active_listen_ports() == [56123]
+
+
 def test_config_defaults_pass_validation() -> None:
     config = FtConfig().check()
     assert config.method == "systemd"
@@ -340,42 +375,28 @@ async def test_control_apply_raw_response_probes_and_keeps_fresh_owner_link() ->
     assert decoded["spc"] == 12
 
 
-def test_agent_ensure_apply_port_open_handles_normalized_flags_and_nft(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    agent = load_agent()
-    conf_dir = tmp_path / "ft"
-    conf_dir.mkdir()
-    (conf_dir / "install.conf").write_text('LISTEN_PORT="56000"\nPROXY_MODE="udp"\n', encoding="utf-8")
-    monkeypatch.setattr(agent, "INSTALL_ROOT", str(conf_dir))
-    executed: list[list[str]] = []
+def test_agent_does_not_create_a_global_freeturn_input_accept_rule() -> None:
+    body = AGENT.read_text(encoding="utf-8")
+    assert "def nft_open_port" not in body
+    assert "def ensure_apply_port_open" not in body
+    assert "ensure_runtime_network" in body
 
-    def fake_run_tool(argv: list[str], timeout: int = 30) -> tuple[int, str]:
-        executed.append(list(argv))
-        if argv[:4] == ["nft", "list", "table", "inet"]:
-            return 0, "table inet obhod_ddos {\n chain input {\n }\n}"
-        if argv[:3] == ["nft", "list", "ruleset"]:
-            return 0, "table inet filter {\n chain input {\n type filter hook input priority filter; policy drop;\n }\n}"
-        if argv[:2] == ["ufw", "status"]:
-            return 0, "Status: active\n[ 1] 56000/udp DENY IN Anywhere\n"
-        return 0, ""
 
-    monkeypatch.setattr(agent, "run_tool", fake_run_tool)
-    monkeypatch.setattr(agent, "guard_backend", lambda: "ufw")
-    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/sbin/" + name)
-    agent.ensure_apply_port_open({"listen_port": "56000", "mode": "udp"}, {"data": {}})
-    assert not any(cmd[:5] == ["nft", "insert", "rule", "inet", "obhod_ddos"] for cmd in executed)
-    assert ["nft", "insert", "rule", "inet", "filter", "input", "udp", "dport", "56000", "accept"] in executed
-    assert ["ufw", "--force", "delete", "1"] in executed
-    assert ["ufw", "allow", "56000/udp"] in executed
+def test_healer_does_not_automatically_add_a_freeturn_input_accept_rule() -> None:
+    body = (ROOT / "Storage" / "obhod_install.sh").read_text(encoding="utf-8")
+    start = body.index("heal_system() {")
+    end = body.index("\nunit_runtime() {", start)
+    healer = body[start:end]
+    assert "FreeTurn trusted-peer firewall remains authoritative" in healer
+    for marker in ("ufw allow", "firewall-cmd --add-port", "iptables -I INPUT", "nft insert rule"):
+        assert marker not in healer
 
 
 def test_agent_keeps_the_trusted_peer_firewall_authoritative(monkeypatch: pytest.MonkeyPatch) -> None:
     agent = load_agent()
     calls: list[list[str]] = []
-    monkeypatch.setattr(agent, "guard_backend", lambda: "ufw")
-    monkeypatch.setattr(agent, "guard_status", lambda backend, port, protos: ("vk", 3))
     monkeypatch.setattr(agent, "run_tool", lambda argv, timeout=30: (calls.append(list(argv)) or (0, "")))
-    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/sbin/" + name)
-    agent.ensure_apply_port_open({"listen_port": "56583", "mode": "udp"}, {"data": {}})
+    agent.ensure_runtime_network({"BACKEND": "external"})
     assert calls == []
 
 
@@ -1043,6 +1064,69 @@ def test_agent_accepts_verified_new_release_tag_with_sha256_and_escapes_sandbox(
     assert calls and calls[0][0] == "systemd-run"
 
 
+def test_streamed_agent_hardens_automatic_installer_firewall_opening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = load_agent()
+    installer = tmp_path / "install.sh"
+    installer.write_text(
+        "firewall_open_port() {\n"
+        "  ufw " + "allow ${LISTEN_PORT}/udp\n"
+        "  firewall-cmd --permanent --add" + "-port=${LISTEN_PORT}/udp\n"
+        "  iptables -I" + " INPUT -p udp --dport ${LISTEN_PORT} -j ACCEPT\n"
+        "}\n\n"
+        "firewall_close_port() {\n  :\n}\n"
+        "firewall_open_port\n",
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    class _Done:
+        returncode = 0
+        stdout = b'{"proto": 3, "result": "ok", "data": {}}\n'
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> Any:
+        calls.append(list(argv))
+        source = Path(argv[1]).read_text(encoding="utf-8")
+        assert "ufw allow" + " " not in source
+        assert "--add" + "-port=" not in source
+        assert "iptables -I" + " INPUT " not in source
+        assert "Inbound access is configured only" in source
+        return _Done()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "sandboxed_host", lambda: False)
+    out, code = module.run_script(str(installer), ["apply", "--json"], 30)
+    assert code == 0 and '"result": "ok"' in out
+    assert calls and calls[0][1] != str(installer)
+    assert not list(tmp_path.glob(".hardened-*.sh"))
+
+
+def test_streamed_agent_rejects_unrecognised_automatic_firewall_opening(tmp_path: Path) -> None:
+    module = load_agent()
+    installer = tmp_path / "install.sh"
+    installer.write_text("echo 'ufw " + "allow 9999/udp'\n", encoding="utf-8")
+    with pytest.raises(module.AgentError, match="global firewall accept"):
+        module.run_script(str(installer), ["apply"], 30)
+
+
+def test_streamed_agent_embeds_the_hardened_installer_bundle() -> None:
+    assert freeturn.SCRIPT_B64_PATH.is_file()
+    code = freeturn.agent_code()
+    assert 'BUNDLED_INSTALL_B64 = ""' not in code
+    assert "BUNDLED_INSTALL_B64 = \"H4sI" in code
+
+
+def test_hardened_bundled_installer_has_no_automatic_inbound_port_rules() -> None:
+    import base64 as b64_mod
+    import gzip as gzip_mod
+
+    module = load_agent()
+    raw_b64 = freeturn.SCRIPT_B64_PATH.read_text(encoding="ascii")
+    source = gzip_mod.decompress(b64_mod.b64decode("".join(raw_b64.split()))).decode("utf-8")
+    assert module.harden_install_source(source) == source
+    for marker in module.AUTOMATIC_PORT_OPEN_MARKERS + module.AUTOMATIC_PORT_CLOSE_MARKERS:
+        assert marker not in source
+
+
 def test_bundled_install_script_seeds_offline_from_streamed_agent_code(tmp_path: Path) -> None:
     import base64 as b64_mod
     import gzip as gzip_mod
@@ -1054,8 +1138,10 @@ def test_bundled_install_script_seeds_offline_from_streamed_agent_code(tmp_path:
     assert b64_path.is_file()
     raw_b64 = b64_path.read_text(encoding="ascii")
     unpacked = gzip_mod.decompress(b64_mod.b64decode("".join(raw_b64.split())))
+    module = load_agent()
     expected_sha = freeturn.PINNED_SCRIPT_SHA256[freeturn.FALLBACK_VERSION]
-    assert hash_mod.sha256(unpacked).hexdigest() == expected_sha
+    bundle_sha = module.BUNDLED_INSTALL_SHA256
+    assert hash_mod.sha256(unpacked).hexdigest() == bundle_sha
     code_str = freeturn.agent_code()
     assert 'BUNDLED_INSTALL_B64 = ""' not in code_str
     cache_dir = tmp_path / "cache"
@@ -1064,6 +1150,7 @@ def test_bundled_install_script_seeds_offline_from_streamed_agent_code(tmp_path:
         "ns = {'__name__': 'ft_streamed'}\n"
         "exec(compile(open(%r, encoding='utf-8').read(), '<stream>', 'exec'), ns)\n"
         "ns['CACHE_DIR'] = %r\n"
+        "ns['BUNDLED_INSTALL_B64'] = %r\n"
         "def _no_net(*a, **k): raise OSError('offline')\n"
         "ns['urllib'].request.urlopen = _no_net\n"
         "seeded = ns['download']('https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.2.1/install.sh', %r)\n"
@@ -1075,7 +1162,7 @@ def test_bundled_install_script_seeds_offline_from_streamed_agent_code(tmp_path:
     src_file = tmp_path / "streamed_agent.py"
     src_file.write_text(code_str, encoding="utf-8")
     proc = sp_mod.run(
-        [sys_mod.executable, "-c", driver % (str(src_file), str(cache_dir), expected_sha, expected_sha)],
+        [sys_mod.executable, "-c", driver % (str(src_file), str(cache_dir), raw_b64, expected_sha, bundle_sha)],
         cwd=str(tmp_path),
         capture_output=True,
         text=True,
@@ -1214,7 +1301,7 @@ def test_runtime_drift_auto_reapplies_and_checks_udp_listener_in_tcp_mode(monkey
 
     monkeypatch.setattr(module, "INSTALL_ROOT", str(root))
     monkeypatch.setattr(module, "read_install_conf", lambda: dict(installed))
-    monkeypatch.setattr(module, "ensure_apply_port_open", lambda flags, body: None)
+    monkeypatch.setattr(module, "ensure_runtime_network", lambda installed: None)
     monkeypatch.setattr(module, "run_script", fake_run_script)
     monkeypatch.setattr(module, "port_listening", fake_port_listening)
     monkeypatch.setattr(module, "read_client_links", lambda: {})

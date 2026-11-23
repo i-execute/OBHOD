@@ -2186,6 +2186,8 @@ class XrayPanel:
             return t("NOTICE_SSH_MAXRETRY", value=text)
         if ident == "xr_ignoreip":
             values = parse_addresses(text)
+            if any(antiddos.is_forbidden_exemption(value) for value in values):
+                raise PanelError("Modat networks cannot be ignored or unbanned")
             self.bot.state.xray.fail2ban_ignoreip = " ".join(values)
             return t("NOTICE_IGNOREIP", value=", ".join(values) or DEFAULT_IGNOREIP)
         if ident == "xr_sub_refresh":

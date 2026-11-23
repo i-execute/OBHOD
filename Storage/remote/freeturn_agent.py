@@ -19,6 +19,7 @@ import urllib.request
 
 SBIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
 BUNDLED_INSTALL_B64 = ""
+BUNDLED_INSTALL_SHA256 = "e17725c29237d344c1607d1391c91d977521834508640dc158f9b21c06414916"
 
 
 def ensure_sbin_path():

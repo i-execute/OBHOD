@@ -1108,18 +1108,6 @@ install_exists() {
   return 1
 }
 
-ensure_ddos_allowlist() {
-  local allowlist="$CONF_DIR/ddos_allowlist.conf"
-  mkdir -p "$CONF_DIR"
-  if [ ! -f "$allowlist" ]; then
-    printf '%s\n' '193.203.43.0/24' >"$allowlist"
-    chmod 600 "$allowlist"
-  elif ! grep -qx '193.203.43.0/24' "$allowlist"; then
-    printf '\n%s\n' '193.203.43.0/24' >>"$allowlist"
-    chmod 600 "$allowlist"
-  fi
-}
-
 stop_before_rebuild() {
   if [ -n "$SERVICE" ] && command -v systemctl >/dev/null 2>&1; then
     if systemctl is-active --quiet obhod.service 2>/dev/null; then
@@ -1139,9 +1127,6 @@ cmd_install() {
     require_root
   fi
   validate_install_paths
-  if [ "$DEV" = "0" ]; then
-    ensure_ddos_allowlist
-  fi
   ui_init
   STEP_TOTAL=7
   banner
