@@ -19,7 +19,30 @@ import urllib.request
 
 SBIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
 BUNDLED_INSTALL_B64 = ""
-BUNDLED_INSTALL_SHA256 = "e17725c29237d344c1607d1391c91d977521834508640dc158f9b21c06414916"
+# This is a hardened derivative of the separately pinned upstream fallback.
+BUNDLED_INSTALL_SHA256 = "c9e3b4acf25a718502025d5403d08bf8a01b36e9f342eed11625b551a6f88b02"
+MODAT_NETWORKS = (
+    ipaddress.ip_network("85.217.140.0/24"),
+    ipaddress.ip_network("85.217.149.0/24"),
+)
+AUTOMATIC_PORT_OPEN_MARKERS = (
+    "ufw allow ",
+    "ufw insert ",
+    "--add-port=",
+    "--add-rich-rule=",
+    "iptables -I INPUT ",
+    "iptables -A INPUT ",
+    "nft add rule",
+    "nft insert rule",
+)
+AUTOMATIC_PORT_CLOSE_MARKERS = (
+    "ufw delete allow ",
+    "ufw --force delete ",
+    "--remove-port=",
+    "--remove-rich-rule=",
+    "iptables -D INPUT ",
+    "nft delete rule",
+)
 
 
 def ensure_sbin_path():
@@ -70,6 +93,7 @@ ALLOWED_HOSTS = ("github.com", "objects.githubusercontent.com", "raw.githubuserc
 COMMANDS = (
     "fw-guard",
     "wg-peers",
+    "relay-peers",
     "scripts-list",
     "scripts-probe",
     "scripts-fetch",
@@ -106,6 +130,7 @@ PORT_RE = re.compile(r"^[0-9]{1,5}$")
 TIMEOUTS = {
     "fw-guard": 300,
     "wg-peers": 60,
+    "relay-peers": 60,
     "scripts-list": 60,
     "scripts-probe": 120,
     "scripts-fetch": 180,
@@ -332,19 +357,23 @@ def bundled_script_bytes():
         return b""
     if len(body) > MAX_SCRIPT_BYTES or b"RPC_COMMANDS" not in body:
         return b""
-    if sha256_of(body) != DEFAULT_SHA256:
+    if not DIGEST_RE.fullmatch(BUNDLED_INSTALL_SHA256) or sha256_of(body) != BUNDLED_INSTALL_SHA256:
+        return b""
+    if harden_install_source(body.decode("utf-8", "replace")).encode("utf-8") != body:
         return b""
     return body
 
 
 def seed_bundled_cache(digest):
+    # The upstream pin remains the gate for fallback selection. The actual fallback
+    # is a separately pinned hardened derivative, stored under its own digest.
     if digest != DEFAULT_SHA256:
         return ""
     body = bundled_script_bytes()
     if not body:
         return ""
     try:
-        return write_cache(digest, body)
+        return write_cache(BUNDLED_INSTALL_SHA256, body)
     except AgentError:
         return ""
 
@@ -516,6 +545,68 @@ def sandboxed_host():
     return False
 
 
+def _replace_shell_function(source, name, replacement):
+    pattern = re.compile(r"(?ms)^" + re.escape(name) + r"\s*\(\)\s*\{.*?^\}[ \t]*(?:\n|$)")
+    return pattern.sub(replacement.rstrip("\n") + "\n", source)
+
+
+def harden_install_source(source):
+    """Disable installer-owned inbound firewall mutation while retaining all RPC work."""
+    text = str(source or "")
+    replacements = {
+        "firewall_open_port": """firewall_open_port() {
+    printf '%s\\n' 'Inbound access is configured only by the authoritative firewall policy.' >&2
+    return 0
+}
+""",
+        "firewall_close_port": """firewall_close_port() {
+    return 0
+}
+""",
+        "_web_close_cmd": """_web_close_cmd() {
+    printf 'exit 0'
+}
+""",
+    }
+    for name, replacement in replacements.items():
+        text = _replace_shell_function(text, name, replacement)
+    return text
+
+
+def hardened_script_path(path):
+    if not os.path.isfile(path):
+        return path, ""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(MAX_SCRIPT_BYTES + 1)
+    except OSError as exc:
+        raise AgentError("internal", "the install script cannot be read: %s" % exc, "init") from None
+    if len(raw) > MAX_SCRIPT_BYTES:
+        raise AgentError("internal", "the install script is larger than allowed", "init")
+    source = raw.decode("utf-8", "replace")
+    hardened = harden_install_source(source)
+    markers = AUTOMATIC_PORT_OPEN_MARKERS + AUTOMATIC_PORT_CLOSE_MARKERS
+    if any(marker in hardened for marker in markers):
+        raise AgentError("unsafe_firewall", "the installer contains an unrecognised global firewall accept rule", "init")
+    if hardened == source:
+        return path, ""
+    folder = os.path.dirname(os.path.abspath(path)) or "."
+    try:
+        handle, temp = tempfile.mkstemp(dir=folder, prefix=".hardened-", suffix=".sh")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(hardened)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp, 0o700)
+    except OSError as exc:
+        try:
+            os.unlink(temp)
+        except (OSError, UnboundLocalError):
+            pass
+        raise AgentError("internal", "the hardened install script cannot be written: %s" % exc, "init") from None
+    return temp, temp
+
+
 def run_script(path, argv, timeout):
     env = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -526,33 +617,53 @@ def run_script(path, argv, timeout):
         "DEBIAN_FRONTEND": "noninteractive",
     }
     command = argv[0] if argv else ""
-    if command and sandboxed_host():
-        systemd_cmd = [
-            "systemd-run",
-            "--pipe",
-            "--wait",
-            "--quiet",
-            "--collect",
-            "-p",
-            "WorkingDirectory=/",
-            "-E",
-            "PATH=" + env["PATH"],
-            "-E",
-            "HOME=/root",
-            "-E",
-            "LANG=C.UTF-8",
-            "-E",
-            "LC_ALL=C.UTF-8",
-            "-E",
-            "TERM=dumb",
-            "-E",
-            "DEBIAN_FRONTEND=noninteractive",
-            "bash",
-            path,
-        ] + argv
+    run_path, temporary = hardened_script_path(path)
+    try:
+        if command and sandboxed_host():
+            systemd_cmd = [
+                "systemd-run",
+                "--pipe",
+                "--wait",
+                "--quiet",
+                "--collect",
+                "-p",
+                "WorkingDirectory=/",
+                "-E",
+                "PATH=" + env["PATH"],
+                "-E",
+                "HOME=/root",
+                "-E",
+                "LANG=C.UTF-8",
+                "-E",
+                "LC_ALL=C.UTF-8",
+                "-E",
+                "TERM=dumb",
+                "-E",
+                "DEBIAN_FRONTEND=noninteractive",
+                "bash",
+                run_path,
+            ] + argv
+            try:
+                escaped = subprocess.run(
+                    systemd_cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=timeout,
+                    env=env,
+                    cwd="/",
+                    check=False,
+                )
+                out_text = (escaped.stdout or b"").decode("utf-8", "replace")
+                if last_json(out_text) or int(escaped.returncode or 0) == 0:
+                    return out_text, int(escaped.returncode or 0)
+            except subprocess.TimeoutExpired:
+                raise AgentError("start_failed", "the install script did not finish within %d seconds" % timeout, command)
+            except OSError:
+                pass
         try:
-            escaped = subprocess.run(
-                systemd_cmd,
+            finished = subprocess.run(
+                ["bash", run_path] + argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -561,29 +672,17 @@ def run_script(path, argv, timeout):
                 cwd="/",
                 check=False,
             )
-            out_text = (escaped.stdout or b"").decode("utf-8", "replace")
-            if last_json(out_text) or int(escaped.returncode or 0) == 0:
-                return out_text, int(escaped.returncode or 0)
         except subprocess.TimeoutExpired:
-            raise AgentError("start_failed", "the install script did not finish within %d seconds" % timeout, command)
-        except OSError:
-            pass
-    try:
-        finished = subprocess.run(
-            ["bash", path] + argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            env=env,
-            cwd="/",
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise AgentError("start_failed", "the install script did not finish within %d seconds" % timeout, argv[0] if argv else "")
-    except OSError as exc:
-        raise AgentError("internal", "the install script could not start: %s" % exc, "init")
-    return (finished.stdout or b"").decode("utf-8", "replace"), int(finished.returncode or 0)
+            raise AgentError("start_failed", "the install script did not finish within %d seconds" % timeout, argv[0] if argv else "")
+        except OSError as exc:
+            raise AgentError("internal", "the install script could not start: %s" % exc, "init")
+        return (finished.stdout or b"").decode("utf-8", "replace"), int(finished.returncode or 0)
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def last_json(text):
@@ -1057,6 +1156,8 @@ def guard_cidrs(flags):
             raise AgentError("bad_arg", "a source range is not a network", "fw_guard") from None
         if network.version != 4 or network.prefixlen < GUARD_MIN_PREFIX:
             raise AgentError("bad_arg", "a source range is too wide, the minimum prefix is /%d" % GUARD_MIN_PREFIX, "fw_guard")
+        if any(network.overlaps(blocked) for blocked in MODAT_NETWORKS):
+            raise AgentError("blocked_exemption", "Modat networks cannot be used as firewall exemptions", "fw_guard")
         found.append(str(network))
     if not found:
         raise AgentError("bad_arg", "the vk mode needs at least one source range", "fw_guard")
@@ -1548,6 +1649,61 @@ def strip_auto_owner(data, root=INSTALL_ROOT, wg_conf="/etc/wireguard/ft-wg0.con
     return data
 
 
+RELAY_ENDPOINT_RE = re.compile(
+    r"\b(?:turn|relay)\s+(?:peer|endpoint|server)\s*(?:=|:)?\s*(?P<target>\[[^\]]+\]|[A-Za-z0-9][A-Za-z0-9.-]*)(?::\d{1,5})?",
+    re.IGNORECASE,
+)
+
+
+def relay_log_text(tail):
+    if not shutil.which("journalctl"):
+        return ""
+    code, text = run_tool(
+        ["journalctl", "-u", "free-turn-proxy", "--no-pager", "-n", str(int(tail)), "-o", "cat"],
+        timeout=30,
+    )
+    return text[-65536:] if code == 0 else ""
+
+
+def relay_peers(flags):
+    unknown = sorted(key for key in flags if key != "tail")
+    if unknown:
+        raise AgentError("bad_arg", "unsupported flag %s" % unknown[0][:24], "relay_peers")
+    raw_tail = str(flags.get("tail", "512") or "512")
+    if not raw_tail.isdigit() or not 1 <= int(raw_tail) <= 2000:
+        raise AgentError("bad_arg", "the tail size must be a number", "relay_peers")
+    addresses = []
+    hosts = []
+    for line in relay_log_text(int(raw_tail)).splitlines():
+        match = RELAY_ENDPOINT_RE.search(line)
+        if not match:
+            continue
+        target = match.group("target").strip()
+        candidate = target[1:-1] if target.startswith("[") and target.endswith("]") else target
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            address = None
+        if address is not None:
+            if address.is_unspecified or address.is_multicast or address.is_loopback or address.is_link_local or address.is_private:
+                continue
+            if isinstance(address, ipaddress.IPv4Address) and any(address in blocked for blocked in MODAT_NETWORKS):
+                continue
+            value = str(address)
+            if value not in addresses:
+                addresses.append(value)
+            if len(addresses) >= 256:
+                break
+            continue
+        host = candidate.rstrip(".").lower()
+        if not NET_HOST_RE.fullmatch(host) or "." not in host or host in hosts:
+            continue
+        hosts.append(host)
+        if len(hosts) >= 128:
+            break
+    return {"addresses": addresses, "hosts": hosts}
+
+
 def main(argv):
     command, flags = parse_argv(argv)
     stage = command.replace("-", "_")
@@ -1568,6 +1724,13 @@ def main(argv):
     if command == "wg-peers":
         try:
             return wg_main(flags)
+        except AgentError as exc:
+            emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
+            return 1
+    if command == "relay-peers":
+        try:
+            emit("ok", relay_peers(flags), stage=stage)
+            return 0
         except AgentError as exc:
             emit("err", {}, exc.code, exc.message, exc.stage or stage, exc.logs)
             return 1
@@ -1615,6 +1778,8 @@ def main(argv):
             heal_runtime(script, command, flags, body)
         if command == "apply" and body["result"] == "ok" and not had_owner:
             strip_auto_owner(body["data"], INSTALL_ROOT)
+        if body["result"] == "ok" and isinstance(body.get("data"), dict):
+            listener_snapshot(body["data"], command, read_install_conf())
         emit(body["result"], body["data"], body.get("code", ""), body.get("msg", ""), body.get("stage", stage), body["logs"])
         return 0 if body["result"] == "ok" else 1
     except AgentError as exc:
@@ -1673,68 +1838,31 @@ def port_listening(port, proto="udp"):
     return code == 0 and bool(text.strip())
 
 
+
 WG_IFACE_PATH = "/sys/class/net/ft-wg0"
 WG_CONF_PATH = "/etc/wireguard/ft-wg0.conf"
 
 
-def _nft_chain_blocks_port(joined, proto, port):
-    has_drop = "policy drop" in joined or bool(re.search(r"(?:^|\s)(drop|reject)(?:\s|$|;)", joined))
-    if not has_drop:
-        return False
-    accept_re = re.compile(r"\b%s\s+dport\s+%d\b[^\n]*\baccept\b" % (re.escape(proto), int(port)))
-    drop_re = re.compile(r"(?:^|\s)(drop|reject)(?:\s|$|;)")
-    for line in joined.splitlines():
-        if accept_re.search(line):
-            return False
-        if "hook input" not in line and drop_re.search(line):
-            return True
-    return True
-
-
-def nft_open_port(port, protos):
-    if not shutil.which("nft") or not 1 <= int(port or 0) <= 65535:
+def listener_snapshot(data, command, installed=None):
+    """Report only an observed, running UDP listener as a factual policy port."""
+    if not isinstance(data, dict):
         return
-    code, ruleset = run_tool(["nft", "list", "ruleset"], timeout=15)
-    if code != 0 or not ruleset:
+    if not data.get("installed") or not data.get("running"):
+        data["listening"] = False
+        data["listen_ports"] = []
         return
-    family = ""
-    table_name = ""
-    chain_name = ""
-    in_input = False
-    chain_body = []
-    targets = []
-    for raw in ruleset.splitlines():
-        line = raw.strip()
-        table_match = re.match(r"^table\s+(inet|ip|ip6)\s+([A-Za-z0-9_.-]+)\s*\{", line)
-        if table_match:
-            family = table_match.group(1)
-            table_name = table_match.group(2)
-            chain_name = ""
-            in_input = False
-            chain_body = []
-            continue
-        chain_match = re.match(r"^chain\s+([A-Za-z0-9_.-]+)\s*\{", line)
-        if family and table_name and chain_match:
-            chain_name = chain_match.group(1)
-            in_input = False
-            chain_body = []
-            continue
-        if chain_name:
-            chain_body.append(line)
-            if "hook input" in line and table_name != "obhod_ddos":
-                in_input = True
-            if line == "}":
-                if in_input:
-                    joined = "\n".join(chain_body)
-                    targets.append((family, table_name, chain_name, joined))
-                chain_name = ""
-                in_input = False
-                chain_body = []
-    for fam, tbl, chn, joined in targets[:8]:
-        for proto in protos:
-            if _nft_chain_blocks_port(joined, proto, port):
-                run_tool(["nft", "insert", "rule", fam, tbl, chn, proto, "dport", str(port), "accept"], timeout=10)
-
+    config = data.get("config") if isinstance(data.get("config"), dict) else {}
+    source = installed if isinstance(installed, dict) else read_install_conf()
+    raw_port = config.get("listen_port", source.get("LISTEN_PORT", ""))
+    try:
+        port = int(raw_port or 0)
+    except (TypeError, ValueError):
+        port = 0
+    mode = str(config.get("mode", source.get("PROXY_MODE", source.get("MODE", "udp"))) or "udp").strip().lower()
+    proto = "tcp" if mode == "tcp" else "udp"
+    listening = bool(port and port_listening(port, proto))
+    data["listening"] = listening
+    data["listen_ports"] = [port] if listening and proto == "udp" else []
 
 def ensure_wg_forward():
     if not os.path.isdir(WG_IFACE_PATH) or not shutil.which("iptables"):
@@ -1763,83 +1891,15 @@ def _relax_rp_filter():
             run_tool(["sysctl", "-q", "-w", "%s=2" % key], timeout=10)
 
 
-def _iptables_accept_above_drop(bin_name, proto, port):
-    listing = tool_text([bin_name, "-S", "INPUT"])
-    accept_re = re.compile(r"^-A\s+INPUT\b.*-p\s+%s\b.*--dport\s+%d\b.*-j\s+ACCEPT\b" % (re.escape(proto), int(port)))
-    drop_re = re.compile(r"^-A\s+INPUT\b.*-j\s+(DROP|REJECT)\b")
-    seen_drop = False
-    accepted_first = False
-    for line in listing.splitlines():
-        row = line.strip()
-        if accept_re.search(row) and not seen_drop:
-            accepted_first = True
-            break
-        if drop_re.search(row):
-            seen_drop = True
-    if accepted_first:
-        return
-    if listing and seen_drop:
-        while run_tool([bin_name, "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])[0] == 0:
-            run_tool([bin_name, "-D", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
-        run_tool([bin_name, "-I", "INPUT", "1", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
-    elif run_tool([bin_name, "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])[0] != 0:
-        run_tool([bin_name, "-I", "INPUT", "1", "-p", proto, "--dport", str(port), "-j", "ACCEPT"])
 
-
-def ensure_apply_port_open(flags, body):
-    installed = read_install_conf()
-    data_cfg = (body.get("data") or {}).get("config") or {}
-    raw_port = str(
-        flags.get("listen_port", "")
-        or flags.get("listen-port", "")
-        or data_cfg.get("listen_port", "")
-        or installed.get("LISTEN_PORT", "")
-        or ""
-    ).strip()
-    if not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
-        return
-    port = int(raw_port)
-    mode = str(
-        flags.get("mode", "")
-        or data_cfg.get("mode", "")
-        or installed.get("PROXY_MODE", "")
-        or installed.get("MODE", "")
-        or "udp"
-    ).strip().lower()
-    protos = ["udp", "tcp"] if mode == "tcp" else ["udp"]
-    backend = guard_backend()
-    if not backend:
-        return
-    found_mode, found_rules = guard_status(backend, port, ["udp"])
-    if found_mode == "vk" and found_rules > 0:
+def ensure_runtime_network(installed):
+    """Repair FreeTurn runtime plumbing without creating inbound firewall rules."""
+    if not isinstance(installed, dict) or str(installed.get("BACKEND", "new") or "new").strip().lower() != "new":
         return
     if shutil.which("sysctl"):
         run_tool(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"], timeout=10)
         _relax_rp_filter()
     ensure_wg_forward()
-    nft_open_port(port, protos)
-    if backend in {"ufw", "firewalld"} and shutil.which("iptables") and iptables_chain_present():
-        for proto in protos:
-            while run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])[0] == 0:
-                run_tool(["iptables", "-D", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])
-    if backend == "ufw" and found_mode != "open":
-        ufw_clear(port)
-        for proto in protos:
-            run_tool(["ufw", "allow", "%d/%s" % (port, proto)])
-    elif backend == "firewalld" and found_mode != "open":
-        for proto in protos:
-            run_tool(["firewall-cmd", "--add-port=%d/%s" % (port, proto)])
-            run_tool(["firewall-cmd", "--permanent", "--add-port=%d/%s" % (port, proto)])
-    elif backend == "iptables":
-        for proto in protos:
-            while run_tool(["iptables", "-C", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])[0] == 0:
-                run_tool(["iptables", "-D", "INPUT", "-p", proto, "--dport", str(port), "-j", GUARD_CHAIN])
-            _iptables_accept_above_drop("iptables", proto, port)
-            if shutil.which("iptables-legacy"):
-                legacy_in = tool_text(["iptables-legacy", "-S", "INPUT"])
-                if legacy_in and re.search(r"-j\s+(DROP|REJECT)\b", legacy_in):
-                    _iptables_accept_above_drop("iptables-legacy", proto, port)
-
 
 def owner_allowlisted(root=INSTALL_ROOT):
     meta_path = os.path.join(root, "clients.list")
@@ -1979,7 +2039,7 @@ def heal_runtime(script, command, flags, body):
         if installed.get("BACKEND", "new") == "new" and os.path.isfile(WG_CONF_PATH) and not os.path.isdir(WG_IFACE_PATH):
             if shutil.which("systemctl"):
                 run_tool(["systemctl", "restart", "wg-quick@ft-wg0"], timeout=30)
-        ensure_apply_port_open(flags, body)
+        ensure_runtime_network(installed)
     if reapplied and command in {"probe", "client-list", "client-conf"}:
         plan = command_argv(command, flags)
         refreshed_text, _ref_rc = run_script(script, plan, TIMEOUTS.get(command, 120))

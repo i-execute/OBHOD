@@ -20,8 +20,6 @@ TABLE = "obhod_ddos"
 CONF_DIR = "/etc/obhod"
 CONF = os.path.join(CONF_DIR, "ddos.json")
 ALLOWLIST_NAME = "ddos_allowlist.conf"
-VK_CALLS_ALLOW = "193.203.43.0/24"
-VK_CALLS_FREETURN_UDP_PORT = 56583
 MODAT_NETWORKS = (
     ipaddress.ip_network("85.217.140.0/24"),
     ipaddress.ip_network("85.217.149.0/24"),
@@ -319,7 +317,7 @@ SERVICES = {
     "27017": "mongodb",
     "10085": "xray-api",
 }
-PORT_KEYS = ("ports", "syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size", "enabled", "rkn_enabled", "rkn_logging", "rkn_allow", "rkn_exceptions", "manual_bans", "unbanned")
+PORT_KEYS = ("ports", "freeturn_ports", "syn_rate", "syn_burst", "conn_rate", "conn_burst", "udp_rate", "udp_burst", "icmp_rate", "icmp_burst", "ban_timeout", "set_size", "enabled", "rkn_enabled", "rkn_logging", "rkn_allow", "turn_allow", "rkn_exceptions", "manual_bans", "unbanned")
 
 
 SBIN_DIRS = ("/usr/local/sbin", "/usr/sbin", "/sbin")
@@ -438,11 +436,11 @@ def allowlist_path(flags):
 
 
 def allowlist_text(entries=None):
-    values = exempt_entries(entries, include_vk=True)
+    values = exempt_entries(entries)
     return (
         "# OBHOD persistent Anti-DDoS allowlist.\n"
-        "# Source of truth for narrowly scoped exemptions; one CIDR per line.\n"
-        "# VK Calls only: keep this exact /24. Do not add Modat networks here.\n"
+        "# Source of truth for manually configured exemptions; one CIDR per line.\n"
+        "# Modat networks are never allowed here.\n"
         + "\n".join(values)
         + "\n"
     )
@@ -466,7 +464,7 @@ def persistent_allowlist(flags, create=True):
             raise DDosError("too_large", "persistent allowlist is too large", "allowlist")
     except FileNotFoundError:
         if not create:
-            return [VK_CALLS_ALLOW]
+            return []
     except OSError as exc:
         raise DDosError("fs", "cannot read persistent allowlist: " + str(exc)[:120], "allowlist") from exc
     entries = []
@@ -477,8 +475,6 @@ def persistent_allowlist(flags, create=True):
         cleaned = clean_entry(token, allow_private=True)
         if cleaned and not is_forbidden_exemption(cleaned) and cleaned not in entries:
             entries.append(cleaned)
-    if VK_CALLS_ALLOW not in entries:
-        entries.insert(0, VK_CALLS_ALLOW)
     if create:
         wanted = allowlist_text(entries)
         if raw != wanted:
@@ -566,10 +562,42 @@ def parse_entries(raw, allow_private=False):
     return out
 
 
-def exempt_entries(entries, include_vk=False):
-    values = list(entries or []) if isinstance(entries, (list, tuple, set)) else [entries]
-    if include_vk:
-        values.append(VK_CALLS_ALLOW)
+def clean_ban_entry(raw):
+    token = str(raw or "").strip()
+    if not token or CONTROL_RE.search(token):
+        return ""
+    try:
+        net = ipaddress.ip_network(token, strict=False)
+    except ValueError:
+        return ""
+    if non_global_or_unsafe(net):
+        return ""
+    if isinstance(net, ipaddress.IPv4Network) and net.prefixlen < MIN_MANUAL_V4_PREFIX:
+        return ""
+    if isinstance(net, ipaddress.IPv6Network) and net.prefixlen < MIN_MANUAL_V6_PREFIX:
+        return ""
+    return str(net.network_address) if net.prefixlen in (32, 128) else str(net)
+
+
+def ban_entries(raw):
+    if isinstance(raw, str):
+        items = [part.strip() for part in raw.replace(";", ",").replace("\n", ",").split(",") if part.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        items = [str(part).strip() for part in raw if str(part).strip()]
+    else:
+        items = []
+    out = []
+    for item in items:
+        cleaned = clean_ban_entry(item)
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+        if len(out) >= MAX_CUSTOM_ENTRIES:
+            break
+    return out
+
+
+def exempt_entries(entries):
+    values = list(entries or []) if isinstance(entries, (list, tuple, set)) else entries
     out = []
     for item in parse_entries(values, allow_private=True):
         if is_forbidden_exemption(item):
@@ -584,7 +612,7 @@ def split_collapsed_entries(entries, allow_private=False):
     v6 = []
     for item in entries:
         cleaned = clean_entry(item, allow_private=allow_private)
-        if not cleaned:
+        if not cleaned or is_forbidden_exemption(cleaned):
             continue
         net = ipaddress.ip_network(cleaned, strict=False)
         if isinstance(net, ipaddress.IPv4Network):
@@ -592,7 +620,7 @@ def split_collapsed_entries(entries, allow_private=False):
         else:
             v6.append(net)
     return (
-        [str(net) for net in ipaddress.collapse_addresses(v4)],
+        [str(net) for net in ipaddress.collapse_addresses(v4) if not is_forbidden_exemption(str(net))],
         [str(net) for net in ipaddress.collapse_addresses(v6)],
     )
 
@@ -611,7 +639,7 @@ def sanitize_rkn_networks(lines):
         if non_global_or_unsafe(net):
             continue
         if isinstance(net, ipaddress.IPv4Network):
-            if net.prefixlen < MIN_V4_PREFIX or any(net.overlaps(p) for p in PROTECTED_V4):
+            if net.prefixlen < MIN_V4_PREFIX or any(net.overlaps(p) for p in PROTECTED_V4) or is_forbidden_exemption(str(net)):
                 continue
             v4.append(net)
         else:
@@ -619,7 +647,7 @@ def sanitize_rkn_networks(lines):
                 continue
             v6.append(net)
     return (
-        [str(net) for net in ipaddress.collapse_addresses(v4)],
+        [str(net) for net in ipaddress.collapse_addresses(v4) if not is_forbidden_exemption(str(net))],
         [str(net) for net in ipaddress.collapse_addresses(v6)],
     )
 
@@ -780,9 +808,11 @@ def policy_from(raw, flags):
         "ban_timeout": 3600,
         "set_size": 65536,
         "ports": "22,443",
+        "freeturn_ports": "",
         "rkn_enabled": True,
         "rkn_logging": True,
         "rkn_allow": [],
+        "turn_allow": [],
         "rkn_exceptions": [],
         "manual_bans": [],
         "unbanned": [],
@@ -806,13 +836,16 @@ def policy_from(raw, flags):
         "ban_timeout": number(base.get("ban_timeout"), 60, 86400, 3600),
         "set_size": number(base.get("set_size"), 1024, 1048576, 65536),
         "ports": ports_text(base.get("ports")) or "22,443",
+        "freeturn_ports": ports_text(base.get("freeturn_ports")),
         "rkn_enabled": truth(base.get("rkn_enabled"), True),
         "rkn_logging": truth(base.get("rkn_logging"), True),
         "rkn_allow": exempt_entries(base.get("rkn_allow")),
+        "turn_allow": [],
         "rkn_exceptions": parse_rkn_exceptions(base.get("rkn_exceptions")),
-        "manual_bans": parse_entries(base.get("manual_bans"), allow_private=False),
+        "manual_bans": ban_entries(base.get("manual_bans")),
         "unbanned": exempt_entries(base.get("unbanned"))[:64],
     }
+    policy["turn_allow"] = exempt_entries(base.get("turn_allow")) if policy["freeturn_ports"] else []
     return policy
 
 
@@ -829,7 +862,7 @@ def parse_rkn_exceptions(raw):
         except ValueError:
             continue
         proto = parts[1].lower()
-        if address.is_unspecified or address.is_multicast or proto not in ("tcp", "udp") or not 1 <= port <= 65535:
+        if address.is_unspecified or address.is_multicast or is_forbidden_exemption(str(address)) or proto not in ("tcp", "udp") or not 1 <= port <= 65535:
             continue
         entry = "%s %s %d" % (address, proto, port)
         if entry not in out:
@@ -845,7 +878,8 @@ def port_set(policy, ports=None):
 
 
 def udp_detector_ports(policy):
-    return [item for item in policy["ports"].split(",") if int(item) != VK_CALLS_FREETURN_UDP_PORT]
+    excluded = set(str(policy.get("freeturn_ports") or "").split(","))
+    return [item for item in policy["ports"].split(",") if item and item not in excluded]
 
 
 def render_interval_set(name, family_type, elements):
@@ -911,8 +945,10 @@ def ssh_safety_entries(flags):
 def rules_text(policy, flags=None, ssh_safety=None):
     active_flags = flags or {}
     durable_allow = persistent_allowlist(active_flags, create=False)
-    allow_v4, allow_v6 = split_collapsed_entries(exempt_entries([*(policy.get("rkn_allow") or []), *durable_allow], include_vk=True), allow_private=True)
-    ban_v4, ban_v6 = split_collapsed_entries(policy.get("manual_bans") or [], allow_private=False)
+    allow_v4, allow_v6 = split_collapsed_entries(exempt_entries([*(policy.get("rkn_allow") or []), *durable_allow]), allow_private=True)
+    turn_v4, turn_v6 = split_collapsed_entries(policy.get("turn_allow") or [], allow_private=True)
+    freeturn_ports = [item for item in str(policy.get("freeturn_ports") or "").split(",") if item]
+    ban_v4, ban_v6 = split_collapsed_entries(ban_entries(policy.get("manual_bans") or []), allow_private=True)
     rkn_v4, rkn_v6 = [], []
     if policy.get("rkn_enabled", True):
         rkn_v4, rkn_v6, _stamp = load_rkn_subnets(active_flags)
@@ -922,6 +958,8 @@ def rules_text(policy, flags=None, ssh_safety=None):
     ]
     lines.extend(render_interval_set("rkn_allow_v4", "ipv4_addr", allow_v4))
     lines.extend(render_interval_set("rkn_allow_v6", "ipv6_addr", allow_v6))
+    lines.extend(render_interval_set("turn_allow_v4", "ipv4_addr", turn_v4))
+    lines.extend(render_interval_set("turn_allow_v6", "ipv6_addr", turn_v6))
     lines.extend(render_interval_set("manual_ban_v4", "ipv4_addr", ban_v4))
     lines.extend(render_interval_set("manual_ban_v6", "ipv6_addr", ban_v6))
     lines.extend(render_interval_set("rkn_v4", "ipv4_addr", rkn_v4))
@@ -975,6 +1013,10 @@ def rules_text(policy, flags=None, ssh_safety=None):
         lines.append("    ip saddr @manual_ban_v4 counter drop")
     if ban_v6:
         lines.append("    ip6 saddr @manual_ban_v6 counter drop")
+    if turn_v4 and freeturn_ports:
+        lines.append("    ip saddr @turn_allow_v4 udp dport %s accept" % port_set(policy, freeturn_ports))
+    if turn_v6 and freeturn_ports:
+        lines.append("    ip6 saddr @turn_allow_v6 udp dport %s accept" % port_set(policy, freeturn_ports))
     if exceptions and (rkn_v4 or rkn_v6):
         lines.append("    jump rkn_check")
     if rkn_v4 and not exceptions:
@@ -988,8 +1030,8 @@ def rules_text(policy, flags=None, ssh_safety=None):
             lines.append('    ip6 saddr @rkn_v6 limit rate 10/minute burst 5 packets log prefix "OBHOD-RKN-v6: " level warn')
         lines.append("    ip6 saddr @rkn_v6 counter drop")
     for name in SETS:
-        if name == "udp_flood":
-            lines.append("    udp dport != %d ip saddr @%s counter drop" % (VK_CALLS_FREETURN_UDP_PORT, name))
+        if name == "udp_flood" and freeturn_ports:
+            lines.append("    udp dport != %s ip saddr @%s counter drop" % (port_set(policy, freeturn_ports), name))
         else:
             lines.append("    ip saddr @%s counter drop" % name)
     detector_ports = udp_detector_ports(policy)
@@ -2051,7 +2093,7 @@ def unban_cmd(flags):
 
 def reban_cmd(flags):
     raw_ip = str(flags.get("ip", "") or "")
-    cleaned = clean_entry(raw_ip, allow_private=False)
+    cleaned = clean_ban_entry(raw_ip)
     if not cleaned:
         raise DDosError("bad_ip", "invalid IP or CIDR", "reban")
     policy = policy_from(read_json(conf_path(flags)), {})
@@ -2069,7 +2111,7 @@ def reban_cmd(flags):
 
 def mutate_list_cmd(flags, field_name, add_mode, allow_private, stage_name):
     raw_ip = str(flags.get("ip", "") or "")
-    cleaned = clean_entry(raw_ip, allow_private=allow_private)
+    cleaned = clean_ban_entry(raw_ip) if field_name == "manual_bans" else clean_entry(raw_ip, allow_private=allow_private)
     if not cleaned:
         raise DDosError("bad_ip", "invalid IP or CIDR", stage_name)
     if allow_private and is_forbidden_exemption(cleaned):
