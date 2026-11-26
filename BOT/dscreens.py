@@ -10,6 +10,7 @@ from .ui import (
     MAX_CALLBACK,
     bold,
     button,
+    button_cell,
     code,
     details,
     heading,
@@ -809,29 +810,32 @@ def ddos_ips_screen(view: DbgView) -> Any:
     start = page * DDOS_IPS_PAGE_SIZE
     slice_records = list(enumerate(records[start : start + DDOS_IPS_PAGE_SIZE], start=start))
     if slice_records:
-        rows = [
-            ("stop" if rec.blocked else "ok", code(rec.address), _ddos_reason_label(t, rec.reason))
-            for _idx, rec in slice_records
-        ]
+        rows = []
+        for idx, rec in slice_records:
+            controls: list[Any] = []
+            token = _ddos_cb_token(rec.address, idx)
+            action = "ub" if rec.blocked else "rb"
+            callback = f"dbg:dd:{action}:{page}:{token}"
+            if token and len(callback.encode("utf-8")) <= MAX_CALLBACK:
+                if rec.blocked:
+                    controls.append(button(t("DDOS_BTN_UNBAN_IP", ip=rec.address), callback, icon="unlock"))
+                else:
+                    controls.append(button(t("DDOS_BTN_REBAN_IP", ip=rec.address), callback, style="danger", icon="stop"))
+            scan_callback = _ddos_ipscan_callback(rec.address, page)
+            if scan_callback:
+                controls.append(button(t("IPSCAN_BTN_SCAN_IP", ip=rec.address), scan_callback, icon="radar"))
+            rows.append(
+                (
+                    "stop" if rec.blocked else "ok",
+                    code(rec.address),
+                    _ddos_reason_label(t, rec.reason),
+                    button_cell(*controls) if controls else code("-"),
+                )
+            )
     else:
-        rows = [("ok", muted(t("DDOS_IPS_EMPTY")), code("-"))]
-    blocks.append(table(rows, (t("DDOS_IPS_TITLE"), t("DDOS_COL_STATUS"))))
+        rows = [("ok", muted(t("DDOS_IPS_EMPTY")), code("-"), code("-"))]
+    blocks.append(table(rows, (t("DDOS_IPS_TITLE"), t("DDOS_COL_STATUS"), t("DDOS_COL_ACTION"))))
     buttons: list[Any] = []
-    for idx, rec in slice_records:
-        controls: list[Any] = []
-        token = _ddos_cb_token(rec.address, idx)
-        action = "ub" if rec.blocked else "rb"
-        callback = f"dbg:dd:{action}:{page}:{token}"
-        if token and len(callback.encode("utf-8")) <= MAX_CALLBACK:
-            if rec.blocked:
-                controls.append(button(t("DDOS_BTN_UNBAN_IP", ip=rec.address), callback, icon="unlock"))
-            else:
-                controls.append(button(t("DDOS_BTN_REBAN_IP", ip=rec.address), callback, icon="stop"))
-        scan_callback = _ddos_ipscan_callback(rec.address, page)
-        if scan_callback:
-            controls.append(button(t("IPSCAN_BTN_SCAN_IP", ip=rec.address), scan_callback, icon="radar"))
-        if controls:
-            buttons.append(row(*controls))
     if max_page > 0:
         nav_btns: list[Any] = []
         if page > 0:
@@ -840,7 +844,7 @@ def ddos_ips_screen(view: DbgView) -> Any:
             nav_btns.append(button(t("DDOS_PAGE_NEXT", cur=page + 2, total=max_page + 1), f"dbg:dd:ips:{page + 1}", icon="route"))
         if nav_btns:
             buttons.append(row(*nav_btns))
-    buttons.append(input_row(t("DDOS_BTN_BAN"), "dbg_ddos_ban", "-", view.lang))
+    buttons.append(input_row(t("DDOS_BTN_BAN"), "dbg_ddos_ban", "-", view.lang, style="danger"))
     buttons.append(input_row(t("DDOS_BTN_ALLOW"), "dbg_ddos_allow", "-", view.lang))
     buttons.append(row(button(t("DDOS_BTN_REFRESH"), f"dbg:dd:ips:{page}", icon="refresh")))
     buttons.append(back_row(t, "dbg:dd"))

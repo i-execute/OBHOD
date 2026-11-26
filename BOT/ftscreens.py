@@ -9,6 +9,7 @@ from .ui import (
     bold,
     bullet_list,
     button,
+    button_cell,
     code,
     details,
     input_row,
@@ -262,8 +263,15 @@ def clients_screen(view: FtView) -> Any:
         for item in view.page_rows():
             usage = view.usage_of(item.name)
             kind = t("FT_CLIENTS_OWNER") if item.owner else t("FT_CLIENTS_GUEST")
-            rows.append(("user", item.name, "%s %s %s" % (kind, usage_line(usage, view.lang), tone(usage, view.lang))))
-        blocks.append(table(rows, (t("FT_CLIENTS_TITLE"), t("FT_CLIENTS_SUBTITLE"))))
+            rows.append(
+                (
+                    "user",
+                    item.name,
+                    "%s %s %s" % (kind, usage_line(usage, view.lang), tone(usage, view.lang)),
+                    button_cell(button(t("UI_OPEN"), "ft:cl:%s" % item.name, icon="user")),
+                )
+            )
+        blocks.append(table(rows, (t("FT_CLIENTS_TITLE"), t("FT_CLIENTS_SUBTITLE"), t("UI_ACTION"))))
         total = view.totals or {}
         if total:
             blocks.append(
@@ -283,10 +291,6 @@ def clients_screen(view: FtView) -> Any:
         blocks.append(quote(muted(view.traffic_error)))
     buttons = [input_row(t("FT_BTN_CLIENT_ADD"), "ft_client", "-", view.lang)]
     buttons.append(row(button(t("FT_BTN_REFRESH"), "ft:clients:%d" % (view.page + 1), icon="users"), button(t("FT_BTN_TRAFFIC"), "ft:tr:%d" % (view.page + 1), icon="chart")))
-    for item in view.page_rows():
-        usage = view.usage_of(item.name)
-        label = "%s %s" % (item.name, traffic.human(usage.total) if usage is not None else "-")
-        buttons.append(row(button(label, "ft:cl:%s" % item.name, icon="user")))
     buttons.extend(pager(view, t, "ft:clients"))
     buttons.append(back_row("ft:home", view.lang))
     return screen(t("FT_CLIENTS_TITLE"), t("FT_CLIENTS_SUBTITLE"), blocks, buttons, icon="users")

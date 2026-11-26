@@ -117,6 +117,37 @@ def ref_link(ref: object, repo: object = DEFAULT_REPO) -> str:
     return esc(token)
 
 
+DANGER_CALLBACK_PARTS = frozenset(
+    {
+        "ban",
+        "reban",
+        "rb",
+        "remove",
+        "rm",
+        "del",
+        "delete",
+        "purge",
+        "un",
+        "uninstall",
+        "revoke",
+        "clear",
+        "stop",
+        "instop",
+        "down",
+        "finish",
+    }
+)
+
+
+def callback_style(data: object, style: str = "") -> str:
+    """Keep destructive actions visually distinct without trusting their label text."""
+    requested = str(style or "").strip().lower()
+    if requested:
+        return requested
+    parts = {part.casefold() for part in str(data or "").split(":") if part}
+    return "danger" if parts & DANGER_CALLBACK_PARTS else ""
+
+
 @dataclass
 class Button:
     label: str
@@ -132,8 +163,28 @@ class Button:
         return f'<tg-button type="callback_data"{style} data="{esc(self.data)}">{body}</tg-button>'
 
 
+@dataclass(frozen=True)
+class ButtonCell:
+    """A deliberately structured inline-control cell for a Rich table.
+
+    Arbitrary strings remain escaped by ``table_value``.  Only Button instances
+    are permitted to emit tg-button markup inside a table cell.
+    """
+
+    buttons: tuple[Button, ...]
+
+    def html(self) -> str:
+        return "".join(item.html() for item in self.buttons)
+
+
 def button(label: str, data: str, style: str = "", icon: str = "") -> Button:
-    return Button(label=label, data=data, style=style, icon=icon)
+    return Button(label=label, data=data, style=callback_style(data, style), icon=icon)
+
+
+def button_cell(*buttons: Button) -> ButtonCell:
+    if not all(isinstance(item, Button) for item in buttons):
+        raise TypeError("a table button cell accepts Button instances only")
+    return ButtonCell(tuple(buttons))
 
 
 def copy_button(label: str, text: str, icon: str = "copy") -> str:
@@ -175,10 +226,10 @@ def link_button(label: str, url: str, icon: str = "link") -> str:
     return f'<tg-button type="url" url="{esc(url)}">{ico(icon, "")}{esc(label)}</tg-button>'
 
 
-def input_row(label: str, ident: str, ctx: object = "-", lang: str = "en") -> str:
+def input_row(label: str, ident: str, ctx: object = "-", lang: str = "en", style: str = "") -> str:
     from . import i18n, inline
 
-    buttons = [inline_button(label, inline.prefill(ident, ctx), icon="tag")]
+    buttons = [inline_button(label, inline.prefill(ident, ctx), style=style, icon="tag")]
     if inline.has_options(ident):
         buttons.append(inline_button(i18n.t("BTN_LIST", lang), inline.list_query(ident, ctx), icon="compass"))
     return row(*buttons)
@@ -208,34 +259,42 @@ def rows(items: Iterable[str]) -> str:
     return "".join(items)
 
 
-def row_parts(item: object) -> tuple[str, str, object]:
+def row_parts(item: object) -> tuple[str, str, tuple[object, ...]]:
     if isinstance(item, (list, tuple)):
         values = list(item)
         if len(values) == 2:
-            return "", str(values[0]), values[1]
+            return "", str(values[0]), (values[1],)
         if len(values) >= 3:
-            return str(values[0] or ""), str(values[1]), values[2]
-    return "", str(item), ""
+            return str(values[0] or ""), str(values[1]), tuple(values[2:])
+    return "", str(item), ("",)
 
 
 def table_value(value: object) -> str:
+    if isinstance(value, Button):
+        return value.html()
+    if isinstance(value, ButtonCell):
+        return value.html()
     text = TABLE_MARKUP.sub("", "" if value is None else str(value))
     return esc(unescape(text))
 
 
-def table(pairs: Iterable[object], headers: tuple[str, str] | None = None) -> str:
+def table(pairs: Iterable[object], headers: tuple[str, ...] | None = None) -> str:
+    prepared = [row_parts(item) for item in pairs]
+    header_cells = tuple(headers or ())
+    width = max(2, len(header_cells), *(1 + len(values) for _icon, _key, values in prepared))
     head = ""
-    if headers:
-        first = f'<span style="color: {PALETTE["cornflower"]}">{esc(headers[0])}</span>'
-        second = f'<span style="color: {PALETTE["cornflower"]}">{esc(headers[1])}</span>'
-        head = f'<tr><th align="center">{first}</th><th align="center">{second}</th></tr>'
+    if header_cells:
+        rendered_headers = []
+        for header in (*header_cells, *("" for _ in range(width - len(header_cells)))):
+            text = f'<span style="color: {PALETTE["cornflower"]}">{esc(header)}</span>'
+            rendered_headers.append(f'<th align="center">{text}</th>')
+        head = "<tr>%s</tr>" % "".join(rendered_headers)
     cells = []
-    for item in pairs:
-        icon, key, value = row_parts(item)
-        label = ico(icon, "") + table_value(key)
-        cells.append(f'<tr><td align="center">{label}</td><td align="center">{table_value(value)}</td></tr>')
-    body = "".join(cells)
-    return f'<table bordered="false" striped="false">{head}{body}</table>'
+    for icon, key, values in prepared:
+        rendered = [ico(icon, "") + table_value(key), *(table_value(value) for value in values)]
+        rendered.extend("" for _ in range(width - len(rendered)))
+        cells.append("<tr>%s</tr>" % "".join(f'<td align="center">{value}</td>' for value in rendered))
+    return f'<table bordered="false" striped="false">{head}{"".join(cells)}</table>'
 
 
 def loading(title: str, body: str, steps: Iterable[str] = (), icon: str = "loading") -> str:
