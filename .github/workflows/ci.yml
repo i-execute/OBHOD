@@ -75,14 +75,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   full:
-    name: tests ${{ matrix.python }}
+    name: full suite 3.13
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,7 +86,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements.txt
       - name: install

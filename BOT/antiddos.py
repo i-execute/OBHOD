@@ -659,7 +659,6 @@ class Policy:
         }
 
     def allow_entries(self) -> list[str]:
-        """Manual RKN exemptions only; discovered TURN peers are port-scoped."""
         return exempt_entries(self.rkn_allow)
 
     def turn_entries(self) -> list[str]:

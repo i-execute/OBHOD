@@ -140,7 +140,6 @@ DANGER_CALLBACK_PARTS = frozenset(
 
 
 def callback_style(data: object, style: str = "") -> str:
-    """Keep destructive actions visually distinct without trusting their label text."""
     requested = str(style or "").strip().lower()
     if requested:
         return requested
@@ -165,12 +164,6 @@ class Button:
 
 @dataclass(frozen=True)
 class ButtonCell:
-    """A deliberately structured inline-control cell for a Rich table.
-
-    Arbitrary strings remain escaped by ``table_value``.  Only Button instances
-    are permitted to emit tg-button markup inside a table cell.
-    """
-
     buttons: tuple[Button, ...]
 
     def html(self) -> str:

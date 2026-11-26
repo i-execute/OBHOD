@@ -853,22 +853,19 @@ class Bot:
             if changed_addr:
                 self.save()
         try:
-            runtime_changed = self.sync_turn_runtime_policy()
             policy = self.turn_policy()
             merged_ports = antiddos.ports_of([*policy.ports, *self.expected_ddos_ports()])
             if set(merged_ports) != set(policy.ports):
                 policy.ports = merged_ports
-                self.state.ddos = policy.to_dict()
-                runtime_changed = True
-            if runtime_changed:
-                self.save()
+            policy = policy.normalise()
+            policy_changed = policy.to_dict() != self.state.ddos
             status = await ddos_call(self.guard, self.state.ssh, ddos_argv("status"), 60)
             policy_mismatch = status.installed and antiddos.firewall_policy_differs(policy, status.policy)
             suspicious = (
                 status.transaction_state != "none"
                 or status.table_inspection == "unknown"
                 or (status.table and not status.installed)
-                or (policy_mismatch and not runtime_changed)
+                or policy_mismatch
                 or status.saved_policy_consistency in ("mismatch", "unknown")
                 or status.live_rate_consistency in ("mismatch", "unknown")
             )
@@ -877,6 +874,9 @@ class Bot:
             if suspicious:
                 outcomes["ddos"] = "review"
             else:
+                if policy_changed:
+                    self.state.ddos = policy.to_dict()
+                    self.save()
                 if policy.enabled and (not status.installed or not status.table or not status.enabled or policy_mismatch):
                     status = await ddos_call(self.guard, self.state.ssh, ddos_argv("install", policy), 180)
                 self.ddos_state = status
