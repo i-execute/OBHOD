@@ -10,6 +10,7 @@ from .ui import (
     bold_html,
     bullet_list,
     button,
+    button_cell,
     code,
     copy_row,
     details,
@@ -183,23 +184,16 @@ def inbounds_list_screen(view: XrayView, page: int = 0) -> Any:
     rows = []
     for item in chunk:
         icon_name = "ok" if item.enable else "stop"
-        rows.append((icon_name, str(item.port), f"{item.remark} ({transport_title(item.network)})"))
-    blocks.append(table(rows, (t("SUM_PORT"), t("SUM_NETWORK"))))
-    buttons: list[str] = []
-    for idx in range(0, len(chunk), 2):
-        pair = chunk[idx : idx + 2]
-        buttons.append(
-            row(
-                *[
-                    button(
-                        item.remark or f"#{item.id}",
-                        f"xr:in:{item.id}",
-                        icon="ok" if item.enable else "stop",
-                    )
-                    for item in pair
-                ]
+        rows.append(
+            (
+                icon_name,
+                str(item.port),
+                f"{item.remark} ({transport_title(item.network)})",
+                button_cell(button(t("UI_OPEN"), f"xr:in:{item.id}", icon=icon_name)),
             )
         )
+    blocks.append(table(rows, (t("SUM_PORT"), t("SUM_NETWORK"), t("UI_ACTION"))))
+    buttons: list[str] = []
     if total_pages > 1:
         nav_btns = []
         if cur_page > 0:

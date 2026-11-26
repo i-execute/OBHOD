@@ -69,7 +69,7 @@ def test_relay_peer_rpc_uses_embedded_agent_protocol() -> None:
     addresses, hosts = __import__("asyncio").run(control.relay_peers())
     assert addresses == ["8.8.8.8"]
     assert hosts == ["relay.example.org"]
-    assert "relay-peers" in shell.calls[0][0][-1]
+    assert "relay-peers" in shell.calls[0][0]
 
 
 def test_relay_peer_parser_accepts_only_turn_log_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:

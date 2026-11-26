@@ -153,7 +153,9 @@ def test_xray_home_inbounds_list_and_wizard_single_start_button(tmp_path: Path, 
 
     asyncio.run(bot.xray.route(7, 10, "xr:list"))
     list_html = bot.rendered[-1].build()
-    assert f'data="xr:in:{inb.id}">{inb.remark}</tg-button>' in list_html
+    table_html = list_html.split("</table>", 1)[0]
+    assert f'data="xr:in:{inb.id}">{i18n.t("UI_OPEN", bot.language)}</tg-button>' in table_html
+    assert inb.remark in table_html
     assert count_buttons(list_html) <= MAX_BUTTONS
 
 

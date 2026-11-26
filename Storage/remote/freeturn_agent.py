@@ -19,7 +19,6 @@ import urllib.request
 
 SBIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
 BUNDLED_INSTALL_B64 = ""
-# This is a hardened derivative of the separately pinned upstream fallback.
 BUNDLED_INSTALL_SHA256 = "c9e3b4acf25a718502025d5403d08bf8a01b36e9f342eed11625b551a6f88b02"
 MODAT_NETWORKS = (
     ipaddress.ip_network("85.217.140.0/24"),
@@ -365,8 +364,6 @@ def bundled_script_bytes():
 
 
 def seed_bundled_cache(digest):
-    # The upstream pin remains the gate for fallback selection. The actual fallback
-    # is a separately pinned hardened derivative, stored under its own digest.
     if digest != DEFAULT_SHA256:
         return ""
     body = bundled_script_bytes()
@@ -551,7 +548,6 @@ def _replace_shell_function(source, name, replacement):
 
 
 def harden_install_source(source):
-    """Disable installer-owned inbound firewall mutation while retaining all RPC work."""
     text = str(source or "")
     replacements = {
         "firewall_open_port": """firewall_open_port() {
@@ -1844,7 +1840,6 @@ WG_CONF_PATH = "/etc/wireguard/ft-wg0.conf"
 
 
 def listener_snapshot(data, command, installed=None):
-    """Report only an observed, running UDP listener as a factual policy port."""
     if not isinstance(data, dict):
         return
     if not data.get("installed") or not data.get("running"):
@@ -1893,7 +1888,6 @@ def _relax_rp_filter():
 
 
 def ensure_runtime_network(installed):
-    """Repair FreeTurn runtime plumbing without creating inbound firewall rules."""
     if not isinstance(installed, dict) or str(installed.get("BACKEND", "new") or "new").strip().lower() != "new":
         return
     if shutil.which("sysctl"):
